@@ -1,0 +1,9 @@
+[install]
+exact = true
+frozen-lockfile = false
+
+[install.scopes]
+"@silo" = { }
+
+[test]
+preload = ["./packages/core/src/test-setup.ts"]

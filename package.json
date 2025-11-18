@@ -1,0 +1,24 @@
+{
+  "name": "silo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "setup": "bash scripts/setup.sh",
+    "dev": "bun run --filter '*' dev",
+    "dev:bot": "bun --filter @silo/bot dev",
+    "build": "bun run --filter '*' build",
+    "test": "bun test",
+    "migrate": "bash scripts/migrate.sh",
+    "type-check": "bun run --filter '*' type-check",
+    "lint": "bun run --filter '*' lint",
+    "clean": "rm -rf node_modules packages/*/node_modules packages/*/dist"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
+  }
+}
