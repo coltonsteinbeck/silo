@@ -52,12 +52,19 @@ export interface BaseProvider {
 }
 
 export interface TextProvider extends BaseProvider {
-  generateText(messages: Message[], options?: TextGenerationOptions): Promise<TextGenerationResponse>;
+  generateText(
+    messages: Message[],
+    options?: TextGenerationOptions
+  ): Promise<TextGenerationResponse>;
 }
 
 export interface ImageProvider extends BaseProvider {
   generateImage(prompt: string, options?: ImageGenerationOptions): Promise<ImageGenerationResponse>;
-  analyzeImage?(imageUrl: string, prompt: string, options?: ImageAnalysisOptions): Promise<ImageAnalysisResponse>;
+  analyzeImage?(
+    imageUrl: string,
+    prompt: string,
+    options?: ImageAnalysisOptions
+  ): Promise<ImageAnalysisResponse>;
 }
 
 export interface EmbeddingProvider extends BaseProvider {

@@ -1,14 +1,17 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { TextProvider, Message, TextGenerationOptions, TextGenerationResponse } from '@silo/core';
+import type {
+  TextProvider,
+  Message,
+  TextGenerationOptions,
+  TextGenerationResponse
+} from '@silo/core';
 
 export class AnthropicProvider implements TextProvider {
   name = 'anthropic';
   private client: Anthropic | null = null;
-  private apiKey?: string;
   private defaultModel: string;
 
   constructor(apiKey?: string, model: string = 'claude-3-5-sonnet-20241022') {
-    this.apiKey = apiKey;
     this.defaultModel = model;
     if (apiKey) {
       this.client = new Anthropic({ apiKey });
@@ -19,7 +22,10 @@ export class AnthropicProvider implements TextProvider {
     return !!this.client;
   }
 
-  async generateText(messages: Message[], options?: TextGenerationOptions): Promise<TextGenerationResponse> {
+  async generateText(
+    messages: Message[],
+    options?: TextGenerationOptions
+  ): Promise<TextGenerationResponse> {
     if (!this.client) {
       throw new Error('Anthropic provider not configured');
     }

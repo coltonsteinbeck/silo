@@ -52,8 +52,14 @@ export interface DatabaseAdapter {
   searchUserMemories(userId: string, query: string, limit?: number): Promise<UserMemory[]>;
 
   // Server Memory
-  getServerMemories(serverId: string, contextType?: string, limit?: number): Promise<ServerMemory[]>;
-  storeServerMemory(memory: Omit<ServerMemory, 'id' | 'createdAt' | 'updatedAt'>): Promise<ServerMemory>;
+  getServerMemories(
+    serverId: string,
+    contextType?: string,
+    limit?: number
+  ): Promise<ServerMemory[]>;
+  storeServerMemory(
+    memory: Omit<ServerMemory, 'id' | 'createdAt' | 'updatedAt'>
+  ): Promise<ServerMemory>;
   updateServerMemory(id: string, updates: Partial<ServerMemory>): Promise<ServerMemory>;
   deleteServerMemory(id: string): Promise<void>;
 
@@ -63,7 +69,9 @@ export interface DatabaseAdapter {
 
   // Conversation History
   getConversationHistory(channelId: string, limit?: number): Promise<ConversationMessage[]>;
-  storeConversationMessage(message: Omit<ConversationMessage, 'id' | 'createdAt'>): Promise<ConversationMessage>;
+  storeConversationMessage(
+    message: Omit<ConversationMessage, 'id' | 'createdAt'>
+  ): Promise<ConversationMessage>;
   clearConversationHistory(channelId: string): Promise<void>;
 
   // Cleanup

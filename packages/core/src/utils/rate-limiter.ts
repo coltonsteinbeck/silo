@@ -22,13 +22,13 @@ export class RateLimiter {
     if (!entry || now > entry.resetAt) {
       const newEntry: RateLimitEntry = {
         count: 1,
-        resetAt: now + this.windowMs,
+        resetAt: now + this.windowMs
       };
       this.store.set(key, newEntry);
       return {
         allowed: true,
         remaining: this.maxRequests - 1,
-        resetAt: newEntry.resetAt,
+        resetAt: newEntry.resetAt
       };
     }
 
@@ -36,7 +36,7 @@ export class RateLimiter {
       return {
         allowed: false,
         remaining: 0,
-        resetAt: entry.resetAt,
+        resetAt: entry.resetAt
       };
     }
 
@@ -44,7 +44,7 @@ export class RateLimiter {
     return {
       allowed: true,
       remaining: this.maxRequests - entry.count,
-      resetAt: entry.resetAt,
+      resetAt: entry.resetAt
     };
   }
 

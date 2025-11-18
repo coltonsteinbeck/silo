@@ -20,7 +20,7 @@
       "@silo/core": ["./packages/core/src"],
       "@silo/core/*": ["./packages/core/src/*"]
     },
-    "types": ["bun-types"]
+    "types": ["@types/bun"]
   },
   "include": ["packages/**/*"],
   "exclude": ["node_modules", "dist"]

@@ -1,14 +1,22 @@
 import OpenAI from 'openai';
-import type { TextProvider, ImageProvider, Message, TextGenerationOptions, TextGenerationResponse, ImageGenerationOptions, ImageGenerationResponse, ImageAnalysisOptions, ImageAnalysisResponse } from '@silo/core';
+import type {
+  TextProvider,
+  ImageProvider,
+  Message,
+  TextGenerationOptions,
+  TextGenerationResponse,
+  ImageGenerationOptions,
+  ImageGenerationResponse,
+  ImageAnalysisOptions,
+  ImageAnalysisResponse
+} from '@silo/core';
 
 export class OpenAIProvider implements TextProvider, ImageProvider {
   name = 'openai';
   private client: OpenAI | null = null;
-  private apiKey?: string;
   private defaultModel: string;
 
   constructor(apiKey?: string, model: string = 'gpt-4o-mini') {
-    this.apiKey = apiKey;
     this.defaultModel = model;
     if (apiKey) {
       this.client = new OpenAI({ apiKey });
@@ -19,7 +27,10 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
     return !!this.client;
   }
 
-  async generateText(messages: Message[], options?: TextGenerationOptions): Promise<TextGenerationResponse> {
+  async generateText(
+    messages: Message[],
+    options?: TextGenerationOptions
+  ): Promise<TextGenerationResponse> {
     if (!this.client) {
       throw new Error('OpenAI provider not configured');
     }
@@ -42,16 +53,21 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
 
     return {
       content: choice.message.content,
-      usage: response.usage ? {
-        promptTokens: response.usage.prompt_tokens,
-        completionTokens: response.usage.completion_tokens,
-        totalTokens: response.usage.total_tokens
-      } : undefined,
+      usage: response.usage
+        ? {
+            promptTokens: response.usage.prompt_tokens,
+            completionTokens: response.usage.completion_tokens,
+            totalTokens: response.usage.total_tokens
+          }
+        : undefined,
       model: response.model
     };
   }
 
-  async generateImage(prompt: string, options?: ImageGenerationOptions): Promise<ImageGenerationResponse> {
+  async generateImage(
+    prompt: string,
+    options?: ImageGenerationOptions
+  ): Promise<ImageGenerationResponse> {
     if (!this.client) {
       throw new Error('OpenAI provider not configured');
     }
@@ -64,6 +80,10 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
       quality: (options?.quality as 'standard' | 'hd') || 'standard'
     });
 
+    if (!response.data || response.data.length === 0) {
+      throw new Error('No image data from OpenAI');
+    }
+
     const image = response.data[0];
     if (!image?.url) {
       throw new Error('No image URL from OpenAI');
@@ -75,7 +95,11 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
     };
   }
 
-  async analyzeImage(imageUrl: string, prompt: string, options?: ImageAnalysisOptions): Promise<ImageAnalysisResponse> {
+  async analyzeImage(
+    imageUrl: string,
+    prompt: string,
+    options?: ImageAnalysisOptions
+  ): Promise<ImageAnalysisResponse> {
     if (!this.client) {
       throw new Error('OpenAI provider not configured');
     }
@@ -101,11 +125,13 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
 
     return {
       content: choice.message.content,
-      usage: response.usage ? {
-        promptTokens: response.usage.prompt_tokens,
-        completionTokens: response.usage.completion_tokens,
-        totalTokens: response.usage.total_tokens
-      } : undefined
+      usage: response.usage
+        ? {
+            promptTokens: response.usage.prompt_tokens,
+            completionTokens: response.usage.completion_tokens,
+            totalTokens: response.usage.total_tokens
+          }
+        : undefined
     };
   }
 }

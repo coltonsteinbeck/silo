@@ -1,0 +1,199 @@
+import {
+  ChatInputCommandInteraction,
+  SlashCommandBuilder,
+  GuildMember,
+  EmbedBuilder
+} from 'discord.js';
+import { Command } from './types';
+import { AdminAdapter } from '../database/admin-adapter';
+import { PermissionManager } from '../permissions/manager';
+import { logger } from '@silo/core';
+
+export class AnalyticsCommand implements Command {
+  public readonly data;
+
+  constructor(
+    private adminDb: AdminAdapter,
+    private permissions: PermissionManager
+  ) {
+    this.data = new SlashCommandBuilder()
+      .setName('analytics')
+      .setDescription('View server analytics and usage statistics')
+      .setDMPermission(false)
+      .addStringOption(opt =>
+        opt
+          .setName('period')
+          .setDescription('Time period for analytics')
+          .addChoices(
+            { name: 'Last 24 hours', value: '1d' },
+            { name: 'Last 7 days', value: '7d' },
+            { name: 'Last 30 days', value: '30d' }
+          )
+      ) as SlashCommandBuilder;
+  }
+
+  async execute(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guildId || !interaction.member) {
+      await interaction.reply({
+        content: 'This command can only be used in a server.',
+        ephemeral: true
+      });
+      return;
+    }
+
+    const member = interaction.member;
+    if (!(member instanceof GuildMember)) {
+      await interaction.reply({
+        content: 'Could not verify permissions.',
+        ephemeral: true
+      });
+      return;
+    }
+
+    const canModerate = await this.permissions.canModerate(
+      interaction.guildId,
+      interaction.user.id,
+      member
+    );
+    if (!canModerate) {
+      await interaction.reply({
+        content: 'You need moderator permissions to view analytics.',
+        ephemeral: true
+      });
+      return;
+    }
+
+    try {
+      await interaction.deferReply({ ephemeral: true });
+
+      const period = interaction.options.getString('period') || '7d';
+      const days = period === '1d' ? 1 : period === '7d' ? 7 : 30;
+      const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+      // Get analytics data
+      const events = await this.adminDb.getAnalytics(interaction.guildId, since);
+      const feedbackRaw = await this.adminDb.getFeedbackStats(interaction.guildId, since);
+
+      // Command usage stats
+      const commandStats = new Map<string, number>();
+      const providerStats = new Map<string, number>();
+      let totalCommands = 0;
+      let successfulCommands = 0;
+      let totalTokens = 0;
+      let totalResponseTime = 0;
+      let responseTimeCount = 0;
+
+      for (const event of events) {
+        if (event.eventType === 'command_used' && event.command) {
+          const count = commandStats.get(event.command) || 0;
+          commandStats.set(event.command, count + 1);
+          totalCommands++;
+
+          if (event.success) successfulCommands++;
+          if (event.tokensUsed) totalTokens += event.tokensUsed;
+          if (event.responseTimeMs) {
+            totalResponseTime += event.responseTimeMs;
+            responseTimeCount++;
+          }
+          if (event.provider) {
+            const provCount = providerStats.get(event.provider) || 0;
+            providerStats.set(event.provider, provCount + 1);
+          }
+        }
+      }
+
+      // Top commands
+      const topCommands =
+        Array.from(commandStats.entries())
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 5)
+          .map(([cmd, count]) => `• **${cmd}**: ${count} uses`)
+          .join('\n') || 'No commands used';
+
+      // Provider distribution
+      const providerDist =
+        Array.from(providerStats.entries())
+          .map(([provider, count]) => {
+            const percent = ((count / totalCommands) * 100).toFixed(1);
+            return `• **${provider}**: ${percent}%`;
+          })
+          .join('\n') || 'No AI usage';
+
+      // Feedback stats
+      const positive = feedbackRaw['positive'] || 0;
+      const negative = feedbackRaw['negative'] || 0;
+      const totalFeedback = positive + negative;
+      const feedbackText =
+        totalFeedback > 0
+          ? `👍 ${positive} (${((positive / totalFeedback) * 100).toFixed(1)}%) • 👎 ${negative} (${((negative / totalFeedback) * 100).toFixed(1)}%)`
+          : 'No feedback yet';
+
+      // Average response time
+      const avgResponseTime =
+        responseTimeCount > 0 ? (totalResponseTime / responseTimeCount / 1000).toFixed(2) : 'N/A';
+
+      // Success rate
+      const successRate =
+        totalCommands > 0 ? ((successfulCommands / totalCommands) * 100).toFixed(1) : '0';
+
+      // Estimated cost (rough approximation)
+      const estimatedCost = ((totalTokens / 1000) * 0.002).toFixed(4); // Rough estimate at $0.002/1K tokens
+
+      const embed = new EmbedBuilder()
+        .setTitle(`📊 Analytics Dashboard (${days}d)`)
+        .setColor(0x5865f2)
+        .addFields(
+          {
+            name: '📈 Command Usage',
+            value: `Total Commands: **${totalCommands}**\nSuccess Rate: **${successRate}%**\nAvg Response: **${avgResponseTime}s**`,
+            inline: false
+          },
+          {
+            name: '🏆 Top Commands',
+            value: topCommands,
+            inline: true
+          },
+          {
+            name: '🤖 AI Provider Distribution',
+            value: providerDist,
+            inline: true
+          },
+          {
+            name: '💬 User Feedback',
+            value: feedbackText,
+            inline: false
+          },
+          {
+            name: '💰 Token Usage',
+            value: `Total Tokens: **${totalTokens.toLocaleString()}**\nEst. Cost: **$${estimatedCost}**`,
+            inline: false
+          }
+        )
+        .setFooter({
+          text: 'Analytics update in real-time • Costs are estimates'
+        })
+        .setTimestamp();
+
+      await interaction.editReply({ embeds: [embed] });
+
+      // Log analytics access
+      await this.adminDb.logAction({
+        guildId: interaction.guildId,
+        userId: interaction.user.id,
+        action: 'analytics_viewed',
+        details: { period }
+      });
+    } catch (error) {
+      logger.error('Error in analytics command:', error);
+      const reply = {
+        content: 'An error occurred while loading analytics.',
+        ephemeral: true
+      };
+      if (interaction.deferred) {
+        await interaction.editReply(reply);
+      } else {
+        await interaction.reply(reply);
+      }
+    }
+  }
+}
