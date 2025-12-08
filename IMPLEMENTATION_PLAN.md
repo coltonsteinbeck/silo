@@ -1,6 +1,6 @@
 # Implementation Plan - Advanced Features
 
-## Completed ✅
+## Completed
 
 ### 1. Flexible Postgres Migration
 
@@ -21,19 +21,59 @@
 - AI-powered summary of conversations
 - Optional detailed stats: top users, busiest channels, message counts
 
-### 4. Video Generation (Sora API)
+### 4. Realtime Voice
 
-- `/video prompt model duration size` - Generate videos with Sora
-- Models: sora-2 (fast), sora-2-pro (high quality)
-- Durations: 5s, 8s, 10s
-- Resolutions: 720p, 1080p
-- Content safety filters built-in
-- Progress tracking with polling
-- Discord file size check (25MB limit)
+- `/speak [voice]` - Start realtime voice session with Silo
+- `/stopspeaking` - End your voice session
+- Simultaneous multi-speaker support (multiple users can talk at once)
+- Voice options: alloy, echo, fable, onyx, nova, shimmer
+- Uses gpt-4o-mini-realtime-preview model
+- Auto-disconnect when no active speakers
 
-## Remaining Implementation 🔨
+### 5. Daily Quotas System
 
-### 5. Web Search Integration
+- Per-user and per-guild daily usage limits
+- Automatic reset at midnight UTC
+- Role-based limits (member/trusted/moderator/admin)
+- Database tracking with `guild_quotas`, `usage_tracking`, `guild_daily_usage` tables
+- Quota middleware for checking/recording usage
+
+### 6. Feedback System
+
+- `/feedback <type>` - Submit feedback (bug, feature, general, praise)
+- Modal-based input for detailed feedback
+- Stored in database for admin review
+
+### 7. Sharding Support
+
+- Discord.js ShardingManager for multi-guild scaling
+- Production entry point: `packages/bot/src/shard.ts`
+- Run with: `bun run start:prod`
+
+### 8. Admin & Moderation Tools
+
+- `/admin` - Server statistics dashboard
+- `/config` - Server configuration
+- `/mod` - Moderation tools (warn, timeout, purge, history)
+- `/analytics` - Usage analytics
+
+### 9. Models Updated
+
+- Text: gpt-5-mini (default)
+- Images: gpt-image-1 (replaced dall-e-3)
+- Voice: gpt-4o-mini-realtime-preview
+
+## Removed Features
+
+### Video Generation (Removed)
+
+- Originally planned with Sora API
+- Removed due to cost concerns (~$0.10-0.50/video)
+- May revisit in future with budget allocation
+
+## Remaining Implementation
+
+### 10. Web Search Integration
 
 **Command:** `/search <query>`
 
@@ -59,7 +99,7 @@
 - `packages/bot/src/commands/search.ts`
 - `packages/bot/src/providers/search.ts` (abstraction for multiple search providers)
 
-### 6. Custom Commands System
+### 11. Custom Commands System
 
 **Command:** `/custom-command create name description action`
 
@@ -86,7 +126,7 @@
   trigger: "!weather",
   action: "fetch",
   url: "https://api.weather.com/...",
-  response: "Weather in {city}: {temp}°F"
+  response: "Weather in {city}: {temp}F"
 }
 ```
 
@@ -95,50 +135,9 @@
 - `packages/bot/src/commands/custom-command.ts`
 - `packages/bot/src/custom-commands/engine.ts` (safe execution engine)
 - `packages/bot/src/custom-commands/validator.ts` (security validation)
-- `database/migrations/002_custom_commands.sql` (storage schema)
+- `database/migrations/004_custom_commands.sql` (storage schema)
 
-### 7. Realtime Voice (/speak)
-
-**Command:** `/speak` - Start realtime voice session
-
-**Implementation:**
-
-- Uses OpenAI Realtime API with WebSocket connection
-- Discord voice channel integration via @discordjs/voice
-- Supports multiple users in same voice channel
-- Push-to-talk or voice-activated modes
-- Real-time transcription display in text channel
-
-**Security Considerations:**
-
-- Limit concurrent voice sessions per guild (max 3)
-- Max session duration: 30 minutes with auto-disconnect
-- Audio data not stored/recorded
-- User opt-in required (privacy notice)
-
-**Technical Requirements:**
-
-```bash
-npm install @discordjs/voice libsodium-wrappers @discordjs/opus
-```
-
-**Files to Create:**
-
-- `packages/bot/src/commands/speak.ts`
-- `packages/bot/src/voice/realtime-session.ts` (WebSocket management)
-- `packages/bot/src/voice/audio-handler.ts` (Discord voice integration)
-
-**Implementation Steps:**
-
-1. User runs `/speak` in text channel
-2. Bot joins their voice channel
-3. Establishes WebSocket to OpenAI Realtime API
-4. Pipes Discord voice input → OpenAI
-5. Pipes OpenAI audio output → Discord voice
-6. Displays transcriptions in text channel
-7. Auto-disconnects on silence or timeout
-
-### 8. Enhanced Memory Commands (Match Bepo)
+### 12. Enhanced Memory Commands (Match Bepo)
 
 **New Memory Features:**
 
@@ -149,17 +148,6 @@ npm install @discordjs/voice libsodium-wrappers @discordjs/opus
 - `/servermemory search <query>` - Search server memories
 - `/servermemory delete <memory_id>` - Delete server memories
 - `/servermemory stats` - Server memory statistics
-- `/servermemory my [limit]` - View your server contributions
-- `/updateservermemory <id> [content] [title] [context_type]` - Update server memories
-
-**Database Schema Updates:**
-
-```sql
--- Already have user_memory and server_memory tables
--- Add indexes for search performance
-CREATE INDEX idx_user_memory_content_gin ON user_memory USING gin(to_tsvector('english', memory_content));
-CREATE INDEX idx_server_memory_content_gin ON server_memory USING gin(to_tsvector('english', memory_content));
-```
 
 **Permission Model:**
 
@@ -206,7 +194,6 @@ CREATE INDEX idx_server_memory_content_gin ON server_memory USING gin(to_tsvecto
 ### Resource Management
 
 - Timeout long-running operations (5-30s)
-- Limit concurrent video generations per guild (1)
 - Max memory per user (1000 memories)
 - Auto-cleanup expired data
 
@@ -215,11 +202,9 @@ CREATE INDEX idx_server_memory_content_gin ON server_memory USING gin(to_tsvecto
 Add to `.env.example`:
 
 ```bash
-# Search Provider
+# Search Provider (pick one)
 TAVILY_API_KEY=
-# or
 BRAVE_SEARCH_API_KEY=
-# or
 SERPAPI_KEY=
 
 # Custom Commands (optional)
@@ -234,32 +219,35 @@ VOICE_SESSION_TIMEOUT_MINUTES=30
 
 ## Recommended Implementation Order
 
-1. **Memory enhancements** (low complexity, high value)
-2. **Web search** (medium complexity, high value)
-3. **Thread support** (✅ already done)
-4. **Digest system** (✅ already done)
-5. **Video generation** (✅ already done)
-6. **Custom commands** (high complexity, security critical)
-7. **Realtime voice** (highest complexity, requires careful testing)
+1. **Thread support** - DONE
+2. **Digest system** - DONE
+3. **Realtime voice** - DONE
+4. **Quotas system** - DONE
+5. **Feedback system** - DONE
+6. **Sharding** - DONE
+7. **Memory enhancements** - Next priority
+8. **Web search** - Medium priority
+9. **Custom commands** - Low priority (security critical)
 
 ## Testing Checklist
 
-- [ ] Migration works with Supabase
-- [ ] Migration works with local Postgres
-- [ ] Thread creation and auto-naming
-- [ ] Digest with different time periods
-- [ ] Video generation with content filters
-- [ ] Memory CRUD operations
+- [x] Migration works with Supabase
+- [x] Migration works with local Postgres
+- [x] Thread creation and auto-naming
+- [x] Digest with different time periods
+- [x] Memory CRUD operations
+- [x] Voice commands created
+- [ ] Voice session handling (integration test)
+- [ ] Multi-user voice support (integration test)
+- [ ] Quota enforcement
 - [ ] Server memory permissions
 - [ ] Search rate limiting
 - [ ] Custom command sandboxing
-- [ ] Voice session handling
-- [ ] Multi-user voice support
 
 ## Next Steps
 
-1. Review this plan
-2. Prioritize which features to implement first
-3. Test existing features with Supabase
-4. Implement remaining features iteratively
-5. Comprehensive security audit before production
+1. Test voice features with real Discord bot
+2. Implement enhanced memory commands
+3. Add web search integration
+4. Consider custom commands with security review
+5. Production deployment on Mac Mini

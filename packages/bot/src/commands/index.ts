@@ -4,13 +4,15 @@ import { ViewMemoryCommand } from './memory/view';
 import { SetMemoryCommand } from './memory/set';
 import { ClearMemoryCommand } from './memory/clear';
 import { DrawCommand } from './draw';
-import { VideoCommand } from './video';
 import { ThreadCommand } from './thread';
 import { DigestCommand } from './digest';
 import { AdminCommand } from './admin';
 import { ConfigCommand } from './config';
 import { ModCommand } from './mod';
 import { AnalyticsCommand } from './analytics';
+import { SpeakCommand } from './speak';
+import { StopSpeakingCommand } from './stopspeaking';
+import { FeedbackCommand } from './feedback';
 import { DatabaseAdapter, Config } from '@silo/core';
 import { ProviderRegistry } from '../providers/registry';
 import { AdminAdapter } from '../database/admin-adapter';
@@ -19,7 +21,7 @@ import { PermissionManager } from '../permissions/manager';
 export function createCommands(
   db: DatabaseAdapter,
   registry: ProviderRegistry,
-  config: Config,
+  _config: Config, // Reserved for future use
   adminDb: AdminAdapter,
   permissions: PermissionManager
 ): Collection<string, Command> {
@@ -37,9 +39,6 @@ export function createCommands(
   // Media generation
   const draw = new DrawCommand(registry);
   commands.set(draw.data.name, draw);
-
-  const video = new VideoCommand(config.providers.openai?.apiKey || null);
-  commands.set(video.data.name, video);
 
   // Collaboration features
   const thread = new ThreadCommand(db, registry);
@@ -60,6 +59,15 @@ export function createCommands(
 
   const analytics = new AnalyticsCommand(adminDb, permissions);
   commands.set(analytics.data.name, analytics);
+
+  // Voice commands
+  const speak = new SpeakCommand(adminDb);
+  commands.set(speak.data.name, speak);
+  commands.set(StopSpeakingCommand.data.name, StopSpeakingCommand);
+
+  // Feedback command
+  const feedback = new FeedbackCommand(adminDb);
+  commands.set(feedback.data.name, feedback);
 
   return commands;
 }

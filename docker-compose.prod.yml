@@ -1,0 +1,68 @@
+# ================================================
+# SILO DISCORD BOT - PRODUCTION DOCKER COMPOSE
+# ================================================
+# Full stack: Bot + Postgres + Redis
+#
+# Usage:
+#   1. Copy .env.example to .env and fill in your values
+#   2. docker-compose -f docker-compose.prod.yml up -d
+#
+# For cloud databases (Supabase, etc.), remove the postgres service
+# and set DATABASE_URL in .env to your cloud connection string.
+
+services:
+  # Discord Bot
+  bot:
+    build: .
+    container_name: silo-bot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - DATABASE_URL=postgresql://silo:${POSTGRES_PASSWORD:-changeme}@postgres:5432/silo
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - silo-network
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: silo-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: silo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: silo
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U silo -d silo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - silo-network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: silo-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - silo-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  silo-network:
+    driver: bridge

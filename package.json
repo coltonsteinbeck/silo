@@ -9,7 +9,8 @@
   "scripts": {
     "setup": "bash scripts/setup.sh",
     "dev": "bun run --filter '*' dev",
-    "dev:bot": "bun --filter @silo/bot dev",
+    "dev:bot": "bun --watch packages/bot/src/index.ts",
+    "start:prod": "bun packages/bot/src/shard.ts",
     "build": "bun run --filter '*' build",
     "test": "bun test",
     "migrate": "bash scripts/migrate.sh",

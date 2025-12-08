@@ -60,8 +60,8 @@ export const MLServiceConfigSchema = z.object({
 });
 
 export const SecurityConfigSchema = z.object({
-  healthCheckSecret: z.string().min(32).optional(),
-  alertWebhookUrl: z.string().url().optional(),
+  healthCheckSecret: z.string().min(32).optional().or(z.literal('')),
+  alertWebhookUrl: z.string().url().optional().or(z.literal('')),
   enableMonitoring: z.boolean().default(false)
 });
 

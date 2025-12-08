@@ -15,9 +15,11 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
   name = 'openai';
   private client: OpenAI | null = null;
   private defaultModel: string;
+  private defaultImageModel: string;
 
-  constructor(apiKey?: string, model: string = 'gpt-4o-mini') {
+  constructor(apiKey?: string, model: string = 'gpt-5-mini', imageModel: string = 'gpt-image-1') {
     this.defaultModel = model;
+    this.defaultImageModel = imageModel;
     if (apiKey) {
       this.client = new OpenAI({ apiKey });
     }
@@ -72,12 +74,15 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
       throw new Error('OpenAI provider not configured');
     }
 
+    // gpt-image-1 supports different quality levels: low, medium, high
+    const quality = options?.quality || 'medium';
+    
     const response = await this.client.images.generate({
-      model: options?.model || 'dall-e-3',
+      model: options?.model || this.defaultImageModel,
       prompt,
       n: 1,
-      size: (options?.size as '1024x1024' | '1792x1024' | '1024x1792') || '1024x1024',
-      quality: (options?.quality as 'standard' | 'hd') || 'standard'
+      size: (options?.size as '1024x1024' | '1536x1024' | '1024x1536' | 'auto') || '1024x1024',
+      quality: quality as 'low' | 'medium' | 'high'
     });
 
     if (!response.data || response.data.length === 0) {
@@ -104,8 +109,9 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
       throw new Error('OpenAI provider not configured');
     }
 
+    // Use gpt-5-mini for vision tasks as well
     const response = await this.client.chat.completions.create({
-      model: options?.model || 'gpt-4o-mini',
+      model: options?.model || this.defaultModel,
       messages: [
         {
           role: 'user',

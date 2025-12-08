@@ -1,6 +1,6 @@
 # Silo - Multi-Provider Discord AI Bot
 
-Self-hosted Discord bot framework with customizable AI providers, advanced memory, video generation, and extensible architecture.
+Self-hosted Discord bot framework with customizable AI providers, advanced memory, realtime voice, and extensible architecture. Supports both self-hosted and hosted/SaaS deployment modes.
 
 ## Quick Start
 
@@ -43,7 +43,7 @@ DISCORD_TOKEN=your_bot_token
 DISCORD_CLIENT_ID=your_client_id
 DATABASE_URL=postgresql://...  # Your Postgres connection string
 REDIS_URL=redis://localhost:6379
-OPENAI_API_KEY=your_openai_key  # For video, images, and text
+OPENAI_API_KEY=your_openai_key  # For text, images, and voice
 # or
 ANTHROPIC_API_KEY=your_anthropic_key  # For text only
 ```
@@ -51,29 +51,54 @@ ANTHROPIC_API_KEY=your_anthropic_key  # For text only
 ### Run
 
 ```bash
+# Development
 bun run dev:bot
+
+# Production (with sharding)
+bun run start:prod
+```
+
+### Docker Deployment
+
+```bash
+# Build the image
+docker build -t silo-bot .
+
+# Run with environment variables
+docker run -d \
+  --name silo \
+  --env-file .env \
+  --restart unless-stopped \
+  silo-bot
+
+# Or with docker-compose (includes Postgres + Redis)
+docker-compose -f docker-compose.prod.yml up -d
 ```
 
 ## Getting Discord Bot Token
 
 1. Go to https://discord.com/developers/applications
 2. Click "New Application"
-3. Go to "Bot" tab → "Reset Token" → Copy token
+3. Go to "Bot" tab -> "Reset Token" -> Copy token
 4. Enable "Message Content Intent" under Privileged Gateway Intents
-5. Go to OAuth2 → URL Generator:
+5. Go to OAuth2 -> URL Generator:
    - Scopes: `bot`, `applications.commands`
-   - Bot Permissions: Read Messages, Send Messages, Embed Links, Attach Files
+   - Bot Permissions: Read Message History, Send Messages, Embed Links, Attach Files, Connect, Speak
 6. Copy URL and invite bot to your server
 
 ## Features
 
 ### Core Capabilities
 
-- **Multi-Provider AI**: OpenAI, Anthropic, xAI, Google support
+- **Multi-Provider AI**: OpenAI (gpt-5-mini), Anthropic, xAI, Google support
 - **Conversational AI**: @mention bot for natural conversations with context
+- **Realtime Voice**: Talk to Silo in voice channels with simultaneous multi-speaker support
 - **Advanced Memory**: User and server memory systems with search
+- **Image Generation**: gpt-image-1 with low/medium/high quality options
 - **Database Flexibility**: Works with any PostgreSQL (Supabase, Railway, local, etc.)
+- **Sharding**: Built-in Discord.js ShardingManager for multi-guild scaling
 - **Role-Based Permissions**: Admin, moderator, trusted, member, restricted tiers
+- **Daily Quotas**: Per-user and per-guild usage limits with automatic daily reset
 - **Audit Logging**: Track all admin actions and moderation events
 - **Analytics**: Command usage, AI costs, response times, user feedback
 
@@ -87,15 +112,23 @@ bun run dev:bot
 
 #### Media Generation
 
-- `/draw <prompt>` - Generate images with DALL-E
-- `/video <prompt>` - Generate videos with Sora (5-10s, 720p-1080p)
+- `/draw <prompt>` - Generate images with gpt-image-1
+
+#### Voice
+
+- `/speak [voice]` - Start a voice conversation with Silo in your current voice channel
+- `/stopspeaking` - End your voice session
 
 #### Collaboration
 
 - `/thread [name]` - Create conversation threads (AI auto-names if not specified)
 - `/digest [period] [include_stats]` - Server activity summaries (1h, 12h, daily, weekly)
 
-#### Admin & Moderation (NEW)
+#### Feedback
+
+- `/feedback <type>` - Submit bug reports, feature requests, or general feedback
+
+#### Admin & Moderation
 
 - `/admin` - View server statistics and configuration dashboard
 - `/config provider|auto-thread|retention|rate-limit|view` - Configure server settings
@@ -106,17 +139,32 @@ bun run dev:bot
 
 React to bot messages with:
 
-- 👍 Positive feedback
-- 👎 Negative feedback
-- 🔄 Regenerate response (planned)
-- 💾 Save to knowledge base (planned)
-- 🗑️ Delete message (original requester or moderators)
+- Thumbs up: Positive feedback
+- Thumbs down: Negative feedback
+- Recycle: Regenerate response (planned)
+- Floppy disk: Save to knowledge base (planned)
+- Trash: Delete message (original requester or moderators)
+
+### Daily Quotas
+
+Usage limits reset at midnight UTC:
+
+| Feature       | Member | Trusted | Moderator | Admin |
+| ------------- | ------ | ------- | --------- | ----- |
+| Text tokens   | 5k     | 10k     | 20k       | 50k   |
+| Images        | 1      | 2       | 3         | 5     |
+| Voice minutes | 0      | 5       | 10        | 15    |
+
+### AI Models
+
+- **Text**: gpt-5-mini ($0.25/1M input, $2.00/1M output)
+- **Images**: gpt-image-1 (low/medium/high quality)
+- **Voice**: gpt-4o-mini-realtime-preview (~$0.34/5min session)
 
 ### Planned Features
 
 - Web search integration
 - Custom user commands (with security sandbox)
-- Realtime voice with `/speak` command
 - Enhanced memory: stats, updates, server-wide memories
 - RAG memory with vector search
 - Channel-specific behavior modes

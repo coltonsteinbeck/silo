@@ -98,6 +98,110 @@ export class AdminAdapter {
     });
   }
 
+  // Alerts Channel (stored in guild_registry.warning_channel_id)
+  async getAlertsChannel(guildId: string): Promise<string | null> {
+    const result = await this.pool.query(
+      'SELECT warning_channel_id FROM guild_registry WHERE guild_id = $1',
+      [guildId]
+    );
+    return result.rows[0]?.warning_channel_id ?? null;
+  }
+
+  async setAlertsChannel(guildId: string, channelId: string | null): Promise<void> {
+    await this.pool.query(
+      `UPDATE guild_registry SET warning_channel_id = $2 WHERE guild_id = $1`,
+      [guildId, channelId]
+    );
+  }
+
+  // System Prompts
+  /**
+   * Get the system prompt for a guild
+   * @param guildId - The guild ID
+   * @param forVoice - Whether to get the voice-specific prompt (falls back to regular if not set)
+   */
+  async getSystemPrompt(guildId: string, forVoice = false): Promise<{ prompt: string | null; enabled: boolean }> {
+    const result = await this.pool.query(
+      `SELECT system_prompt, voice_system_prompt, system_prompt_enabled 
+       FROM server_config WHERE guild_id = $1`,
+      [guildId]
+    );
+
+    if (result.rows.length === 0) {
+      return { prompt: null, enabled: true };
+    }
+
+    const row = result.rows[0];
+    const enabled = row.system_prompt_enabled ?? true;
+
+    if (forVoice && row.voice_system_prompt) {
+      return { prompt: row.voice_system_prompt, enabled };
+    }
+
+    return { prompt: row.system_prompt, enabled };
+  }
+
+  /**
+   * Set the system prompt for a guild
+   * @param guildId - The guild ID
+   * @param prompt - The system prompt text (null to clear)
+   * @param options - Additional options
+   */
+  async setSystemPrompt(
+    guildId: string, 
+    prompt: string | null, 
+    options: { forVoice?: boolean; enabled?: boolean } = {}
+  ): Promise<void> {
+    const { forVoice = false, enabled } = options;
+    const column = forVoice ? 'voice_system_prompt' : 'system_prompt';
+
+    // Build query dynamically based on what we're updating
+    let query: string;
+    let params: (string | boolean | null)[];
+
+    if (enabled !== undefined) {
+      query = `
+        INSERT INTO server_config (guild_id, ${column}, system_prompt_enabled)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (guild_id) 
+        DO UPDATE SET ${column} = $2, system_prompt_enabled = $3, updated_at = NOW()
+      `;
+      params = [guildId, prompt, enabled];
+    } else {
+      query = `
+        INSERT INTO server_config (guild_id, ${column})
+        VALUES ($1, $2)
+        ON CONFLICT (guild_id) 
+        DO UPDATE SET ${column} = $2, updated_at = NOW()
+      `;
+      params = [guildId, prompt];
+    }
+
+    await this.pool.query(query, params);
+
+    // Log the change
+    await this.logAction({
+      guildId,
+      userId: 'system',
+      action: forVoice ? 'voice_system_prompt_updated' : 'system_prompt_updated',
+      details: { 
+        promptLength: prompt?.length ?? 0,
+        enabled: enabled ?? true,
+        clearedPrompt: prompt === null
+      }
+    });
+  }
+
+  /**
+   * Toggle system prompt enabled/disabled
+   */
+  async toggleSystemPrompt(guildId: string, enabled: boolean): Promise<void> {
+    await this.pool.query(
+      `UPDATE server_config SET system_prompt_enabled = $2, updated_at = NOW() WHERE guild_id = $1`,
+      [guildId, enabled]
+    );
+  }
+
   // Audit Logging
   async logAction(log: Omit<AuditLog, 'id' | 'createdAt'>): Promise<AuditLog> {
     const result = await this.pool.query(
@@ -307,5 +411,158 @@ export class AdminAdapter {
       stats[row.feedback_type] = parseInt(row.count);
     }
     return stats;
+  }
+
+  // User Feedback (from /feedback command)
+  async submitFeedback(feedback: {
+    guildId: string;
+    userId: string;
+    username: string;
+    feedbackType: 'bug' | 'feature' | 'general' | 'praise';
+    content: string;
+    context: string | null;
+  }): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO user_feedback (guild_id, user_id, username, feedback_type, content, context)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        feedback.guildId,
+        feedback.userId,
+        feedback.username,
+        feedback.feedbackType,
+        feedback.content,
+        feedback.context
+      ]
+    );
+  }
+
+  // Quota Management
+  async getGuildQuota(guildId: string): Promise<{
+    textTokensMax: number;
+    imagesMax: number;
+    voiceMinutesMax: number;
+  } | null> {
+    const result = await this.pool.query(
+      'SELECT * FROM guild_quotas WHERE guild_id = $1',
+      [guildId]
+    );
+    
+    if (result.rows.length === 0) return null;
+    
+    const row = result.rows[0];
+    return {
+      textTokensMax: row.text_tokens_max,
+      imagesMax: row.images_max,
+      voiceMinutesMax: row.voice_minutes_max
+    };
+  }
+
+  async setGuildQuota(
+    guildId: string,
+    quota: {
+      textTokensMax?: number;
+      imagesMax?: number;
+      voiceMinutesMax?: number;
+    }
+  ): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO guild_quotas (guild_id, text_tokens_max, images_max, voice_minutes_max)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (guild_id)
+       DO UPDATE SET 
+         text_tokens_max = COALESCE($2, guild_quotas.text_tokens_max),
+         images_max = COALESCE($3, guild_quotas.images_max),
+         voice_minutes_max = COALESCE($4, guild_quotas.voice_minutes_max),
+         updated_at = NOW()`,
+      [
+        guildId,
+        quota.textTokensMax,
+        quota.imagesMax,
+        quota.voiceMinutesMax
+      ]
+    );
+  }
+
+  async checkGuildQuota(
+    guildId: string,
+    usageType: 'text_tokens' | 'images' | 'voice_minutes',
+    amount: number
+  ): Promise<{ allowed: boolean; remaining: number; max: number }> {
+    const result = await this.pool.query(
+      'SELECT * FROM check_guild_quota($1, $2, $3)',
+      [guildId, usageType, amount]
+    );
+    
+    const row = result.rows[0];
+    return {
+      allowed: row.allowed,
+      remaining: row.remaining,
+      max: row.max_allowed
+    };
+  }
+
+  async incrementUsage(
+    guildId: string,
+    userId: string,
+    usageType: 'text_tokens' | 'images' | 'voice_minutes',
+    amount: number
+  ): Promise<boolean> {
+    const result = await this.pool.query(
+      'SELECT increment_usage($1, $2, $3, $4) as success',
+      [guildId, userId, usageType, amount]
+    );
+    
+    return result.rows[0]?.success ?? false;
+  }
+
+  async getGuildDailyUsage(guildId: string): Promise<{
+    textTokens: number;
+    images: number;
+    voiceMinutes: number;
+    date: Date;
+  } | null> {
+    const result = await this.pool.query(
+      `SELECT * FROM guild_daily_usage 
+       WHERE guild_id = $1 AND usage_date = CURRENT_DATE`,
+      [guildId]
+    );
+    
+    if (result.rows.length === 0) return null;
+    
+    const row = result.rows[0];
+    return {
+      textTokens: row.text_tokens_used,
+      images: row.images_used,
+      voiceMinutes: row.voice_minutes_used,
+      date: new Date(row.usage_date)
+    };
+  }
+
+  async getUserDailyUsage(
+    guildId: string,
+    userId: string
+  ): Promise<{
+    textTokens: number;
+    images: number;
+    voiceMinutes: number;
+  } | null> {
+    const result = await this.pool.query(
+      `SELECT 
+         SUM(CASE WHEN usage_type = 'text_tokens' THEN amount ELSE 0 END) as text_tokens,
+         SUM(CASE WHEN usage_type = 'images' THEN amount ELSE 0 END) as images,
+         SUM(CASE WHEN usage_type = 'voice_minutes' THEN amount ELSE 0 END) as voice_minutes
+       FROM usage_tracking
+       WHERE guild_id = $1 AND user_id = $2 AND DATE(created_at) = CURRENT_DATE`,
+      [guildId, userId]
+    );
+    
+    if (result.rows.length === 0) return null;
+    
+    const row = result.rows[0];
+    return {
+      textTokens: parseInt(row.text_tokens) || 0,
+      images: parseInt(row.images) || 0,
+      voiceMinutes: parseInt(row.voice_minutes) || 0
+    };
   }
 }

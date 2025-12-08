@@ -74,8 +74,10 @@ export class ConfigLoader {
     const result = ConfigSchema.safeParse(rawConfig);
 
     if (!result.success) {
-      console.error('Configuration validation failed:');
-      console.error(result.error.format());
+      console.error('\n❌ Configuration validation failed:\n');
+      const formatted = result.error.format();
+      console.error(JSON.stringify(formatted, null, 2));
+      console.error('\nCheck your .env file for missing or invalid values.\n');
       throw new Error('Invalid configuration. Check .env file.');
     }
 
