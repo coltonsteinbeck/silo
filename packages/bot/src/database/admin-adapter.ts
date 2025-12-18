@@ -108,10 +108,10 @@ export class AdminAdapter {
   }
 
   async setAlertsChannel(guildId: string, channelId: string | null): Promise<void> {
-    await this.pool.query(
-      `UPDATE guild_registry SET warning_channel_id = $2 WHERE guild_id = $1`,
-      [guildId, channelId]
-    );
+    await this.pool.query(`UPDATE guild_registry SET warning_channel_id = $2 WHERE guild_id = $1`, [
+      guildId,
+      channelId
+    ]);
   }
 
   // System Prompts
@@ -120,7 +120,10 @@ export class AdminAdapter {
    * @param guildId - The guild ID
    * @param forVoice - Whether to get the voice-specific prompt (falls back to regular if not set)
    */
-  async getSystemPrompt(guildId: string, forVoice = false): Promise<{ prompt: string | null; enabled: boolean }> {
+  async getSystemPrompt(
+    guildId: string,
+    forVoice = false
+  ): Promise<{ prompt: string | null; enabled: boolean }> {
     const result = await this.pool.query(
       `SELECT system_prompt, voice_system_prompt, system_prompt_enabled 
        FROM server_config WHERE guild_id = $1`,
@@ -148,8 +151,8 @@ export class AdminAdapter {
    * @param options - Additional options
    */
   async setSystemPrompt(
-    guildId: string, 
-    prompt: string | null, 
+    guildId: string,
+    prompt: string | null,
     options: { forVoice?: boolean; enabled?: boolean } = {}
   ): Promise<void> {
     const { forVoice = false, enabled } = options;
@@ -184,7 +187,7 @@ export class AdminAdapter {
       guildId,
       userId: 'system',
       action: forVoice ? 'voice_system_prompt_updated' : 'system_prompt_updated',
-      details: { 
+      details: {
         promptLength: prompt?.length ?? 0,
         enabled: enabled ?? true,
         clearedPrompt: prompt === null
@@ -442,13 +445,12 @@ export class AdminAdapter {
     imagesMax: number;
     voiceMinutesMax: number;
   } | null> {
-    const result = await this.pool.query(
-      'SELECT * FROM guild_quotas WHERE guild_id = $1',
-      [guildId]
-    );
-    
+    const result = await this.pool.query('SELECT * FROM guild_quotas WHERE guild_id = $1', [
+      guildId
+    ]);
+
     if (result.rows.length === 0) return null;
-    
+
     const row = result.rows[0];
     return {
       textTokensMax: row.text_tokens_max,
@@ -474,12 +476,7 @@ export class AdminAdapter {
          images_max = COALESCE($3, guild_quotas.images_max),
          voice_minutes_max = COALESCE($4, guild_quotas.voice_minutes_max),
          updated_at = NOW()`,
-      [
-        guildId,
-        quota.textTokensMax,
-        quota.imagesMax,
-        quota.voiceMinutesMax
-      ]
+      [guildId, quota.textTokensMax, quota.imagesMax, quota.voiceMinutesMax]
     );
   }
 
@@ -488,16 +485,43 @@ export class AdminAdapter {
     usageType: 'text_tokens' | 'images' | 'voice_minutes',
     amount: number
   ): Promise<{ allowed: boolean; remaining: number; max: number }> {
-    const result = await this.pool.query(
-      'SELECT * FROM check_guild_quota($1, $2, $3)',
-      [guildId, usageType, amount]
+    // Get quota limit for this guild
+    const quotaResult = await this.pool.query(
+      `SELECT 
+        CASE $2
+          WHEN 'text_tokens' THEN COALESCE(daily_text_tokens, 50000)
+          WHEN 'images' THEN COALESCE(daily_images, 5)
+          WHEN 'voice_minutes' THEN COALESCE(daily_voice_minutes, 15)
+        END as quota_limit
+      FROM guild_quotas WHERE guild_id = $1`,
+      [guildId, usageType]
     );
-    
-    const row = result.rows[0];
+
+    const quotaLimit =
+      quotaResult.rows[0]?.quota_limit ||
+      (usageType === 'text_tokens' ? 50000 : usageType === 'images' ? 5 : 15);
+
+    // Get current usage for today
+    const usageResult = await this.pool.query(
+      `SELECT 
+        CASE $2
+          WHEN 'text_tokens' THEN COALESCE(total_text_tokens, 0)
+          WHEN 'images' THEN COALESCE(total_images, 0)
+          WHEN 'voice_minutes' THEN COALESCE(total_voice_minutes, 0)
+        END as current_usage
+      FROM guild_daily_usage 
+      WHERE guild_id = $1 AND usage_date = CURRENT_DATE`,
+      [guildId, usageType]
+    );
+
+    const currentUsage = usageResult.rows[0]?.current_usage || 0;
+    const remaining = Math.max(0, quotaLimit - currentUsage);
+    const allowed = currentUsage + amount <= quotaLimit;
+
     return {
-      allowed: row.allowed,
-      remaining: row.remaining,
-      max: row.max_allowed
+      allowed,
+      remaining,
+      max: quotaLimit
     };
   }
 
@@ -507,11 +531,13 @@ export class AdminAdapter {
     usageType: 'text_tokens' | 'images' | 'voice_minutes',
     amount: number
   ): Promise<boolean> {
-    const result = await this.pool.query(
-      'SELECT increment_usage($1, $2, $3, $4) as success',
-      [guildId, userId, usageType, amount]
-    );
-    
+    const result = await this.pool.query('SELECT increment_usage($1, $2, $3, $4) as success', [
+      guildId,
+      userId,
+      usageType,
+      amount
+    ]);
+
     return result.rows[0]?.success ?? false;
   }
 
@@ -526,14 +552,14 @@ export class AdminAdapter {
        WHERE guild_id = $1 AND usage_date = CURRENT_DATE`,
       [guildId]
     );
-    
+
     if (result.rows.length === 0) return null;
-    
+
     const row = result.rows[0];
     return {
-      textTokens: row.text_tokens_used,
-      images: row.images_used,
-      voiceMinutes: row.voice_minutes_used,
+      textTokens: row.total_text_tokens || 0,
+      images: row.total_images || 0,
+      voiceMinutes: row.total_voice_minutes || 0,
       date: new Date(row.usage_date)
     };
   }
@@ -548,21 +574,52 @@ export class AdminAdapter {
   } | null> {
     const result = await this.pool.query(
       `SELECT 
-         SUM(CASE WHEN usage_type = 'text_tokens' THEN amount ELSE 0 END) as text_tokens,
-         SUM(CASE WHEN usage_type = 'images' THEN amount ELSE 0 END) as images,
-         SUM(CASE WHEN usage_type = 'voice_minutes' THEN amount ELSE 0 END) as voice_minutes
+         COALESCE(text_tokens_used, 0) as text_tokens,
+         COALESCE(images_used, 0) as images,
+         COALESCE(voice_minutes_used, 0) as voice_minutes
        FROM usage_tracking
-       WHERE guild_id = $1 AND user_id = $2 AND DATE(created_at) = CURRENT_DATE`,
+       WHERE guild_id = $1 AND user_id = $2 AND usage_date = CURRENT_DATE`,
       [guildId, userId]
     );
-    
+
     if (result.rows.length === 0) return null;
-    
+
     const row = result.rows[0];
     return {
       textTokens: parseInt(row.text_tokens) || 0,
       images: parseInt(row.images) || 0,
       voiceMinutes: parseInt(row.voice_minutes) || 0
+    };
+  }
+
+  async getGuildQuotaLimits(guildId: string): Promise<{
+    textTokens: number;
+    images: number;
+    voiceMinutes: number;
+  }> {
+    const result = await this.pool.query(
+      `SELECT 
+         COALESCE(daily_text_tokens, 50000) as text_tokens,
+         COALESCE(daily_images, 5) as images,
+         COALESCE(daily_voice_minutes, 15) as voice_minutes
+       FROM guild_quotas
+       WHERE guild_id = $1`,
+      [guildId]
+    );
+
+    if (result.rows.length === 0) {
+      return {
+        textTokens: 50000,
+        images: 5,
+        voiceMinutes: 15
+      };
+    }
+
+    const row = result.rows[0];
+    return {
+      textTokens: parseInt(row.text_tokens) || 50000,
+      images: parseInt(row.images) || 5,
+      voiceMinutes: parseInt(row.voice_minutes) || 15
     };
   }
 }

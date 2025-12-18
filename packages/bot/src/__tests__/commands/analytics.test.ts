@@ -1,18 +1,22 @@
 /**
  * Tests for Analytics Command
- * 
+ *
  * Tests analytics viewing functionality.
  */
 
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
-import { createMockInteraction, createMockAdminAdapter, createMockPermissionManager } from '@silo/core/test-setup';
+import {
+  createMockInteraction,
+  createMockAdminAdapter,
+  createMockPermissionManager
+} from '@silo/core/test-setup';
 import { AnalyticsCommand } from '../../commands/analytics';
 
 describe('AnalyticsCommand', () => {
   let command: AnalyticsCommand;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   let mockAdminDb: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   let mockPermissions: any;
 
   beforeEach(() => {
@@ -35,10 +39,14 @@ describe('AnalyticsCommand', () => {
       expect(json.dm_permission).toBe(false);
     });
 
-    test('has period option', () => {
+    test('has general and quotas subcommands', () => {
       const json = command.data.toJSON();
-      const periodOption = json.options?.find(opt => opt.name === 'period');
-      expect(periodOption).toBeDefined();
+      const generalSubcommand = json.options?.find(
+        (opt: { name: string }) => opt.name === 'general'
+      );
+      const quotasSubcommand = json.options?.find((opt: { name: string }) => opt.name === 'quotas');
+      expect(generalSubcommand).toBeDefined();
+      expect(quotasSubcommand).toBeDefined();
     });
   });
 
@@ -50,7 +58,6 @@ describe('AnalyticsCommand', () => {
       // @ts-expect-error - mock doesn't have all properties
       interaction.guildId = null;
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       const reply = interaction._getReplies()[0];
@@ -72,7 +79,6 @@ describe('AnalyticsCommand', () => {
       });
       Object.setPrototypeOf(interaction.member, { constructor: { name: 'GuildMember' } });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       // Expect some reply was made (permission denied or error)
@@ -89,7 +95,6 @@ describe('AnalyticsCommand', () => {
         options: { getString: () => null }
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       // Command produces a response
@@ -101,10 +106,9 @@ describe('AnalyticsCommand', () => {
       mockAdminDb.getAnalytics = mock(async () => []);
 
       const interaction = createMockInteraction({
-        options: { getString: (name: string) => name === 'period' ? '30d' : null }
+        options: { getString: (name: string) => (name === 'period' ? '30d' : null) }
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       // Command produces a response

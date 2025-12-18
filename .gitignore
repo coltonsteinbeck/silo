@@ -62,3 +62,6 @@ models/
 
 # Docker
 .dockerignore
+
+# Local deployment docs (hardware-specific)
+DEPLOYMENT.local.md

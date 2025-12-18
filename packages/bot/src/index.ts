@@ -1,14 +1,23 @@
-import { Client, GatewayIntentBits, Events, REST, Routes, ButtonInteraction, ModalSubmitInteraction } from 'discord.js';
+import {
+  Client,
+  GatewayIntentBits,
+  Events,
+  REST,
+  Routes,
+  ButtonInteraction,
+  ModalSubmitInteraction
+} from 'discord.js';
 import { ConfigLoader, logger } from '@silo/core';
 import { ProviderRegistry } from './providers/registry';
 import { PostgresAdapter } from './database/postgres';
 import { AdminAdapter } from './database/admin-adapter';
 import { PermissionManager } from './permissions/manager';
 import { createCommands } from './commands';
-import { 
-  guildManager, 
-  contentSanitizer, 
-  inactivityScheduler, 
+import { HealthServer } from './health/server';
+import {
+  guildManager,
+  contentSanitizer,
+  inactivityScheduler,
   deploymentDetector,
   systemPromptManager
 } from './security';
@@ -42,7 +51,8 @@ async function handleModalSubmit(interaction: ModalSubmitInteraction, adminDb: A
         for (const pattern of suspiciousPatterns) {
           if (pattern.test(prompt)) {
             await interaction.reply({
-              content: '⚠️ The system prompt contains potentially problematic phrases. Please revise.',
+              content:
+                '⚠️ The system prompt contains potentially problematic phrases. Please revise.',
               ephemeral: true
             });
             return;
@@ -51,11 +61,10 @@ async function handleModalSubmit(interaction: ModalSubmitInteraction, adminDb: A
       }
 
       // Save the prompt (empty string = null)
-      await adminDb.setSystemPrompt(
-        interaction.guildId, 
-        prompt || null, 
-        { forVoice, enabled: true }
-      );
+      await adminDb.setSystemPrompt(interaction.guildId, prompt || null, {
+        forVoice,
+        enabled: true
+      });
 
       if (prompt) {
         await interaction.reply({
@@ -105,7 +114,7 @@ async function main() {
 
   // Initialize security modules and log deployment mode
   logger.info(`Deployment mode: ${deploymentDetector.getModeString()}`);
-  
+
   guildManager.init(db.pool, {} as Client); // Will set actual client later
   contentSanitizer.init(db.pool);
 
@@ -120,13 +129,17 @@ async function main() {
     ]
   });
 
+  // Initialize health server
+  const healthServer = new HealthServer(client, db);
+  await healthServer.start();
+
   client.once(Events.ClientReady, async readyClient => {
     logger.info(`Bot ready! Logged in as ${readyClient.user.tag}`);
     logger.info(`Serving ${readyClient.guilds.cache.size} guilds`);
 
     // Set client reference for security modules
     guildManager.setClient(client);
-    
+
     // Start inactivity scheduler (only in hosted mode)
     inactivityScheduler.init(db.pool, client);
     inactivityScheduler.start();
@@ -151,13 +164,13 @@ async function main() {
       await handleModalSubmit(interaction, adminDb);
       return;
     }
-    
+
     // Handle button interactions for waitlist
     if (interaction.isButton()) {
       await handleButtonInteraction(interaction as ButtonInteraction);
       return;
     }
-    
+
     if (!interaction.isChatInputCommand()) return;
 
     const command = commands.get(interaction.commandName);
@@ -190,7 +203,7 @@ async function main() {
   // Handle guild join
   client.on(Events.GuildCreate, async guild => {
     logger.info(`Joined guild: ${guild.name} (${guild.id})`);
-    
+
     try {
       const result = await guildManager.handleGuildJoin(guild);
       logger.info(`Guild join result for ${guild.name}: ${result.action} - ${result.message}`);
@@ -202,7 +215,7 @@ async function main() {
   // Handle guild leave/kick
   client.on(Events.GuildDelete, async guild => {
     logger.info(`Left guild: ${guild.name} (${guild.id})`);
-    
+
     try {
       await guildManager.handleGuildLeave(guild.id);
     } catch (error) {
@@ -243,18 +256,24 @@ async function main() {
       }
 
       if (moderation.action === 'warned') {
-        logger.warn(`Content warning for user ${message.author.id}: ${moderation.flaggedCategories.join(', ')}`);
+        logger.warn(
+          `Content warning for user ${message.author.id}: ${moderation.flaggedCategories.join(', ')}`
+        );
       }
 
       const textProvider = providers.getTextProvider();
 
       // Get the system prompt for this guild
-      const { prompt: dbPrompt, enabled: promptEnabled } = await adminDb.getSystemPrompt(message.guildId);
+      const { prompt: dbPrompt, enabled: promptEnabled } = await adminDb.getSystemPrompt(
+        message.guildId
+      );
       const promptConfig = systemPromptManager.getEffectivePrompt(dbPrompt, promptEnabled);
       const systemPrompt = promptConfig.prompt || 'You are a helpful Discord bot assistant.';
-      
+
       if (promptConfig.warnings.length > 0) {
-        logger.warn(`System prompt warnings for guild ${message.guildId}: ${promptConfig.warnings.join(', ')}`);
+        logger.warn(
+          `System prompt warnings for guild ${message.guildId}: ${promptConfig.warnings.join(', ')}`
+        );
       }
 
       // Get conversation history
@@ -392,54 +411,60 @@ async function main() {
  */
 async function handleButtonInteraction(interaction: ButtonInteraction): Promise<void> {
   const customId = interaction.customId;
-  
+
   try {
     if (customId === 'waitlist_check_position') {
       if (!interaction.guildId) {
-        await interaction.reply({ content: 'This button only works in a server.', ephemeral: true });
+        await interaction.reply({
+          content: 'This button only works in a server.',
+          ephemeral: true
+        });
         return;
       }
-      
+
       const position = await guildManager.getWaitlistPosition(interaction.guildId);
-      
+
       if (position === null) {
-        await interaction.reply({ 
-          content: '✅ This server is not on the waitlist - you\'re already active!', 
-          ephemeral: true 
+        await interaction.reply({
+          content: "✅ This server is not on the waitlist - you're already active!",
+          ephemeral: true
         });
       } else {
-        await interaction.reply({ 
-          content: `📊 Your current waitlist position: **#${position}**\n\nWe'll notify you when a spot opens up!`, 
-          ephemeral: true 
+        await interaction.reply({
+          content: `📊 Your current waitlist position: **#${position}**\n\nWe'll notify you when a spot opens up!`,
+          ephemeral: true
         });
       }
     } else if (customId === 'waitlist_activate') {
       if (!interaction.guildId) {
-        await interaction.reply({ content: 'This button only works in a server.', ephemeral: true });
+        await interaction.reply({
+          content: 'This button only works in a server.',
+          ephemeral: true
+        });
         return;
       }
-      
+
       const success = await guildManager.acceptWaitlistPromotion(interaction.guildId);
-      
+
       if (success) {
-        await interaction.reply({ 
-          content: '🎉 **Activated!** Your server is now using Silo. Try `/help` to get started!', 
-          ephemeral: false 
+        await interaction.reply({
+          content: '🎉 **Activated!** Your server is now using Silo. Try `/help` to get started!',
+          ephemeral: false
         });
       } else {
-        await interaction.reply({ 
-          content: '⚠️ Unable to activate. Your slot may have expired or already been claimed.', 
-          ephemeral: true 
+        await interaction.reply({
+          content: '⚠️ Unable to activate. Your slot may have expired or already been claimed.',
+          ephemeral: true
         });
       }
     }
   } catch (error) {
     logger.error('Error handling button interaction:', error);
-    
+
     if (!interaction.replied && !interaction.deferred) {
-      await interaction.reply({ 
-        content: 'An error occurred processing your request.', 
-        ephemeral: true 
+      await interaction.reply({
+        content: 'An error occurred processing your request.',
+        ephemeral: true
       });
     }
   }

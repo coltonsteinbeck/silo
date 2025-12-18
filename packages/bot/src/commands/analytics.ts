@@ -20,15 +20,23 @@ export class AnalyticsCommand implements Command {
       .setName('analytics')
       .setDescription('View server analytics and usage statistics')
       .setDMPermission(false)
-      .addStringOption(opt =>
-        opt
-          .setName('period')
-          .setDescription('Time period for analytics')
-          .addChoices(
-            { name: 'Last 24 hours', value: '1d' },
-            { name: 'Last 7 days', value: '7d' },
-            { name: 'Last 30 days', value: '30d' }
+      .addSubcommand(sub =>
+        sub
+          .setName('general')
+          .setDescription('View general server analytics')
+          .addStringOption(opt =>
+            opt
+              .setName('period')
+              .setDescription('Time period for analytics')
+              .addChoices(
+                { name: 'Last 24 hours', value: '1d' },
+                { name: 'Last 7 days', value: '7d' },
+                { name: 'Last 30 days', value: '30d' }
+              )
           )
+      )
+      .addSubcommand(sub =>
+        sub.setName('quotas').setDescription('View server quota usage and limits')
       ) as SlashCommandBuilder;
   }
 
@@ -60,6 +68,13 @@ export class AnalyticsCommand implements Command {
         content: 'You need moderator permissions to view analytics.',
         ephemeral: true
       });
+      return;
+    }
+
+    const subcommand = interaction.options.getSubcommand();
+
+    if (subcommand === 'quotas') {
+      await this.handleQuotasAnalytics(interaction);
       return;
     }
 
@@ -187,6 +202,88 @@ export class AnalyticsCommand implements Command {
       logger.error('Error in analytics command:', error);
       const reply = {
         content: 'An error occurred while loading analytics.',
+        ephemeral: true
+      };
+      if (interaction.deferred) {
+        await interaction.editReply(reply);
+      } else {
+        await interaction.reply(reply);
+      }
+    }
+  }
+
+  private async handleQuotasAnalytics(interaction: ChatInputCommandInteraction): Promise<void> {
+    try {
+      await interaction.deferReply({ ephemeral: true });
+
+      const guildId = interaction.guildId!;
+
+      // Get current usage and limits
+      const [usage, limits] = await Promise.all([
+        this.adminDb.getGuildDailyUsage(guildId),
+        this.adminDb.getGuildQuotaLimits(guildId)
+      ]);
+
+      const currentUsage = usage || {
+        textTokens: 0,
+        images: 0,
+        voiceMinutes: 0,
+        date: new Date()
+      };
+
+      // Calculate percentages and remaining
+      const textPercent = ((currentUsage.textTokens / limits.textTokens) * 100).toFixed(1);
+      const imagePercent = ((currentUsage.images / limits.images) * 100).toFixed(1);
+      const voicePercent = ((currentUsage.voiceMinutes / limits.voiceMinutes) * 100).toFixed(1);
+
+      const textRemaining = Math.max(0, limits.textTokens - currentUsage.textTokens);
+      const imageRemaining = Math.max(0, limits.images - currentUsage.images);
+      const voiceRemaining = Math.max(0, limits.voiceMinutes - currentUsage.voiceMinutes);
+
+      // Determine color based on overall usage
+      const avgPercent =
+        (parseFloat(textPercent) + parseFloat(imagePercent) + parseFloat(voicePercent)) / 3;
+      const embedColor = avgPercent >= 90 ? 0xff0000 : avgPercent >= 75 ? 0xffa500 : 0x00ff00;
+
+      const embed = new EmbedBuilder()
+        .setTitle('📊 Server Quota Usage')
+        .setDescription('Daily quota usage and limits for this server')
+        .setColor(embedColor)
+        .addFields(
+          {
+            name: '📝 Text Generation',
+            value: `**Used:** ${currentUsage.textTokens.toLocaleString()} / ${limits.textTokens.toLocaleString()} tokens\n**Remaining:** ${textRemaining.toLocaleString()} tokens (${textPercent}% used)`,
+            inline: false
+          },
+          {
+            name: '🎨 Image Generation',
+            value: `**Used:** ${currentUsage.images} / ${limits.images} images\n**Remaining:** ${imageRemaining} images (${imagePercent}% used)`,
+            inline: false
+          },
+          {
+            name: '🎤 Voice Minutes',
+            value: `**Used:** ${currentUsage.voiceMinutes} / ${limits.voiceMinutes} minutes\n**Remaining:** ${voiceRemaining} minutes (${voicePercent}% used)`,
+            inline: false
+          }
+        )
+        .setFooter({
+          text: 'Quotas reset daily at midnight UTC • Contact admin to adjust limits'
+        })
+        .setTimestamp();
+
+      await interaction.editReply({ embeds: [embed] });
+
+      // Log analytics access
+      await this.adminDb.logAction({
+        guildId,
+        userId: interaction.user.id,
+        action: 'quotas_viewed',
+        details: { usage: currentUsage, limits }
+      });
+    } catch (error) {
+      logger.error('Error in quotas analytics:', error);
+      const reply = {
+        content: 'An error occurred while loading quota information.',
         ephemeral: true
       };
       if (interaction.deferred) {
