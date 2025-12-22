@@ -83,9 +83,38 @@ class GuildManager {
    * Priority: System channel > First text channel (by position)
    */
   async findWarningChannel(guild: Guild): Promise<TextChannel | null> {
+    // Fetch channels if cache is empty (common on initial join)
+    if (guild.channels.cache.size === 0) {
+      try {
+        console.log(`Fetching channels for ${guild.name} (cache was empty)`);
+        await guild.channels.fetch();
+      } catch (error) {
+        console.error(`Could not fetch channels for ${guild.name}:`, error);
+      }
+    }
+
+    // Ensure we have the bot member - may not be cached on initial join
+    let botMember = guild.members.me;
+    if (!botMember) {
+      try {
+        botMember = await guild.members.fetchMe();
+      } catch (error) {
+        console.error(`Could not fetch bot member for ${guild.name}:`, error);
+        // Fall back to just returning first available text channel
+        const textChannels = guild.channels.cache
+          .filter(c => c.type === ChannelType.GuildText)
+          .sort((a, b) => a.position - b.position);
+
+        if (textChannels.size > 0) {
+          return textChannels.first() as TextChannel;
+        }
+        return null;
+      }
+    }
+
     // Try system channel first
     if (guild.systemChannel && guild.systemChannel.type === ChannelType.GuildText) {
-      const perms = guild.systemChannel.permissionsFor(guild.members.me!);
+      const perms = guild.systemChannel.permissionsFor(botMember);
       if (perms?.has(['SendMessages', 'ViewChannel'])) {
         return guild.systemChannel;
       }
@@ -96,14 +125,23 @@ class GuildManager {
       .filter(c => c.type === ChannelType.GuildText)
       .sort((a, b) => a.position - b.position);
 
+    console.log(`Found ${textChannels.size} text channels in ${guild.name}`);
+
     for (const [, channel] of textChannels) {
       const textChannel = channel as TextChannel;
-      const perms = textChannel.permissionsFor(guild.members.me!);
+      const perms = textChannel.permissionsFor(botMember);
       if (perms?.has(['SendMessages', 'ViewChannel'])) {
         return textChannel;
       }
     }
 
+    // Last resort: return first text channel without permission check
+    if (textChannels.size > 0) {
+      console.warn(`No channels with verified permissions in ${guild.name}, trying first text channel`);
+      return textChannels.first() as TextChannel;
+    }
+
+    console.error(`No text channels found in ${guild.name}`);
     return null;
   }
 
@@ -141,6 +179,12 @@ class GuildManager {
     if (config.isSelfHosted) {
       await this.registerGuild(guildInfo, 'self-hosted');
       const modeLabel = config.isDevelopment ? 'development' : 'self-hosted';
+
+      // Send welcome message (don't await to not block the response)
+      this.sendWelcomeMessage(guild).catch(err => {
+        console.error(`[Welcome] Error sending welcome message:`, err);
+      });
+
       return {
         success: true,
         action: 'self-hosted',
@@ -153,6 +197,12 @@ class GuildManager {
 
     if (canJoin) {
       await this.registerGuild(guildInfo, 'hosted');
+
+      // Send welcome message (don't await to not block the response)
+      this.sendWelcomeMessage(guild).catch(err => {
+        console.error(`[Welcome] Error sending welcome message:`, err);
+      });
+
       return {
         success: true,
         action: 'joined',
@@ -234,6 +284,63 @@ class GuildManager {
   }
 
   /**
+   * Send welcome message when bot joins a guild
+   */
+  private async sendWelcomeMessage(guild: Guild): Promise<void> {
+    console.log(`[Welcome] Attempting to send welcome message to ${guild.name}`);
+
+    try {
+      const channel = await this.findWarningChannel(guild);
+      if (!channel) {
+        console.error(`[Welcome] Could not find a channel to send welcome message in ${guild.name}`);
+        return;
+      }
+
+      console.log(`[Welcome] Found channel #${channel.name} in ${guild.name}`);
+
+      const embed = new EmbedBuilder()
+        .setTitle('👋 Hello! Silo has joined your server!')
+        .setColor(0x5865f2) // Discord blurple
+        .setDescription(
+          `Thanks for adding **Silo** to **${guild.name}**!\n\n` +
+          `I'm an AI-powered bot that can help with conversations, voice chat, image generation, and more.`
+        )
+        .addFields(
+          {
+            name: '🚀 Getting Started',
+            value:
+              '• **@mention me** in any channel to chat\n' +
+              '• Use `/speak` to talk with me in voice channels\n' +
+              '• Use `/draw <prompt>` to generate images\n' +
+              '• Use `/thread` to create AI conversation threads'
+          },
+          {
+            name: '⚙️ Configuration',
+            value:
+              '• `/config view` - See current settings\n' +
+              '• `/config provider` - Change AI provider\n' +
+              '• `/config alerts-channel` - Set where I send status updates\n' +
+              '• `/admin` - View server dashboard'
+          },
+          {
+            name: '💡 Tips',
+            value:
+              '• React with 👍/👎 to give feedback on responses\n' +
+              '• Use `/memory-set` to teach me things to remember\n' +
+              '• Use `/feedback` to report bugs or request features'
+          }
+        )
+        .setFooter({ text: 'Silo AI Bot • Use /help for more commands' })
+        .setTimestamp();
+
+      await channel.send({ embeds: [embed] });
+      console.log(`[Welcome] Sent welcome message to ${guild.name} in #${channel.name}`);
+    } catch (error) {
+      console.error(`[Welcome] Failed to send welcome message to ${guild.name}:`, error);
+    }
+  }
+
+  /**
    * Send waitlist notification to guild with self-host option
    */
   private async sendWaitlistNotification(guild: Guild, position: number): Promise<void> {
@@ -245,8 +352,8 @@ class GuildManager {
       .setColor(0xffa500) // Orange
       .setDescription(
         `Thank you for adding Silo to your server!\n\n` +
-          `Due to high demand, we've reached our current capacity of **5 active guilds**. ` +
-          `Your server has been added to our waitlist.`
+        `Due to high demand, we've reached our current capacity of **5 active guilds**. ` +
+        `Your server has been added to our waitlist.`
       )
       .addFields(
         { name: 'Your Position', value: `#${position}`, inline: true },
@@ -310,7 +417,7 @@ class GuildManager {
             .setColor(0xff0000) // Red
             .setDescription(
               `Due to **30 days of inactivity**, Silo has been deactivated on this server.\n\n` +
-                `Your data will be retained for **30 days** in case you want to return.`
+              `Your data will be retained for **30 days** in case you want to return.`
             )
             .addFields(
               {
@@ -364,7 +471,7 @@ class GuildManager {
             .setColor(0x00ff00) // Green
             .setDescription(
               `Great news! A spot has opened up and **${guild.name}** can now use Silo!\n\n` +
-                `You have **48 hours** to activate your slot by using any Silo command.`
+              `You have **48 hours** to activate your slot by using any Silo command.`
             )
             .addFields(
               {
@@ -441,8 +548,8 @@ class GuildManager {
         .setColor(urgencyColor)
         .setDescription(
           `This server hasn't used Silo in **${daysInactive} days**.\n\n` +
-            `To keep our limited slots available for active communities, ` +
-            `inactive servers are automatically rotated out.`
+          `To keep our limited slots available for active communities, ` +
+          `inactive servers are automatically rotated out.`
         )
         .addFields(
           {

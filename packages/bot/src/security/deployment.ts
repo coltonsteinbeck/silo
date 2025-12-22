@@ -20,15 +20,8 @@
 
 import { hostname } from 'os';
 
-// For official hosted service only - self-hosters should ignore this
-// Set HOSTED_DB_IDENTIFIER env var if you're running your own hosted service
-const HOSTED_DB_IDENTIFIER = process.env.HOSTED_DB_IDENTIFIER || '';
-
 // Maximum concurrent guilds for hosted mode (configurable)
 const MAX_HOSTED_GUILDS = parseInt(process.env.MAX_HOSTED_GUILDS || '5', 10);
-
-// Production hostname (set via PROD_HOSTNAME env var)
-const PROD_HOSTNAME = process.env.PROD_HOSTNAME;
 
 export type DeploymentMode = 'hosted' | 'self-hosted';
 export type EnvironmentType = 'production' | 'development' | 'self-hosted';
@@ -61,12 +54,16 @@ export function detectEnvironment(): EnvironmentType {
   if (nodeEnv === 'development') return 'development';
 
   // 3. Check hostname (auto-detect production server)
+  // Read at runtime to allow tests to modify env vars
+  const prodHostname = process.env.PROD_HOSTNAME;
   const host = hostname().toLowerCase();
-  if (PROD_HOSTNAME && host.includes(PROD_HOSTNAME.toLowerCase())) return 'production';
+  if (prodHostname && host.includes(prodHostname.toLowerCase())) return 'production';
 
   // 4. Check if using a hosted database identifier (for official hosted service)
+  // Read at runtime to allow tests to modify env vars
+  const hostedDbIdentifier = process.env.HOSTED_DB_IDENTIFIER || '';
   const databaseUrl = process.env.DATABASE_URL || '';
-  if (HOSTED_DB_IDENTIFIER && databaseUrl.includes(HOSTED_DB_IDENTIFIER)) {
+  if (hostedDbIdentifier && databaseUrl.includes(hostedDbIdentifier)) {
     return 'development'; // On hosted DB but no prod signals = dev mode
   }
 
@@ -218,6 +215,8 @@ export const deploymentDetector = new DeploymentDetector();
 
 // Export constants for external use
 export const CONSTANTS = {
-  HOSTED_DB_IDENTIFIER,
+  get HOSTED_DB_IDENTIFIER() {
+    return process.env.HOSTED_DB_IDENTIFIER || '';
+  },
   MAX_HOSTED_GUILDS
 } as const;

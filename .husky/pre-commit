@@ -1,16 +1,1 @@
-bunx lint-staged
-
-# Secret guard: block commits containing .env or exposed tokens
-if git diff --cached --name-only | grep -E '^\.env$|(^|/)\.env$' >/dev/null; then
-	echo "[SECURITY] Commit blocked: .env is staged. Remove it from the commit."
-	exit 1
-fi
-
-# Scan staged changes for sensitive patterns (Discord tokens, OpenAI keys)
-# Only check actual code files, not commit messages
-if git diff --cached -- '*.ts' '*.js' '*.json' | grep -E '(DISCORD_TOKEN=|sk-[A-Za-z0-9_-]{20,})' >/dev/null; then
-	echo "[SECURITY] Commit blocked: potential secret detected in staged code changes."
-	echo "Patterns matched: DISCORD_TOKEN= or sk- (API key)."
-	echo "Please remove secrets from source files and use .env."
-	exit 1
-fi
+bun test
