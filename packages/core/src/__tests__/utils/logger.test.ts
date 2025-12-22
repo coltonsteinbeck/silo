@@ -1,6 +1,6 @@
 /**
  * Tests for Logger
- * 
+ *
  * Tests logging functionality and level filtering.
  */
 
@@ -15,7 +15,7 @@ class TestableLogger {
   setLevel(level: LogLevel): void {
     this.minLevel = level;
   }
-  
+
   getLevel(): LogLevel {
     return this.minLevel;
   }
@@ -48,7 +48,7 @@ class TestableLogger {
       console.error(`[ERROR] ${message}`, ...args);
     }
   }
-  
+
   // Test helper to check if a level would log
   wouldLog(level: LogLevel): boolean {
     return this.shouldLog(level);
@@ -105,7 +105,7 @@ describe('Logger', () => {
   describe('level filtering', () => {
     test('info level logs info, warn, error', () => {
       logger.setLevel('info');
-      
+
       expect(logger.wouldLog('debug')).toBe(false);
       expect(logger.wouldLog('info')).toBe(true);
       expect(logger.wouldLog('warn')).toBe(true);
@@ -114,7 +114,7 @@ describe('Logger', () => {
 
     test('debug level logs everything', () => {
       logger.setLevel('debug');
-      
+
       expect(logger.wouldLog('debug')).toBe(true);
       expect(logger.wouldLog('info')).toBe(true);
       expect(logger.wouldLog('warn')).toBe(true);
@@ -123,7 +123,7 @@ describe('Logger', () => {
 
     test('warn level logs warn and error', () => {
       logger.setLevel('warn');
-      
+
       expect(logger.wouldLog('debug')).toBe(false);
       expect(logger.wouldLog('info')).toBe(false);
       expect(logger.wouldLog('warn')).toBe(true);
@@ -132,7 +132,7 @@ describe('Logger', () => {
 
     test('error level logs only errors', () => {
       logger.setLevel('error');
-      
+
       expect(logger.wouldLog('debug')).toBe(false);
       expect(logger.wouldLog('info')).toBe(false);
       expect(logger.wouldLog('warn')).toBe(false);
@@ -144,21 +144,21 @@ describe('Logger', () => {
     test('logs when level is debug', () => {
       logger.setLevel('debug');
       logger.debug('Test debug message');
-      
+
       expect(consoleMocks.debug).toHaveBeenCalled();
     });
 
     test('does not log when level is info', () => {
       logger.setLevel('info');
       logger.debug('Test debug message');
-      
+
       expect(consoleMocks.debug).not.toHaveBeenCalled();
     });
 
     test('includes message with DEBUG prefix', () => {
       logger.setLevel('debug');
       logger.debug('Test message');
-      
+
       expect(consoleMocks.debug.mock.calls[0][0]).toContain('[DEBUG]');
       expect(consoleMocks.debug.mock.calls[0][0]).toContain('Test message');
     });
@@ -168,21 +168,21 @@ describe('Logger', () => {
     test('logs when level is info or lower', () => {
       logger.setLevel('info');
       logger.info('Test info message');
-      
+
       expect(consoleMocks.info).toHaveBeenCalled();
     });
 
     test('does not log when level is warn', () => {
       logger.setLevel('warn');
       logger.info('Test info message');
-      
+
       expect(consoleMocks.info).not.toHaveBeenCalled();
     });
 
     test('includes message with INFO prefix', () => {
       logger.setLevel('info');
       logger.info('Test message');
-      
+
       expect(consoleMocks.info.mock.calls[0][0]).toContain('[INFO]');
     });
   });
@@ -191,21 +191,21 @@ describe('Logger', () => {
     test('logs when level is warn or lower', () => {
       logger.setLevel('warn');
       logger.warn('Test warn message');
-      
+
       expect(consoleMocks.warn).toHaveBeenCalled();
     });
 
     test('does not log when level is error', () => {
       logger.setLevel('error');
       logger.warn('Test warn message');
-      
+
       expect(consoleMocks.warn).not.toHaveBeenCalled();
     });
 
     test('includes message with WARN prefix', () => {
       logger.setLevel('info');
       logger.warn('Test message');
-      
+
       expect(consoleMocks.warn.mock.calls[0][0]).toContain('[WARN]');
     });
   });
@@ -214,14 +214,14 @@ describe('Logger', () => {
     test('always logs errors', () => {
       logger.setLevel('error');
       logger.error('Test error message');
-      
+
       expect(consoleMocks.error).toHaveBeenCalled();
     });
 
     test('includes message with ERROR prefix', () => {
       logger.setLevel('info');
       logger.error('Test message');
-      
+
       expect(consoleMocks.error.mock.calls[0][0]).toContain('[ERROR]');
     });
   });
@@ -231,14 +231,14 @@ describe('Logger', () => {
       logger.setLevel('debug');
       const extraArg = { key: 'value' };
       logger.debug('Test message', extraArg);
-      
+
       expect(consoleMocks.debug.mock.calls[0][1]).toBe(extraArg);
     });
 
     test('handles multiple additional arguments', () => {
       logger.setLevel('info');
       logger.info('Test', 'arg1', 'arg2', 'arg3');
-      
+
       expect(consoleMocks.info.mock.calls[0]).toHaveLength(4);
     });
   });

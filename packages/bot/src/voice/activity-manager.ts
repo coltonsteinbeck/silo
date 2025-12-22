@@ -47,7 +47,7 @@ export class VoiceActivityManager {
     type: VoiceActivityType
   ): VoiceActivity {
     const key = this.getKey(guildId, userId);
-    
+
     // Check if user already has an activity
     if (this.activities.has(key)) {
       throw new Error('User already has an active voice activity');
@@ -96,9 +96,7 @@ export class VoiceActivityManager {
    * Get count of speaking users in a channel
    */
   getSpeakingCount(guildId: string, channelId: string): number {
-    return this.getChannelActivities(guildId, channelId)
-      .filter(a => a.type === 'speaking')
-      .length;
+    return this.getChannelActivities(guildId, channelId).filter(a => a.type === 'speaking').length;
   }
 
   /**

@@ -1,6 +1,6 @@
 /**
  * Tests for Speak Command
- * 
+ *
  * Tests voice channel join functionality.
  */
 
@@ -10,7 +10,7 @@ import { SpeakCommand } from '../../commands/speak';
 
 describe('SpeakCommand', () => {
   let command: SpeakCommand;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   let mockAdminDb: any;
 
   beforeEach(() => {
@@ -53,7 +53,6 @@ describe('SpeakCommand', () => {
         member: mockMember as any
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       const reply = interaction._getReplies()[0];
@@ -80,7 +79,6 @@ describe('SpeakCommand', () => {
         member: mockMember as any
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       const reply = interaction._getReplies()[0];

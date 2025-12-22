@@ -1,6 +1,6 @@
 /**
  * Tests for Memory Commands
- * 
+ *
  * Tests view, set, and clear memory commands.
  */
 
@@ -12,7 +12,7 @@ import { ClearMemoryCommand } from '../../commands/memory/clear';
 
 describe('ViewMemoryCommand', () => {
   let command: ViewMemoryCommand;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   let mockDb: any;
 
   beforeEach(() => {
@@ -37,7 +37,6 @@ describe('ViewMemoryCommand', () => {
         options: {}
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
@@ -50,7 +49,6 @@ describe('ViewMemoryCommand', () => {
         options: {}
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       const reply = interaction._getReplies()[0];
@@ -72,7 +70,6 @@ describe('ViewMemoryCommand', () => {
         options: {}
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       const reply = interaction._getReplies()[0] as { embeds: unknown[] };
@@ -87,7 +84,6 @@ describe('ViewMemoryCommand', () => {
         }
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       expect(mockDb.getUserMemories).toHaveBeenCalledWith('111222333', 'preference');
@@ -109,7 +105,6 @@ describe('ViewMemoryCommand', () => {
         options: {}
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       // Should complete without error and truncate content
@@ -120,16 +115,18 @@ describe('ViewMemoryCommand', () => {
 
 describe('SetMemoryCommand', () => {
   let command: SetMemoryCommand;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   let mockDb: any;
 
   beforeEach(() => {
     mockDb = createMockDatabaseAdapter();
-    mockDb.storeUserMemory = mock(async (opts: { userId: string; memoryContent: string; contextType: string }) => ({
-      id: 'new-memory-id',
-      ...opts,
-      createdAt: new Date()
-    }));
+    mockDb.storeUserMemory = mock(
+      async (opts: { userId: string; memoryContent: string; contextType: string }) => ({
+        id: 'new-memory-id',
+        ...opts,
+        createdAt: new Date()
+      })
+    );
     command = new SetMemoryCommand(mockDb);
   });
 
@@ -148,7 +145,6 @@ describe('SetMemoryCommand', () => {
         }
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       expect(mockDb.storeUserMemory).toHaveBeenCalled();
@@ -165,7 +161,6 @@ describe('SetMemoryCommand', () => {
         }
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       expect(mockDb.storeUserMemory).toHaveBeenCalled();
@@ -177,16 +172,13 @@ describe('SetMemoryCommand', () => {
 
 describe('ClearMemoryCommand', () => {
   let command: ClearMemoryCommand;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   let mockDb: any;
 
   beforeEach(() => {
     mockDb = createMockDatabaseAdapter();
     mockDb.deleteUserMemory = mock(async () => {});
-    mockDb.getUserMemories = mock(async () => [
-      { id: 'mem1' },
-      { id: 'mem2' }
-    ]);
+    mockDb.getUserMemories = mock(async () => [{ id: 'mem1' }, { id: 'mem2' }]);
     command = new ClearMemoryCommand(mockDb);
   });
 
@@ -202,7 +194,6 @@ describe('ClearMemoryCommand', () => {
         options: {}
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       const reply = interaction._getReplies()[0];
@@ -216,7 +207,6 @@ describe('ClearMemoryCommand', () => {
         }
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       expect(mockDb.deleteUserMemory).toHaveBeenCalledWith('specific-memory-id');
@@ -231,7 +221,6 @@ describe('ClearMemoryCommand', () => {
         }
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       expect(mockDb.getUserMemories).toHaveBeenCalled();

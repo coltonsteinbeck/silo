@@ -1,6 +1,6 @@
 /**
  * Tests for Config Loader and Schema
- * 
+ *
  * Tests configuration validation, schema parsing,
  * and error handling for invalid configurations.
  */

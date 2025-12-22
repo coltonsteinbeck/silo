@@ -1,6 +1,6 @@
 /**
  * Tests for Feedback Command
- * 
+ *
  * Tests feedback submission functionality.
  */
 
@@ -10,7 +10,7 @@ import { FeedbackCommand } from '../../commands/feedback';
 
 describe('FeedbackCommand', () => {
   let command: FeedbackCommand;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   let mockAdminDb: any;
 
   beforeEach(() => {
@@ -47,7 +47,6 @@ describe('FeedbackCommand', () => {
       });
       interaction.options.getString = mock(() => 'bug');
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       expect(interaction.showModal).toHaveBeenCalled();

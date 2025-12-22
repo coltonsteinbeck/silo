@@ -1,6 +1,6 @@
 /**
  * Tests for StopSpeaking Command
- * 
+ *
  * Tests voice session termination command.
  * Note: Full execute tests require mocking voiceSessionManager
  * which has complex dependencies on Discord.js voice connections.

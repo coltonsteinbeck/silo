@@ -1,6 +1,6 @@
 /**
  * Tests for Inactivity Scheduler
- * 
+ *
  * Tests guild inactivity detection, warnings, and eviction logic.
  */
 
@@ -26,54 +26,55 @@ const mockDeploymentConfig = {
 class MockInactivityScheduler {
   private isRunning = false;
   private lastCheck: Date | null = null;
-  
+
   // Configurable thresholds for testing
   private readonly WARNING_THRESHOLD_DAYS = 25;
   private readonly EVICTION_THRESHOLD_DAYS = 30;
-  
+
   start(): boolean {
     if (this.isRunning) {
       return false;
     }
-    
+
     if (mockDeploymentConfig.isSelfHosted) {
       return false;
     }
-    
+
     this.isRunning = true;
     return true;
   }
-  
+
   stop(): void {
     this.isRunning = false;
   }
-  
+
   isSchedulerRunning(): boolean {
     return this.isRunning;
   }
-  
+
   /**
    * Determine if a guild needs a warning (25-29 days inactive)
    */
   needsWarning(daysInactive: number): boolean {
-    return daysInactive >= this.WARNING_THRESHOLD_DAYS && 
-           daysInactive < this.EVICTION_THRESHOLD_DAYS;
+    return (
+      daysInactive >= this.WARNING_THRESHOLD_DAYS && daysInactive < this.EVICTION_THRESHOLD_DAYS
+    );
   }
-  
+
   /**
    * Determine if a guild should be evicted (30+ days inactive)
    */
   shouldEvict(daysInactive: number): boolean {
     return daysInactive >= this.EVICTION_THRESHOLD_DAYS;
   }
-  
+
   /**
    * Calculate warning urgency (days until eviction)
    */
   getDaysUntilEviction(daysInactive: number): number {
     return Math.max(0, this.EVICTION_THRESHOLD_DAYS - daysInactive);
   }
-  
+
   /**
    * Categorize guilds by inactivity status
    */
@@ -88,11 +89,11 @@ class MockInactivityScheduler {
       active: guilds.filter(g => g.days_inactive < this.WARNING_THRESHOLD_DAYS)
     };
   }
-  
+
   setLastCheck(date: Date): void {
     this.lastCheck = date;
   }
-  
+
   getLastCheck(): Date | null {
     return this.lastCheck;
   }
@@ -110,18 +111,18 @@ describe('InactivityScheduler', () => {
   describe('start/stop', () => {
     test('can start scheduler in hosted mode', () => {
       mockDeploymentConfig.isSelfHosted = false;
-      
+
       const started = scheduler.start();
-      
+
       expect(started).toBe(true);
       expect(scheduler.isSchedulerRunning()).toBe(true);
     });
 
     test('does not start in self-hosted mode', () => {
       mockDeploymentConfig.isSelfHosted = true;
-      
+
       const started = scheduler.start();
-      
+
       expect(started).toBe(false);
       expect(scheduler.isSchedulerRunning()).toBe(false);
     });
@@ -129,14 +130,14 @@ describe('InactivityScheduler', () => {
     test('prevents double-start', () => {
       scheduler.start();
       const secondStart = scheduler.start();
-      
+
       expect(secondStart).toBe(false);
     });
 
     test('can stop running scheduler', () => {
       scheduler.start();
       scheduler.stop();
-      
+
       expect(scheduler.isSchedulerRunning()).toBe(false);
     });
   });
@@ -190,11 +191,17 @@ describe('InactivityScheduler', () => {
   describe('categorizeGuilds', () => {
     test('correctly categorizes active guilds', () => {
       const guilds: InactiveGuild[] = [
-        { guild_id: '1', guild_name: 'Active', warning_channel_id: null, days_inactive: 5, owner_id: 'o1' }
+        {
+          guild_id: '1',
+          guild_name: 'Active',
+          warning_channel_id: null,
+          days_inactive: 5,
+          owner_id: 'o1'
+        }
       ];
-      
+
       const result = scheduler.categorizeGuilds(guilds);
-      
+
       expect(result.active).toHaveLength(1);
       expect(result.warning).toHaveLength(0);
       expect(result.eviction).toHaveLength(0);
@@ -202,11 +209,17 @@ describe('InactivityScheduler', () => {
 
     test('correctly categorizes warning guilds', () => {
       const guilds: InactiveGuild[] = [
-        { guild_id: '1', guild_name: 'Warning', warning_channel_id: null, days_inactive: 27, owner_id: 'o1' }
+        {
+          guild_id: '1',
+          guild_name: 'Warning',
+          warning_channel_id: null,
+          days_inactive: 27,
+          owner_id: 'o1'
+        }
       ];
-      
+
       const result = scheduler.categorizeGuilds(guilds);
-      
+
       expect(result.active).toHaveLength(0);
       expect(result.warning).toHaveLength(1);
       expect(result.eviction).toHaveLength(0);
@@ -214,11 +227,17 @@ describe('InactivityScheduler', () => {
 
     test('correctly categorizes eviction guilds', () => {
       const guilds: InactiveGuild[] = [
-        { guild_id: '1', guild_name: 'Evict', warning_channel_id: null, days_inactive: 35, owner_id: 'o1' }
+        {
+          guild_id: '1',
+          guild_name: 'Evict',
+          warning_channel_id: null,
+          days_inactive: 35,
+          owner_id: 'o1'
+        }
       ];
-      
+
       const result = scheduler.categorizeGuilds(guilds);
-      
+
       expect(result.active).toHaveLength(0);
       expect(result.warning).toHaveLength(0);
       expect(result.eviction).toHaveLength(1);
@@ -226,16 +245,52 @@ describe('InactivityScheduler', () => {
 
     test('handles mixed guild statuses', () => {
       const guilds: InactiveGuild[] = [
-        { guild_id: '1', guild_name: 'Active1', warning_channel_id: null, days_inactive: 5, owner_id: 'o1' },
-        { guild_id: '2', guild_name: 'Active2', warning_channel_id: null, days_inactive: 15, owner_id: 'o2' },
-        { guild_id: '3', guild_name: 'Warning1', warning_channel_id: null, days_inactive: 25, owner_id: 'o3' },
-        { guild_id: '4', guild_name: 'Warning2', warning_channel_id: null, days_inactive: 29, owner_id: 'o4' },
-        { guild_id: '5', guild_name: 'Evict1', warning_channel_id: null, days_inactive: 30, owner_id: 'o5' },
-        { guild_id: '6', guild_name: 'Evict2', warning_channel_id: null, days_inactive: 45, owner_id: 'o6' }
+        {
+          guild_id: '1',
+          guild_name: 'Active1',
+          warning_channel_id: null,
+          days_inactive: 5,
+          owner_id: 'o1'
+        },
+        {
+          guild_id: '2',
+          guild_name: 'Active2',
+          warning_channel_id: null,
+          days_inactive: 15,
+          owner_id: 'o2'
+        },
+        {
+          guild_id: '3',
+          guild_name: 'Warning1',
+          warning_channel_id: null,
+          days_inactive: 25,
+          owner_id: 'o3'
+        },
+        {
+          guild_id: '4',
+          guild_name: 'Warning2',
+          warning_channel_id: null,
+          days_inactive: 29,
+          owner_id: 'o4'
+        },
+        {
+          guild_id: '5',
+          guild_name: 'Evict1',
+          warning_channel_id: null,
+          days_inactive: 30,
+          owner_id: 'o5'
+        },
+        {
+          guild_id: '6',
+          guild_name: 'Evict2',
+          warning_channel_id: null,
+          days_inactive: 45,
+          owner_id: 'o6'
+        }
       ];
-      
+
       const result = scheduler.categorizeGuilds(guilds);
-      
+
       expect(result.active).toHaveLength(2);
       expect(result.warning).toHaveLength(2);
       expect(result.eviction).toHaveLength(2);
@@ -243,7 +298,7 @@ describe('InactivityScheduler', () => {
 
     test('handles empty guild list', () => {
       const result = scheduler.categorizeGuilds([]);
-      
+
       expect(result.active).toHaveLength(0);
       expect(result.warning).toHaveLength(0);
       expect(result.eviction).toHaveLength(0);
@@ -254,7 +309,7 @@ describe('InactivityScheduler', () => {
     test('tracks last check time', () => {
       const checkTime = new Date();
       scheduler.setLastCheck(checkTime);
-      
+
       expect(scheduler.getLastCheck()).toBe(checkTime);
     });
 

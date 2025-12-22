@@ -1,18 +1,22 @@
 /**
  * Tests for Admin Command
- * 
+ *
  * Tests admin control panel command.
  */
 
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
-import { createMockInteraction, createMockAdminAdapter, createMockPermissionManager } from '@silo/core/test-setup';
+import {
+  createMockInteraction,
+  createMockAdminAdapter,
+  createMockPermissionManager
+} from '@silo/core/test-setup';
 import { AdminCommand } from '../../commands/admin';
 
 describe('AdminCommand', () => {
   let command: AdminCommand;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   let mockAdminDb: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   let mockPermissions: any;
 
   beforeEach(() => {
@@ -27,7 +31,9 @@ describe('AdminCommand', () => {
     });
 
     test('has correct description', () => {
-      expect(command.data.description).toBe('Admin control panel with bot statistics and server info');
+      expect(command.data.description).toBe(
+        'Admin control panel with bot statistics and server info'
+      );
     });
 
     test('is not allowed in DMs', () => {
@@ -44,7 +50,6 @@ describe('AdminCommand', () => {
       // @ts-expect-error - mock doesn't have all properties
       interaction.guildId = null;
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       const reply = interaction._getReplies()[0];
@@ -66,7 +71,6 @@ describe('AdminCommand', () => {
       });
       Object.setPrototypeOf(interaction.member, { constructor: { name: 'GuildMember' } });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       // Expect some reply was made (permission denied or error)
@@ -87,7 +91,6 @@ describe('AdminCommand', () => {
 
       const interaction = createMockInteraction();
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       // Command should complete and produce some response

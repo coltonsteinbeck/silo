@@ -51,7 +51,7 @@ export class VoiceSessionManager {
    */
   async joinChannel(channel: VoiceBasedChannel): Promise<VoiceConnection> {
     const guildId = channel.guild.id;
-    
+
     // Check if already in this channel
     const existing = this.sessions.get(guildId);
     if (existing && existing.channelId === channel.id) {
@@ -72,12 +72,36 @@ export class VoiceSessionManager {
       selfMute: false
     });
 
+    console.log(
+      `[VoiceSessionManager] Attempting to join channel ${channel.id} (${channel.name}), current state: ${connection.state.status}`
+    );
+
+    // Log state changes for debugging
+    connection.on('stateChange', (oldState: { status: string }, newState: { status: string }) => {
+      console.log(
+        `[VoiceSessionManager] Connection state change: ${oldState.status} -> ${newState.status}`
+      );
+    });
+
+    connection.on('error', (error: Error) => {
+      console.error('[VoiceSessionManager] Connection error:', error);
+    });
+
     // Wait for connection to be ready
     try {
       await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
-    } catch {
+      console.log(
+        `[VoiceSessionManager] Successfully connected to channel ${channel.id} (${channel.name})`
+      );
+    } catch (error) {
+      console.error(
+        `[VoiceSessionManager] Connection timeout. Final state: ${connection.state.status}`,
+        error
+      );
       connection.destroy();
-      throw new Error('Failed to connect to voice channel within 30 seconds');
+      throw new Error(
+        `Failed to connect to voice channel within 30 seconds. Bot may need "Connect" and "Speak" permissions in ${channel.name}.`
+      );
     }
 
     // Handle disconnection
@@ -136,10 +160,12 @@ export class VoiceSessionManager {
     const realtimeSession = new RealtimeSession(apiKey, userId, {
       voice: options?.voice || 'alloy',
       instructions: options?.instructions,
-      onAudioResponse: options?.onAudioResponse || ((_audio) => {
-        // Default: play through the connection
-        this.playAudio(guildId, _audio);
-      }),
+      onAudioResponse:
+        options?.onAudioResponse ||
+        (_audio => {
+          // Default: play through the connection
+          this.playAudio(guildId, _audio);
+        }),
       onError: (error: Error) => {
         console.error(`[Voice] Realtime session error for user ${userId}:`, error);
         this.stopSpeaking(guildId, userId);

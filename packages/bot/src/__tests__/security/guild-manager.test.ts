@@ -1,6 +1,6 @@
 /**
  * Tests for Guild Manager
- * 
+ *
  * Tests guild onboarding, waitlist, and eviction logic.
  */
 
@@ -17,42 +17,43 @@ const mockDeploymentConfig = {
 // Create a mock pool
 function createSimpleMockPool() {
   return {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    query: mock(async (_sql: string, _params?: unknown[]): Promise<{ rows: any[]; rowCount: number }> => ({
-      rows: [{ count: 0 }],
-      rowCount: 1
-    }))
+    query: mock(
+      async (_sql: string, _params?: unknown[]): Promise<{ rows: any[]; rowCount: number }> => ({
+        rows: [{ count: 0 }],
+        rowCount: 1
+      })
+    )
   };
 }
 
 // Create a mock guild manager for testing
 class MockGuildManager {
   private pool: ReturnType<typeof createSimpleMockPool> | null = null;
-  
+
   init(pool: ReturnType<typeof createSimpleMockPool>, _client: unknown): void {
     this.pool = pool;
   }
-  
+
   setClient(_client: unknown): void {
     // Client not used in tests
   }
-  
+
   setPool(pool: ReturnType<typeof createSimpleMockPool>): void {
     this.pool = pool;
   }
-  
+
   async getActiveGuildCount(): Promise<number> {
     if (!this.pool) throw new Error('Not initialized');
     const result = await this.pool.query('SELECT count FROM guilds', []);
     return result.rows[0]?.count ?? 0;
   }
-  
+
   async canJoinGuild(): Promise<boolean> {
     if (mockDeploymentConfig.isSelfHosted) return true;
     const activeCount = await this.getActiveGuildCount();
     return activeCount < mockDeploymentConfig.maxGuilds;
   }
-  
+
   getConfig() {
     return mockDeploymentConfig;
   }
@@ -71,7 +72,7 @@ describe('GuildManager', () => {
     };
     guildManager = new MockGuildManager();
     guildManager.init(mockPool, mockClient);
-    
+
     // Reset deployment config
     mockDeploymentConfig.isProduction = false;
     mockDeploymentConfig.isDevelopment = true;
@@ -111,7 +112,7 @@ describe('GuildManager', () => {
       mockDeploymentConfig.isSelfHosted = false;
       mockDeploymentConfig.isProduction = true;
       mockDeploymentConfig.maxGuilds = 100;
-      
+
       mockPool.query = mock(async () => ({ rows: [{ count: 50 }], rowCount: 1 }));
 
       const canJoin = await guildManager.canJoinGuild();
@@ -122,7 +123,7 @@ describe('GuildManager', () => {
       mockDeploymentConfig.isSelfHosted = false;
       mockDeploymentConfig.isProduction = true;
       mockDeploymentConfig.maxGuilds = 100;
-      
+
       mockPool.query = mock(async () => ({ rows: [{ count: 100 }], rowCount: 1 }));
 
       const canJoin = await guildManager.canJoinGuild();
@@ -147,7 +148,7 @@ describe('GuildManager', () => {
 
     test('throws when not initialized', async () => {
       const uninitializedManager = new MockGuildManager();
-      
+
       await expect(uninitializedManager.getActiveGuildCount()).rejects.toThrow('Not initialized');
     });
   });

@@ -74,30 +74,57 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
       throw new Error('OpenAI provider not configured');
     }
 
-    // gpt-image-1 supports different quality levels: low, medium, high
-    const quality = options?.quality || 'medium';
-    
-    const response = await this.client.images.generate({
-      model: options?.model || this.defaultImageModel,
-      prompt,
-      n: 1,
-      size: (options?.size as '1024x1024' | '1536x1024' | '1024x1536' | 'auto') || '1024x1024',
-      quality: quality as 'low' | 'medium' | 'high'
-    });
+    try {
+      console.log('[OpenAI] Generating image:', {
+        model: options?.model || this.defaultImageModel,
+        prompt: prompt.substring(0, 100),
+        size: options?.size,
+        quality: options?.quality
+      });
 
-    if (!response.data || response.data.length === 0) {
-      throw new Error('No image data from OpenAI');
+      const response = await this.client.images.generate({
+        model: options?.model || this.defaultImageModel,
+        prompt,
+        n: 1,
+        size: (options?.size as '1024x1024' | '1792x1024' | '1024x1792') || '1024x1024',
+        quality: (options?.quality as 'auto' | 'high' | 'medium' | 'low') || 'auto'
+      });
+
+      // Response received successfully
+
+      if (!response.data || response.data.length === 0) {
+        throw new Error('No image data from OpenAI');
+      }
+
+      const image = response.data[0];
+      if (!image) {
+        throw new Error('No image in response');
+      }
+
+      // GPT image models return base64-encoded images, not URLs
+      if (image.b64_json) {
+        return {
+          url: `data:image/png;base64,${image.b64_json}`,
+          revisedPrompt: image.revised_prompt
+        };
+      }
+
+      // dall-e models return URLs
+      if (!image.url) {
+        throw new Error('No image URL from OpenAI');
+      }
+
+      return {
+        url: image.url,
+        revisedPrompt: image.revised_prompt
+      };
+    } catch (error) {
+      console.error('[OpenAI] Image generation failed:', error);
+      if (error instanceof Error) {
+        throw new Error(`OpenAI image generation failed: ${error.message}`);
+      }
+      throw error;
     }
-
-    const image = response.data[0];
-    if (!image?.url) {
-      throw new Error('No image URL from OpenAI');
-    }
-
-    return {
-      url: image.url,
-      revisedPrompt: image.revised_prompt
-    };
   }
 
   async analyzeImage(

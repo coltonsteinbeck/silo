@@ -71,7 +71,7 @@ export class DigestCommand implements Command {
             allMessages.push(`${msg.author.username}: ${msg.content.slice(0, 200)}`);
           }
         }
-      } catch (error) {
+      } catch (_error) {
         // Skip channels we can't access
         continue;
       }

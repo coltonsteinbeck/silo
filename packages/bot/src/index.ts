@@ -1,3 +1,24 @@
+// Load encryption libraries FIRST, before any other imports
+// Required for @discordjs/voice to detect encryption support
+/* eslint-disable @typescript-eslint/no-require-imports */
+try {
+  require('sodium-native');
+  console.log('[Crypto] Loaded sodium-native for voice encryption');
+} catch {
+  try {
+    require('libsodium-wrappers');
+    console.log('[Crypto] Loaded libsodium-wrappers for voice encryption');
+  } catch {
+    try {
+      require('tweetnacl');
+      console.log('[Crypto] Loaded tweetnacl for voice encryption (fallback)');
+    } catch {
+      console.error('[Crypto] No encryption library found. Voice features will not work.');
+    }
+  }
+}
+/* eslint-enable @typescript-eslint/no-require-imports */
+
 import {
   Client,
   GatewayIntentBits,

@@ -1,6 +1,6 @@
 /**
  * Tests for Thread Command
- * 
+ *
  * Tests AI conversation thread creation.
  */
 
@@ -10,9 +10,9 @@ import { ThreadCommand } from '../../commands/thread';
 
 describe('ThreadCommand', () => {
   let command: ThreadCommand;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   let mockDb: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   let mockRegistry: any;
 
   beforeEach(() => {
@@ -55,7 +55,6 @@ describe('ThreadCommand', () => {
       // @ts-expect-error - remove channel
       interaction.channel = null;
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       expect(interaction.deferReply).toHaveBeenCalled();
@@ -78,11 +77,12 @@ describe('ThreadCommand', () => {
       const interaction = createMockInteraction({
         options: { name: 'AI discussion' }
       });
-      interaction.options.getString = mock((name: string) => name === 'name' ? 'AI discussion' : null);
+      interaction.options.getString = mock((name: string) =>
+        name === 'name' ? 'AI discussion' : null
+      );
       // @ts-expect-error - adding mock channel
       interaction.channel = mockChannel;
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       expect(interaction.deferReply).toHaveBeenCalled();

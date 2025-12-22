@@ -1,6 +1,6 @@
 /**
  * Tests for Provider Registry
- * 
+ *
  * Tests provider initialization, selection, and availability checking.
  */
 
@@ -44,7 +44,7 @@ describe('ProviderRegistry', () => {
     test('initializes with no providers', () => {
       const config = createMinimalConfig();
       const registry = new ProviderRegistry(config as any);
-      
+
       const available = registry.getAvailableProviders();
       expect(available.text).toHaveLength(0);
       expect(available.image).toHaveLength(0);
@@ -60,7 +60,7 @@ describe('ProviderRegistry', () => {
         }
       });
       const registry = new ProviderRegistry(config as any);
-      
+
       const available = registry.getAvailableProviders();
       expect(available.text).toContain('openai');
       expect(available.image).toContain('openai');
@@ -76,7 +76,7 @@ describe('ProviderRegistry', () => {
         }
       });
       const registry = new ProviderRegistry(config as any);
-      
+
       const available = registry.getAvailableProviders();
       expect(available.text).toContain('anthropic');
       // Anthropic doesn't provide image generation
@@ -97,7 +97,7 @@ describe('ProviderRegistry', () => {
         }
       });
       const registry = new ProviderRegistry(config as any);
-      
+
       const available = registry.getAvailableProviders();
       expect(available.text).toContain('openai');
       expect(available.text).toContain('anthropic');
@@ -113,7 +113,7 @@ describe('ProviderRegistry', () => {
         }
       });
       const registry = new ProviderRegistry(config as any);
-      
+
       const provider = registry.getTextProvider('anthropic');
       expect(provider.name).toBe('anthropic');
     });
@@ -125,7 +125,7 @@ describe('ProviderRegistry', () => {
         }
       });
       const registry = new ProviderRegistry(config as any);
-      
+
       const provider = registry.getTextProvider();
       expect(provider.name).toBe('openai');
     });
@@ -133,7 +133,7 @@ describe('ProviderRegistry', () => {
     test('throws when no provider configured', () => {
       const config = createMinimalConfig();
       const registry = new ProviderRegistry(config as any);
-      
+
       expect(() => registry.getTextProvider()).toThrow('No text provider configured');
     });
 
@@ -144,7 +144,7 @@ describe('ProviderRegistry', () => {
         }
       });
       const registry = new ProviderRegistry(config as any);
-      
+
       // Request nonexistent provider, should fall back
       const provider = registry.getTextProvider('nonexistent');
       expect(provider.name).toBe('openai');
@@ -159,7 +159,7 @@ describe('ProviderRegistry', () => {
         }
       });
       const registry = new ProviderRegistry(config as any);
-      
+
       const provider = registry.getImageProvider();
       expect(provider.name).toBe('openai');
     });
@@ -171,7 +171,7 @@ describe('ProviderRegistry', () => {
         }
       });
       const registry = new ProviderRegistry(config as any);
-      
+
       expect(() => registry.getImageProvider()).toThrow('No image provider configured');
     });
   });
@@ -180,7 +180,7 @@ describe('ProviderRegistry', () => {
     test('returns empty arrays when no providers', () => {
       const config = createMinimalConfig();
       const registry = new ProviderRegistry(config as any);
-      
+
       const available = registry.getAvailableProviders();
       expect(available.text).toEqual([]);
       expect(available.image).toEqual([]);
@@ -194,7 +194,7 @@ describe('ProviderRegistry', () => {
         }
       });
       const registry = new ProviderRegistry(config as any);
-      
+
       const available = registry.getAvailableProviders();
       expect(available.text).toHaveLength(2);
       expect(available.image).toHaveLength(1); // Only OpenAI supports images

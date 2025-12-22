@@ -1,6 +1,6 @@
 /**
  * Test Setup and Mock Factories
- * 
+ *
  * Provides mock implementations for Discord.js, database adapters,
  * and other dependencies used across unit tests.
  */
@@ -55,7 +55,7 @@ export function createMockInteraction(opts: MockInteractionOptions = {}) {
     member: member ?? createMockGuildMember({ id: userId }),
     replied: replied.value,
     deferred: deferred.value,
-    
+
     options: {
       getString: mock((name: string, _required?: boolean) => options[name] as string | null),
       getInteger: mock((name: string, _required?: boolean) => options[name] as number | null),
@@ -64,41 +64,43 @@ export function createMockInteraction(opts: MockInteractionOptions = {}) {
       getUser: mock((name: string, _required?: boolean) => options[name] ?? null),
       getChannel: mock((name: string, _required?: boolean) => options[name] ?? null),
       getSubcommand: mock(() => options['subcommand'] as string),
-      getSubcommandGroup: mock(() => options['subcommandGroup'] as string | null),
+      getSubcommandGroup: mock(() => options['subcommandGroup'] as string | null)
     },
-    
+
     reply: mock(async (content: unknown) => {
       replied.value = true;
       replies.push(content);
       return content;
     }),
-    
+
     editReply: mock(async (content: unknown) => {
       replies.push(content);
       return content;
     }),
-    
+
     deferReply: mock(async (_opts?: { ephemeral?: boolean }) => {
       deferred.value = true;
     }),
-    
+
     followUp: mock(async (content: unknown) => {
       replies.push(content);
       return content;
     }),
-    
+
     showModal: mock(async (_modal: unknown) => {}),
-    
+
     // Test helpers
     _getReplies: () => replies,
     _isReplied: () => replied.value,
-    _isDeferred: () => deferred.value,
+    _isDeferred: () => deferred.value
   };
 }
 
-export function createMockGuildMember(opts: { id?: string; isAdmin?: boolean } = {}): MockGuildMember {
+export function createMockGuildMember(
+  opts: { id?: string; isAdmin?: boolean } = {}
+): MockGuildMember {
   const { id = '111222333', isAdmin = false } = opts;
-  
+
   return {
     id,
     permissions: {
@@ -129,14 +131,14 @@ export function createMockPool() {
       queryIndex++;
       return result;
     }),
-    
+
     connect: mock(async () => ({
       query: mock(async () => ({ rows: [], rowCount: 0 })),
       release: mock(() => {})
     })),
-    
+
     end: mock(async () => {}),
-    
+
     // Test helpers
     _setQueryResults: (results: MockQueryResult[]) => {
       queryResults.length = 0;
@@ -151,33 +153,33 @@ export function createMockPool() {
 
 export function createMockDatabaseAdapter() {
   const memories = new Map<string, { userId: string; content: string }[]>();
-  
+
   return {
     connect: mock(async () => {}),
     disconnect: mock(async () => {}),
-    
+
     getMemory: mock(async (userId: string, guildId: string) => {
       const key = `${guildId}:${userId}`;
       return memories.get(key) ?? [];
     }),
-    
+
     setMemory: mock(async (userId: string, guildId: string, content: string) => {
       const key = `${guildId}:${userId}`;
       const existing = memories.get(key) ?? [];
       existing.push({ userId, content });
       memories.set(key, existing);
     }),
-    
+
     clearMemory: mock(async (userId: string, guildId: string) => {
       const key = `${guildId}:${userId}`;
       memories.delete(key);
     }),
-    
+
     getConversationHistory: mock(async () => []),
     addMessage: mock(async () => {}),
-    
+
     pool: createMockPool(),
-    
+
     // Test helpers
     _getMemories: () => memories,
     _clearAll: () => memories.clear()
@@ -187,42 +189,48 @@ export function createMockDatabaseAdapter() {
 export function createMockAdminAdapter() {
   const serverConfigs = new Map<string, Record<string, unknown>>();
   const systemPrompts = new Map<string, { prompt: string | null; enabled: boolean }>();
-  
+
   return {
     getServerConfig: mock(async (guildId: string) => {
       return serverConfigs.get(guildId) ?? null;
     }),
-    
+
     setServerConfig: mock(async (config: { guildId: string } & Record<string, unknown>) => {
       serverConfigs.set(config.guildId, config);
       return config;
     }),
-    
+
     getChannelConfig: mock(async () => null),
     setChannelConfig: mock(async () => {}),
-    
+
     getAlertsChannel: mock(async () => null),
     setAlertsChannel: mock(async () => {}),
-    
+
     getSystemPrompt: mock(async (guildId: string, _forVoice?: boolean) => {
       return systemPrompts.get(guildId) ?? { prompt: null, enabled: false };
     }),
-    
-    setSystemPrompt: mock(async (guildId: string, prompt: string | null, opts?: { forVoice?: boolean; enabled?: boolean }) => {
-      systemPrompts.set(guildId, { prompt, enabled: opts?.enabled ?? true });
-    }),
-    
+
+    setSystemPrompt: mock(
+      async (
+        guildId: string,
+        prompt: string | null,
+        opts?: { forVoice?: boolean; enabled?: boolean }
+      ) => {
+        systemPrompts.set(guildId, { prompt, enabled: opts?.enabled ?? true });
+      }
+    ),
+
     logAudit: mock(async () => {}),
     logAnalytics: mock(async () => {}),
-    
+
     getCommandStats: mock(async () => ({})),
     getUserRole: mock(async () => ({ roleTier: 'member' as const })),
-    
+
     // Quota methods
     getUserUsage: mock(async () => ({ text_tokens: 0, images: 0, voice_minutes: 0 })),
     incrementUsage: mock(async () => {}),
     getGuildQuotas: mock(async () => null),
-    
+
     // Test helpers
     _setServerConfig: (guildId: string, config: Record<string, unknown>) => {
       serverConfigs.set(guildId, config);
@@ -256,7 +264,7 @@ export function createMockProviderRegistry(): {
         usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 }
       }))
     })),
-    
+
     getImageProvider: mock((name?: string) => ({
       name: name ?? 'openai',
       isConfigured: () => true,
@@ -265,7 +273,7 @@ export function createMockProviderRegistry(): {
         revisedPrompt: 'A mock image'
       }))
     })),
-    
+
     getAvailableProviders: mock(() => ({
       text: ['openai', 'anthropic'],
       image: ['openai']
@@ -283,10 +291,12 @@ export function createMockPermissionManager() {
     getUserTier: mock(async () => 'member' as const),
     isAdmin: mock(async () => false),
     isModerator: mock(async () => false),
-    
+
     // Test helpers
     _setAdmin: (isAdmin: boolean) => {
-      (createMockPermissionManager().isAdmin as ReturnType<typeof mock>).mockReturnValue(Promise.resolve(isAdmin));
+      (createMockPermissionManager().isAdmin as ReturnType<typeof mock>).mockReturnValue(
+        Promise.resolve(isAdmin)
+      );
     }
   };
 }
@@ -301,7 +311,7 @@ export function createMockPermissionManager() {
  */
 export function withEnv(envVars: Record<string, string | undefined>): () => void {
   const original: Record<string, string | undefined> = {};
-  
+
   for (const [key, value] of Object.entries(envVars)) {
     original[key] = process.env[key];
     if (value === undefined) {
@@ -310,7 +320,7 @@ export function withEnv(envVars: Record<string, string | undefined>): () => void
       process.env[key] = value;
     }
   }
-  
+
   return () => {
     for (const [key, value] of Object.entries(original)) {
       if (value === undefined) {

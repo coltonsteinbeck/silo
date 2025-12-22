@@ -1,4 +1,13 @@
-import { ChatInputCommandInteraction, SlashCommandBuilder, GuildMember, ChannelType, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } from 'discord.js';
+import {
+  ChatInputCommandInteraction,
+  SlashCommandBuilder,
+  GuildMember,
+  ChannelType,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  ActionRowBuilder
+} from 'discord.js';
 import { Command } from './types';
 import { AdminAdapter } from '../database/admin-adapter';
 import { PermissionManager } from '../permissions/manager';
@@ -234,7 +243,7 @@ export class ConfigCommand implements Command {
         case 'alerts-channel': {
           const channel = interaction.options.getChannel('channel');
           const channelId = channel?.id ?? interaction.guild?.systemChannelId ?? null;
-          
+
           // Update the warning_channel_id in guild_registry
           await this.adminDb.setAlertsChannel(interaction.guildId, channelId);
 
@@ -261,8 +270,11 @@ export class ConfigCommand implements Command {
 
           switch (action) {
             case 'view': {
-              const { prompt, enabled } = await this.adminDb.getSystemPrompt(interaction.guildId, forVoice);
-              
+              const { prompt, enabled } = await this.adminDb.getSystemPrompt(
+                interaction.guildId,
+                forVoice
+              );
+
               if (!prompt) {
                 await interaction.reply({
                   content: `📝 No custom ${typeLabel} system prompt is set.\n\nUse \`/config system-prompt action:Set/Edit\` to add one.`,
@@ -272,9 +284,8 @@ export class ConfigCommand implements Command {
               }
 
               const status = enabled ? '✅ Enabled' : '⏸️ Disabled';
-              const truncatedPrompt = prompt.length > 1500 
-                ? prompt.substring(0, 1500) + '...\n*(truncated)*' 
-                : prompt;
+              const truncatedPrompt =
+                prompt.length > 1500 ? prompt.substring(0, 1500) + '...\n*(truncated)*' : prompt;
 
               await interaction.reply({
                 content: `**${typeLabel.charAt(0).toUpperCase() + typeLabel.slice(1)} System Prompt** (${status})\n\`\`\`\n${truncatedPrompt}\n\`\`\`\n*Length: ${prompt.length} characters*`,
@@ -286,10 +297,12 @@ export class ConfigCommand implements Command {
             case 'edit': {
               // Use a modal for editing the system prompt
               const { prompt } = await this.adminDb.getSystemPrompt(interaction.guildId, forVoice);
-              
+
               const modal = new ModalBuilder()
                 .setCustomId(`system_prompt_modal_${forVoice ? 'voice' : 'text'}`)
-                .setTitle(`Edit ${typeLabel.charAt(0).toUpperCase() + typeLabel.slice(1)} System Prompt`);
+                .setTitle(
+                  `Edit ${typeLabel.charAt(0).toUpperCase() + typeLabel.slice(1)} System Prompt`
+                );
 
               const promptInput = new TextInputBuilder()
                 .setCustomId('prompt_input')
@@ -345,16 +358,22 @@ export class ConfigCommand implements Command {
           const config = await this.adminDb.getServerConfig(interaction.guildId);
           const alertsChannelId = await this.adminDb.getAlertsChannel(interaction.guildId);
           const alertsChannel = alertsChannelId ? `<#${alertsChannelId}>` : 'Not set';
-          const { prompt: textPrompt, enabled: textEnabled } = await this.adminDb.getSystemPrompt(interaction.guildId, false);
-          const { prompt: voicePrompt } = await this.adminDb.getSystemPrompt(interaction.guildId, true);
-          
-          const textPromptStatus = textPrompt 
-            ? `${textEnabled ? '✅' : '⏸️'} Set (${textPrompt.length} chars)` 
+          const { prompt: textPrompt, enabled: textEnabled } = await this.adminDb.getSystemPrompt(
+            interaction.guildId,
+            false
+          );
+          const { prompt: voicePrompt } = await this.adminDb.getSystemPrompt(
+            interaction.guildId,
+            true
+          );
+
+          const textPromptStatus = textPrompt
+            ? `${textEnabled ? '✅' : '⏸️'} Set (${textPrompt.length} chars)`
             : 'Not set';
-          const voicePromptStatus = voicePrompt 
-            ? `Set (${voicePrompt.length} chars)` 
+          const voicePromptStatus = voicePrompt
+            ? `Set (${voicePrompt.length} chars)`
             : 'Using text prompt';
-          
+
           const lines = [
             '**Current Server Configuration:**',
             `• Default Provider: ${config?.defaultProvider || 'openai'}`,

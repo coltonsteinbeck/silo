@@ -29,7 +29,7 @@ const DEFAULT_QUOTAS = {
     restricted: 0
   },
   voice_minutes: {
-    member: 0,      // No voice for regular members
+    member: 0, // No voice for regular members
     trusted: 5,
     moderator: 10,
     admin: 15,

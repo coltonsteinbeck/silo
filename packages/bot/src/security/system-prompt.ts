@@ -1,8 +1,8 @@
 /**
  * System Prompt Security Module
- * 
+ *
  * Handles validation, sanitization, and secure loading of system prompts.
- * 
+ *
  * Features:
  * - Database-stored prompts per guild (via Discord commands)
  * - File-based prompts for self-hosters (SYSTEM_PROMPT_PATH env var)
@@ -29,7 +29,7 @@ const JAILBREAK_PATTERNS = [
   /do\s+anything\s+now/i,
   /bypass\s+(all\s+)?(filters?|restrictions?|safety)/i,
   /pretend\s+(?:you\s+are|to\s+be)\s+(?:unrestricted|evil|harmful)/i,
-  /act\s+as\s+(?:if\s+you\s+have\s+)?no\s+(ethical\s+)?guidelines/i,
+  /act\s+as\s+(?:if\s+you\s+have\s+)?no\s+(ethical\s+)?guidelines/i
 ];
 
 // Patterns that should be escaped/neutralized
@@ -39,7 +39,7 @@ const DANGEROUS_PATTERNS = [
   /\[\/INST\]/gi,
   /<\|system\|>/gi,
   /<\|user\|>/gi,
-  /<\|assistant\|>/gi,
+  /<\|assistant\|>/gi
 ];
 
 export interface SystemPromptConfig {
@@ -62,7 +62,7 @@ export interface SystemPromptValidationResult {
 
 /**
  * System Prompt Manager
- * 
+ *
  * Manages system prompts from multiple sources:
  * 1. Database (per-guild, set via Discord commands)
  * 2. File system (self-hosters can use SYSTEM_PROMPT_PATH)
@@ -83,13 +83,13 @@ class SystemPromptManager {
    */
   private loadFilePrompt(): void {
     const promptPath = process.env.SYSTEM_PROMPT_PATH;
-    
+
     if (!promptPath) {
       return;
     }
 
     const resolvedPath = resolve(promptPath);
-    
+
     if (!existsSync(resolvedPath)) {
       logger.warn(`System prompt file not found: ${resolvedPath}`);
       return;
@@ -98,12 +98,12 @@ class SystemPromptManager {
     try {
       const content = readFileSync(resolvedPath, 'utf-8');
       const validation = this.validatePrompt(content);
-      
+
       if (validation.valid) {
         this.filePrompt = validation.sanitizedPrompt;
         this.filePromptPath = resolvedPath;
         logger.info(`Loaded system prompt from file: ${resolvedPath} (${content.length} chars)`);
-        
+
         if (validation.warnings.length > 0) {
           logger.warn(`System prompt warnings: ${validation.warnings.join(', ')}`);
         }
@@ -182,7 +182,7 @@ class SystemPromptManager {
     // Neutralize dangerous patterns (escape them)
     for (const pattern of DANGEROUS_PATTERNS) {
       if (pattern.test(sanitizedPrompt)) {
-        sanitizedPrompt = sanitizedPrompt.replace(pattern, (match) => {
+        sanitizedPrompt = sanitizedPrompt.replace(pattern, match => {
           warnings.push(`Neutralized pattern: ${match}`);
           return `[${match.replace(/[<>[\]|]/g, '')}]`;
         });
@@ -190,7 +190,8 @@ class SystemPromptManager {
     }
 
     // Check for excessive special characters that might indicate injection
-    const specialCharRatio = (sanitizedPrompt.match(/[<>[\]{}|\\]/g) || []).length / sanitizedPrompt.length;
+    const specialCharRatio =
+      (sanitizedPrompt.match(/[<>[\]{}|\\]/g) || []).length / sanitizedPrompt.length;
     if (specialCharRatio > 0.1) {
       warnings.push('High ratio of special characters detected');
     }
@@ -200,7 +201,7 @@ class SystemPromptManager {
 
   /**
    * Get the effective system prompt for a guild
-   * 
+   *
    * Priority:
    * 1. Database prompt (if set and enabled)
    * 2. File prompt (for self-hosters)

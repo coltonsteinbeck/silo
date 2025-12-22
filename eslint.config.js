@@ -5,7 +5,7 @@ import prettierPlugin from 'eslint-plugin-prettier/recommended';
 
 export default [
   {
-    ignores: ['dist', 'node_modules', '*.js', 'coverage', '.next', 'out']
+    ignores: ['**/dist/**', '**/node_modules/**', '**/*.js', '**/coverage/**', '**/.next/**', '**/out/**']
   },
   js.configs.recommended,
   {
@@ -17,10 +17,19 @@ export default [
         process: 'readonly',
         setInterval: 'readonly',
         clearInterval: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
         fetch: 'readonly',
         URL: 'readonly',
         Response: 'readonly',
-        Timer: 'readonly'
+        Timer: 'readonly',
+        Buffer: 'readonly',
+        console: 'readonly',
+        __dirname: 'readonly',
+        __filename: 'readonly',
+        global: 'readonly',
+        module: 'readonly',
+        require: 'readonly',
       },
       parserOptions: {
         ecmaVersion: 2022,

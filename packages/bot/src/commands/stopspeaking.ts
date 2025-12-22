@@ -1,7 +1,4 @@
-import {
-  SlashCommandBuilder,
-  ChatInputCommandInteraction
-} from 'discord.js';
+import { SlashCommandBuilder, ChatInputCommandInteraction } from 'discord.js';
 import type { Command } from './types';
 import { voiceSessionManager } from '../voice';
 
@@ -17,7 +14,7 @@ export const StopSpeakingCommand: Command = {
     // Check if user has an active session
     if (!voiceSessionManager.isUserSpeaking(guildId, userId)) {
       await interaction.reply({
-        content: 'You don\'t have an active voice session.',
+        content: "You don't have an active voice session.",
         ephemeral: true
       });
       return;
@@ -25,10 +22,10 @@ export const StopSpeakingCommand: Command = {
 
     try {
       const stopped = await voiceSessionManager.stopSpeaking(guildId, userId);
-      
+
       if (stopped) {
         const remainingSpeakers = voiceSessionManager.getActiveSpeakerCount(guildId);
-        
+
         // If no more speakers, optionally leave the channel
         if (remainingSpeakers === 0) {
           // Leave the voice channel when no one is speaking

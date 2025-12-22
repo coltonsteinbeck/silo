@@ -1,6 +1,6 @@
 /**
  * Tests for Deployment Detector
- * 
+ *
  * Tests environment detection, deployment mode detection,
  * and capacity management across different configurations.
  */
@@ -175,9 +175,9 @@ describe('Deployment Detector', () => {
         DEPLOYMENT_MODE: 'production',
         DATABASE_URL: 'postgresql://user:pass@localhost:5432/db'
       });
-      
+
       const config = getDeploymentConfig();
-      
+
       expect(config).toHaveProperty('mode');
       expect(config).toHaveProperty('environment');
       expect(config).toHaveProperty('maxGuilds');
@@ -194,7 +194,7 @@ describe('Deployment Detector', () => {
         DEPLOYMENT_MODE: 'self-hosted',
         DATABASE_URL: 'postgresql://user:pass@mydb.example.com:5432/database'
       });
-      
+
       const config = getDeploymentConfig();
       expect(config.databaseHost).toBe('mydb.example.com:5432');
     });
@@ -204,16 +204,16 @@ describe('Deployment Detector', () => {
         DEPLOYMENT_MODE: 'self-hosted',
         DATABASE_URL: 'not-a-valid-url'
       });
-      
+
       const config = getDeploymentConfig();
       expect(config.databaseHost).toBeNull();
     });
 
     test('production config has correct flags', () => {
       cleanup = withEnv({ DEPLOYMENT_MODE: 'production' });
-      
+
       const config = getDeploymentConfig();
-      
+
       expect(config.mode).toBe('hosted');
       expect(config.environment).toBe('production');
       expect(config.isHosted).toBe(true);
@@ -224,9 +224,9 @@ describe('Deployment Detector', () => {
 
     test('development config has correct flags', () => {
       cleanup = withEnv({ DEPLOYMENT_MODE: 'development' });
-      
+
       const config = getDeploymentConfig();
-      
+
       expect(config.mode).toBe('self-hosted');
       expect(config.environment).toBe('development');
       expect(config.isHosted).toBe(false);
@@ -237,9 +237,9 @@ describe('Deployment Detector', () => {
 
     test('self-hosted config has correct flags', () => {
       cleanup = withEnv({ DEPLOYMENT_MODE: 'self-hosted' });
-      
+
       const config = getDeploymentConfig();
-      
+
       expect(config.mode).toBe('self-hosted');
       expect(config.environment).toBe('self-hosted');
       expect(config.isHosted).toBe(false);
@@ -252,20 +252,20 @@ describe('Deployment Detector', () => {
   describe('DeploymentDetector singleton', () => {
     test('caches config after first call', () => {
       cleanup = withEnv({ DEPLOYMENT_MODE: 'self-hosted' });
-      
+
       const config1 = deploymentDetector.getConfig();
       const config2 = deploymentDetector.getConfig();
-      
+
       expect(config1).toBe(config2); // Same reference
     });
 
     test('clearCache resets cached config', () => {
       cleanup = withEnv({ DEPLOYMENT_MODE: 'self-hosted' });
-      
+
       const config1 = deploymentDetector.getConfig();
       deploymentDetector.clearCache();
       const config2 = deploymentDetector.getConfig();
-      
+
       expect(config1).not.toBe(config2); // Different references
       expect(config1).toEqual(config2); // Same values
     });
@@ -274,7 +274,7 @@ describe('Deployment Detector', () => {
       test('always returns true for self-hosted', async () => {
         cleanup = withEnv({ DEPLOYMENT_MODE: 'self-hosted' });
         deploymentDetector.clearCache();
-        
+
         expect(await deploymentDetector.canAddGuild(0)).toBe(true);
         expect(await deploymentDetector.canAddGuild(100)).toBe(true);
         expect(await deploymentDetector.canAddGuild(1000000)).toBe(true);
@@ -283,10 +283,10 @@ describe('Deployment Detector', () => {
       test('respects limit for hosted mode', async () => {
         cleanup = withEnv({ DEPLOYMENT_MODE: 'production' });
         deploymentDetector.clearCache();
-        
+
         const config = deploymentDetector.getConfig();
         const maxGuilds = config.maxGuilds;
-        
+
         expect(await deploymentDetector.canAddGuild(0)).toBe(true);
         expect(await deploymentDetector.canAddGuild(maxGuilds - 1)).toBe(true);
         expect(await deploymentDetector.canAddGuild(maxGuilds)).toBe(false);
@@ -298,9 +298,9 @@ describe('Deployment Detector', () => {
       test('returns unlimited display for self-hosted', () => {
         cleanup = withEnv({ DEPLOYMENT_MODE: 'self-hosted' });
         deploymentDetector.clearCache();
-        
+
         const info = deploymentDetector.getCapacityInfo(10);
-        
+
         expect(info.current).toBe(10);
         expect(info.max).toBe(Number.MAX_SAFE_INTEGER);
         expect(info.atCapacity).toBe(false);
@@ -310,10 +310,10 @@ describe('Deployment Detector', () => {
       test('returns correct capacity for hosted mode', () => {
         cleanup = withEnv({ DEPLOYMENT_MODE: 'production' });
         deploymentDetector.clearCache();
-        
+
         const config = deploymentDetector.getConfig();
         const info = deploymentDetector.getCapacityInfo(3);
-        
+
         expect(info.current).toBe(3);
         expect(info.max).toBe(config.maxGuilds);
         expect(info.available).toBe(config.maxGuilds - 3);
@@ -324,10 +324,10 @@ describe('Deployment Detector', () => {
       test('shows at capacity when full', () => {
         cleanup = withEnv({ DEPLOYMENT_MODE: 'production' });
         deploymentDetector.clearCache();
-        
+
         const config = deploymentDetector.getConfig();
         const info = deploymentDetector.getCapacityInfo(config.maxGuilds);
-        
+
         expect(info.atCapacity).toBe(true);
         expect(info.available).toBe(0);
       });
@@ -337,7 +337,7 @@ describe('Deployment Detector', () => {
       test('returns hosted string for production', () => {
         cleanup = withEnv({ DEPLOYMENT_MODE: 'production' });
         deploymentDetector.clearCache();
-        
+
         const str = deploymentDetector.getModeString();
         expect(str).toContain('hosted');
         expect(str).toContain('max');
@@ -346,7 +346,7 @@ describe('Deployment Detector', () => {
       test('returns development string for development', () => {
         cleanup = withEnv({ DEPLOYMENT_MODE: 'development' });
         deploymentDetector.clearCache();
-        
+
         const str = deploymentDetector.getModeString();
         expect(str).toContain('development');
         expect(str).toContain('no limits');
@@ -355,7 +355,7 @@ describe('Deployment Detector', () => {
       test('returns self-hosted string for self-hosted', () => {
         cleanup = withEnv({ DEPLOYMENT_MODE: 'self-hosted' });
         deploymentDetector.clearCache();
-        
+
         const str = deploymentDetector.getModeString();
         expect(str).toContain('self-hosted');
         expect(str).toContain('unlimited');

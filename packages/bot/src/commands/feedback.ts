@@ -35,7 +35,7 @@ export class FeedbackCommand implements Command {
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     const feedbackType = interaction.options.getString('type', true);
-    
+
     // Show a modal for detailed feedback
     const modal = new ModalBuilder()
       .setCustomId(`feedback_modal_${feedbackType}`)
@@ -58,7 +58,9 @@ export class FeedbackCommand implements Command {
       .setRequired(false)
       .setMaxLength(500);
 
-    const row1 = new ActionRowBuilder<ModalActionRowComponentBuilder>().addComponents(feedbackInput);
+    const row1 = new ActionRowBuilder<ModalActionRowComponentBuilder>().addComponents(
+      feedbackInput
+    );
     const row2 = new ActionRowBuilder<ModalActionRowComponentBuilder>().addComponents(contextInput);
 
     modal.addComponents(row1, row2);
@@ -69,15 +71,13 @@ export class FeedbackCommand implements Command {
   /**
    * Handle modal submission (called from interaction handler)
    */
-  async handleModalSubmit(
-    interaction: {
-      customId: string;
-      guildId: string | null;
-      user: { id: string; username: string };
-      fields: { getTextInputValue: (id: string) => string };
-      reply: (options: { content: string; ephemeral: boolean }) => Promise<void>;
-    }
-  ): Promise<void> {
+  async handleModalSubmit(interaction: {
+    customId: string;
+    guildId: string | null;
+    user: { id: string; username: string };
+    fields: { getTextInputValue: (id: string) => string };
+    reply: (options: { content: string; ephemeral: boolean }) => Promise<void>;
+  }): Promise<void> {
     const feedbackType = interaction.customId.replace('feedback_modal_', '');
     const content = interaction.fields.getTextInputValue('feedback_content');
     const context = interaction.fields.getTextInputValue('feedback_context') || null;
@@ -104,7 +104,6 @@ export class FeedbackCommand implements Command {
         content: `Thank you for your ${typeLabels[feedbackType] || 'feedback'}! Your input helps improve Silo.`,
         ephemeral: true
       });
-
     } catch (error) {
       console.error('[FeedbackCommand] Error saving feedback:', error);
       await interaction.reply({

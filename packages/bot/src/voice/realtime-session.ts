@@ -1,7 +1,14 @@
 import WebSocket from 'ws';
-import { createAudioPlayer, createAudioResource, AudioPlayerStatus, StreamType } from '@discordjs/voice';
+import {
+  createAudioPlayer,
+  createAudioResource,
+  AudioPlayerStatus,
+  StreamType,
+  EndBehaviorType
+} from '@discordjs/voice';
 import type { VoiceConnection } from '@discordjs/voice';
 import { Readable } from 'stream';
+import { OpusEncoder } from 'mediaplex';
 
 const REALTIME_API_URL = 'wss://api.openai.com/v1/realtime?model=gpt-4o-mini-realtime-preview';
 
@@ -32,13 +39,17 @@ export class RealtimeSession {
   private audioQueue: AudioChunk[] = [];
   private isPlaying = false;
   private connection: VoiceConnection | null = null;
+  private isListening = false;
+  private currentAudioStream: Readable | null = null;
+  private opusDecoder: OpusEncoder | null = null;
 
   constructor(apiKey: string, userId: string, options: RealtimeSessionOptions = {}) {
     this.apiKey = apiKey;
     this.userId = userId;
     this.options = {
       voice: 'alloy',
-      instructions: 'You are a helpful AI assistant in a Discord voice channel. Keep responses concise and conversational.',
+      instructions:
+        'You are a helpful AI assistant in a Discord voice channel. Keep responses concise and conversational.',
       ...options
     };
 
@@ -68,7 +79,7 @@ export class RealtimeSession {
     return new Promise((resolve, reject) => {
       this.ws = new WebSocket(REALTIME_API_URL, {
         headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
+          Authorization: `Bearer ${this.apiKey}`,
           'OpenAI-Beta': 'realtime=v1'
         }
       });
@@ -174,12 +185,20 @@ export class RealtimeSession {
 
         case 'conversation.item.input_audio_transcription.completed':
           // Transcription of user's speech is complete
+          console.log('[RealtimeSession] User said:', message.transcript);
           break;
 
-        case 'error':
+        case 'error': {
+          // Ignore non-critical errors
+          const errorCode = message.error?.code;
+          if (errorCode === 'response_cancel_not_active') {
+            // This just means we tried to cancel when no response was active - not an error
+            break;
+          }
           console.error('[RealtimeSession] API error:', message.error);
           this.options.onError?.(new Error(message.error?.message || 'Unknown error'));
           break;
+        }
 
         default:
           // Log unknown message types for debugging
@@ -247,6 +266,35 @@ export class RealtimeSession {
   }
 
   /**
+   * Send a greeting message that the AI will speak aloud
+   * Used when the bot first joins a voice channel
+   */
+  sendGreeting(greeting?: string): void {
+    const defaultGreeting =
+      'Introduce yourself briefly and explain that you can answer questions, help with tasks, and have natural conversations. Keep it under 15 seconds.';
+
+    // Create a system-like instruction for the greeting
+    this.send({
+      type: 'conversation.item.create',
+      item: {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: greeting || defaultGreeting
+          }
+        ]
+      }
+    });
+
+    // Trigger the greeting response
+    this.send({
+      type: 'response.create'
+    });
+  }
+
+  /**
    * Queue audio for playback
    */
   private queueAudio(audio: Buffer): void {
@@ -275,7 +323,7 @@ export class RealtimeSession {
     // Convert PCM16 to audio resource
     // OpenAI outputs 24kHz mono PCM16, Discord expects 48kHz stereo PCM16
     const convertedAudio = this.convertTo48kHzStereo(combinedAudio);
-    
+
     const audioStream = Readable.from(convertedAudio);
     const resource = createAudioResource(audioStream, {
       inputType: StreamType.Raw
@@ -297,10 +345,10 @@ export class RealtimeSession {
     for (let i = 0; i < inputSamples; i++) {
       const sample = input.readInt16LE(i * 2);
       const outputIndex = i * 8;
-      
+
       // Write each sample twice (upsample 24kHz -> 48kHz)
       // and duplicate for stereo
-      outputBuffer.writeInt16LE(sample, outputIndex);     // L1
+      outputBuffer.writeInt16LE(sample, outputIndex); // L1
       outputBuffer.writeInt16LE(sample, outputIndex + 2); // R1
       outputBuffer.writeInt16LE(sample, outputIndex + 4); // L2
       outputBuffer.writeInt16LE(sample, outputIndex + 6); // R2
@@ -326,20 +374,144 @@ export class RealtimeSession {
   }
 
   /**
-   * Attach to a voice connection for playback
+   * Attach to a voice connection for playback and audio receiving
    */
   attachConnection(connection: VoiceConnection): void {
     this.connection = connection;
     connection.subscribe(this.audioPlayer);
+    this.startListening();
+  }
+
+  /**
+   * Start listening to the user's audio from Discord
+   */
+  private startListening(): void {
+    if (!this.connection || this.isListening) return;
+
+    const receiver = this.connection.receiver;
+    if (!receiver) {
+      console.error('[RealtimeSession] Voice receiver not available');
+      return;
+    }
+
+    this.isListening = true;
+    console.log(`[RealtimeSession] Started listening for user ${this.userId}`);
+
+    // Listen for when the specific user starts speaking
+    receiver.speaking.on('start', (speakingUserId: string) => {
+      if (speakingUserId !== this.userId) return;
+
+      console.log(`[RealtimeSession] User ${this.userId} started speaking`);
+      this.startRecording();
+    });
+
+    receiver.speaking.on('end', (speakingUserId: string) => {
+      if (speakingUserId !== this.userId) return;
+
+      console.log(`[RealtimeSession] User ${this.userId} stopped speaking`);
+      // Audio stream will end automatically due to EndBehaviorType.AfterSilence
+    });
+  }
+
+  /**
+   * Start recording audio from the user
+   */
+  private startRecording(): void {
+    if (!this.connection) return;
+
+    try {
+      // Subscribe to the user's audio - Discord sends Opus-encoded audio at 48kHz stereo
+      const audioStream = this.connection.receiver.subscribe(this.userId, {
+        end: {
+          behavior: EndBehaviorType.AfterSilence,
+          duration: 500 // 500ms of silence to end
+        }
+      });
+      this.currentAudioStream = audioStream;
+
+      // Create Opus decoder - Discord sends 48kHz stereo Opus
+      // OpusEncoder has both encode() and decode() methods
+      this.opusDecoder = new OpusEncoder(48000, 2);
+
+      audioStream.on('data', (opusPacket: Buffer) => {
+        try {
+          if (!this.opusDecoder) return;
+
+          // Decode Opus to PCM
+          const pcmData = this.opusDecoder.decode(opusPacket);
+          if (pcmData && pcmData.length > 0) {
+            // Convert from 48kHz stereo to 24kHz mono for OpenAI
+            const convertedData = this.convertTo24kHzMono(Buffer.from(pcmData.buffer));
+            if (convertedData && convertedData.length > 0) {
+              this.sendAudio(convertedData);
+            }
+          }
+        } catch (error) {
+          // Silently ignore decode errors for malformed packets
+          if (process.env.DEBUG_VOICE) {
+            console.error('[RealtimeSession] Error decoding opus packet:', error);
+          }
+        }
+      });
+
+      audioStream.on('end', () => {
+        console.log(`[RealtimeSession] Audio stream ended for user ${this.userId}`);
+      });
+
+      audioStream.on('error', (error: Error) => {
+        console.error('[RealtimeSession] Audio stream error:', error);
+      });
+    } catch (error) {
+      console.error('[RealtimeSession] Error setting up audio recording:', error);
+    }
+  }
+
+  /**
+   * Convert 48kHz stereo PCM16 to 24kHz mono PCM16 for OpenAI
+   */
+  private convertTo24kHzMono(input: Buffer): Buffer {
+    // Input: 48kHz stereo PCM16 (4 bytes per sample pair)
+    // Output: 24kHz mono PCM16 (2 bytes per sample)
+    const inputSamples = input.length / 4; // stereo pairs
+    const outputSamples = Math.floor(inputSamples / 2); // downsample 48kHz -> 24kHz
+    const outputBuffer = Buffer.alloc(outputSamples * 2);
+
+    for (let i = 0; i < outputSamples; i++) {
+      // Take every other sample (downsample)
+      // Average left and right channels (stereo to mono)
+      const inputIndex = i * 8; // 2 samples * 4 bytes per stereo pair
+      const left = input.readInt16LE(inputIndex);
+      const right = input.readInt16LE(inputIndex + 2);
+      const mono = Math.round((left + right) / 2);
+      outputBuffer.writeInt16LE(mono, i * 2);
+    }
+
+    return outputBuffer;
+  }
+
+  /**
+   * Stop listening to user audio
+   */
+  private stopListening(): void {
+    this.isListening = false;
+    if (this.currentAudioStream) {
+      this.currentAudioStream.destroy();
+      this.currentAudioStream = null;
+    }
+    if (this.opusDecoder) {
+      // OpusEncoder is automatically garbage collected, no explicit cleanup needed
+      this.opusDecoder = null;
+    }
   }
 
   /**
    * Disconnect from the API
    */
   async disconnect(): Promise<void> {
+    this.stopListening();
     this.audioQueue = [];
     this.audioPlayer.stop();
-    
+
     if (this.ws) {
       this.ws.close();
       this.ws = null;

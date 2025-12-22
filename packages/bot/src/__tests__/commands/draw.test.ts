@@ -1,6 +1,6 @@
 /**
  * Tests for Draw Command
- * 
+ *
  * Tests image generation command with various options
  * and error handling.
  */
@@ -11,7 +11,7 @@ import { DrawCommand } from '../../commands/draw';
 
 describe('DrawCommand', () => {
   let command: DrawCommand;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   let mockRegistry: any;
 
   beforeEach(() => {
@@ -37,7 +37,6 @@ describe('DrawCommand', () => {
         }
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       expect(interaction.deferReply).toHaveBeenCalled();
@@ -60,7 +59,6 @@ describe('DrawCommand', () => {
         }
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       expect(mockProvider.generateImage).toHaveBeenCalled();
@@ -84,7 +82,6 @@ describe('DrawCommand', () => {
         }
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
     });
 
@@ -106,16 +103,15 @@ describe('DrawCommand', () => {
         }
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
     });
 
-    test('uses specified style', async () => {
+    test('uses specified quality', async () => {
       const mockProvider = {
         name: 'openai',
         isConfigured: () => true,
-        generateImage: mock(async (_prompt: string, opts: { style: string }) => {
-          expect(opts.style).toBe('natural');
+        generateImage: mock(async (_prompt: string, opts: { quality: string }) => {
+          expect(opts.quality).toBe('high');
           return { url: 'https://example.com/image.png' };
         })
       };
@@ -124,11 +120,10 @@ describe('DrawCommand', () => {
       const interaction = createMockInteraction({
         options: {
           prompt: 'Test prompt',
-          style: 'natural'
+          quality: 'high'
         }
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
     });
 
@@ -141,7 +136,6 @@ describe('DrawCommand', () => {
         }
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       const reply = interaction._getReplies()[0];
@@ -164,7 +158,6 @@ describe('DrawCommand', () => {
         }
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       const reply = interaction._getReplies()[0];
@@ -189,12 +182,11 @@ describe('DrawCommand', () => {
         }
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
-      const reply = interaction._getReplies()[0] as { content: string };
-      expect(reply.content).toContain('Generated:');
-      expect(reply.content).toContain('Enhanced');
+      const reply = interaction._getReplies()[0] as { embeds: any[] };
+      expect(reply.embeds).toBeDefined();
+      expect(reply.embeds[0].data.description).toContain('Enhanced');
     });
 
     test('shows generic success message when no revised prompt', async () => {
@@ -213,11 +205,11 @@ describe('DrawCommand', () => {
         }
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
-      const reply = interaction._getReplies()[0] as { content: string };
-      expect(reply.content).toContain('Image generated successfully');
+      const reply = interaction._getReplies()[0] as { embeds: any[] };
+      expect(reply.embeds).toBeDefined();
+      expect(reply.embeds[0].data.description).toContain('sunset');
     });
   });
 });

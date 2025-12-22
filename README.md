@@ -92,7 +92,7 @@ docker-compose -f docker-compose.prod.yml up -d
 
 - **Multi-Provider AI**: OpenAI (gpt-5-mini), Anthropic, xAI, Google support
 - **Conversational AI**: @mention bot for natural conversations with context
-- **Realtime Voice**: Talk to Silo in voice channels with simultaneous multi-speaker support
+- **Realtime Voice**: Talk to Silo in voice channels with multiple voice options (alloy, ash, ballad, coral, echo, sage, shimmer, verse)
 - **Advanced Memory**: User and server memory systems with search
 - **Image Generation**: gpt-image-1 with low/medium/high quality options
 - **Database Flexibility**: Works with any PostgreSQL (Supabase, Railway, local, etc.)
@@ -116,7 +116,9 @@ docker-compose -f docker-compose.prod.yml up -d
 
 #### Voice
 
-- `/speak [voice]` - Start a voice conversation with Silo in your current voice channel
+- `/speak [voice] [channel]` - Start a voice conversation with Silo
+  - Voice options: alloy, ash, ballad, coral, echo, sage, shimmer, verse
+  - Channel: optionally specify which voice channel to join
 - `/stopspeaking` - End your voice session
 
 #### Collaboration

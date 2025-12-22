@@ -1,18 +1,22 @@
 /**
  * Tests for Mod Command
- * 
+ *
  * Tests moderation command functionality.
  */
 
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
-import { createMockInteraction, createMockAdminAdapter, createMockPermissionManager } from '@silo/core/test-setup';
+import {
+  createMockInteraction,
+  createMockAdminAdapter,
+  createMockPermissionManager
+} from '@silo/core/test-setup';
 import { ModCommand } from '../../commands/mod';
 
 describe('ModCommand', () => {
   let command: ModCommand;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   let mockAdminDb: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   let mockPermissions: any;
 
   beforeEach(() => {
@@ -43,13 +47,17 @@ describe('ModCommand', () => {
 
     test('has timeout subcommand', () => {
       const json = command.data.toJSON();
-      const timeoutSubcommand = json.options?.find((opt: { name: string }) => opt.name === 'timeout');
+      const timeoutSubcommand = json.options?.find(
+        (opt: { name: string }) => opt.name === 'timeout'
+      );
       expect(timeoutSubcommand).toBeDefined();
     });
 
     test('has history subcommand', () => {
       const json = command.data.toJSON();
-      const historySubcommand = json.options?.find((opt: { name: string }) => opt.name === 'history');
+      const historySubcommand = json.options?.find(
+        (opt: { name: string }) => opt.name === 'history'
+      );
       expect(historySubcommand).toBeDefined();
     });
   });
@@ -62,7 +70,6 @@ describe('ModCommand', () => {
       // @ts-expect-error - mock doesn't have all properties
       interaction.guildId = null;
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       const reply = interaction._getReplies()[0];
@@ -86,7 +93,6 @@ describe('ModCommand', () => {
       interaction.options.getSubcommand = mock(() => 'warn');
       Object.setPrototypeOf(interaction.member, { constructor: { name: 'GuildMember' } });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       const reply = interaction._getReplies()[0];
@@ -110,9 +116,10 @@ describe('ModCommand', () => {
         });
         interaction.options.getSubcommand = mock(() => 'warn');
         interaction.options.getUser = mock(() => targetUser);
-        interaction.options.getString = mock((name: string) => name === 'reason' ? 'Test warning' : null);
+        interaction.options.getString = mock((name: string) =>
+          name === 'reason' ? 'Test warning' : null
+        );
 
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         await command.execute(interaction as any);
 
         // Command produces a response (either permission error or success)
@@ -136,7 +143,6 @@ describe('ModCommand', () => {
         interaction.options.getSubcommand = mock(() => 'history');
         interaction.options.getUser = mock(() => targetUser);
 
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         await command.execute(interaction as any);
 
         // Command produces a response

@@ -1,6 +1,6 @@
 /**
  * Tests for Digest Command
- * 
+ *
  * Tests conversation digest/summary functionality.
  */
 
@@ -10,7 +10,7 @@ import { DigestCommand } from '../../commands/digest';
 
 describe('DigestCommand', () => {
   let command: DigestCommand;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   let mockRegistry: any;
 
   beforeEach(() => {
@@ -50,7 +50,6 @@ describe('DigestCommand', () => {
       // @ts-expect-error - mock channel
       interaction.channel = { type: 0, messages: { fetch: mock(async () => new Map()) } };
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       expect(interaction.deferReply).toHaveBeenCalled();
@@ -63,7 +62,6 @@ describe('DigestCommand', () => {
       // @ts-expect-error - mock channel
       interaction.channel = { type: 0, messages: { fetch: mock(async () => new Map()) } };
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       expect(interaction.deferReply).toHaveBeenCalled();
@@ -81,7 +79,6 @@ describe('DigestCommand', () => {
       // @ts-expect-error - mock channel
       interaction.channel = { type: 0, messages: { fetch: mock(async () => mockMessages) } };
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction as any);
 
       expect(interaction.deferReply).toHaveBeenCalled();
@@ -94,7 +91,6 @@ describe('DigestCommand', () => {
       // @ts-expect-error - mock channel
       interaction1.channel = { type: 0, messages: { fetch: mock(async () => new Map()) } };
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction1 as any);
       expect(interaction1.deferReply).toHaveBeenCalled();
 
@@ -104,7 +100,6 @@ describe('DigestCommand', () => {
       // @ts-expect-error - mock channel
       interaction2.channel = { type: 0, messages: { fetch: mock(async () => new Map()) } };
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await command.execute(interaction2 as any);
       expect(interaction2.deferReply).toHaveBeenCalled();
     });
