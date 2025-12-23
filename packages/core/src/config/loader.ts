@@ -1,5 +1,35 @@
 import { ConfigSchema, type Config } from './schema';
 
+function buildDatabaseUrl(): string {
+  // Honor explicit override first
+  if (process.env.DATABASE_URL) {
+    return process.env.DATABASE_URL;
+  }
+
+  const mode = process.env.DEPLOYMENT_MODE?.toLowerCase();
+
+  if (mode === 'production') {
+    const identifier = process.env.HOSTED_DB_IDENTIFIER;
+    const password = process.env.SUPABASE_PW;
+    if (identifier && password) {
+      const encodedPassword = encodeURIComponent(password);
+      return `postgresql://postgres:${encodedPassword}@db.${identifier}:5432/postgres`;
+    }
+  }
+
+  if (mode === 'development') {
+    const identifier = process.env.DEV_DB_IDENTIFIER;
+    const password = process.env.SUPABASE_DEV_PW;
+    if (identifier && password) {
+      const encodedPassword = encodeURIComponent(password);
+      return `postgresql://postgres:${encodedPassword}@db.${identifier}:5432/postgres`;
+    }
+  }
+
+  // Local fallback
+  return 'postgresql://silo:silo_dev@localhost:5432/silo';
+}
+
 export class ConfigLoader {
   static load(): Config {
     const rawConfig = {
@@ -27,6 +57,14 @@ export class ConfigLoader {
               model: process.env.XAI_MODEL || 'grok-3-mini'
             }
           : undefined,
+        local:
+          process.env.LOCAL_API_KEY || process.env.LOCAL_MODEL || process.env.LOCAL_BASE_URL
+            ? {
+                apiKey: process.env.LOCAL_API_KEY,
+                model: process.env.LOCAL_MODEL || 'llama3.1',
+                baseURL: process.env.LOCAL_BASE_URL || 'http://localhost:11434/v1'
+              }
+            : undefined,
         google: process.env.GOOGLE_API_KEY
           ? {
               apiKey: process.env.GOOGLE_API_KEY,
@@ -35,7 +73,7 @@ export class ConfigLoader {
           : undefined
       },
       database: {
-        url: process.env.DATABASE_URL || 'postgresql://silo:silo_dev@localhost:5432/silo',
+        url: buildDatabaseUrl(),
         maxConnections: process.env.DB_MAX_CONNECTIONS
           ? parseInt(process.env.DB_MAX_CONNECTIONS)
           : 10,

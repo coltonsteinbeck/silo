@@ -304,19 +304,32 @@ export class AdminAdapter {
   // Analytics
   async logEvent(event: Omit<AnalyticsEvent, 'id' | 'createdAt'>): Promise<void> {
     try {
+      const cost = await this.calculateEventCost({
+        provider: event.provider,
+        model: event.model,
+        inputTokens: event.inputTokens,
+        outputTokens: event.outputTokens ?? event.tokensUsed,
+        images: event.command === 'draw' ? 1 : 0,
+        voiceMinutes: event.durationMs ? event.durationMs / 60000 : 0
+      });
+
       await this.pool.query(
-        `INSERT INTO analytics_events (guild_id, user_id, event_type, command, provider, tokens_used, response_time_ms, success, metadata)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        `INSERT INTO analytics_events (guild_id, user_id, event_type, command, provider, model, input_tokens, output_tokens, tokens_used, response_time_ms, success, metadata, estimated_cost_usd)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
         [
           event.guildId,
           event.userId,
           event.eventType,
           event.command,
           event.provider,
-          event.tokensUsed,
-          event.responseTimeMs,
+          event.model ?? null,
+          event.inputTokens ?? 0,
+          event.outputTokens ?? event.tokensUsed ?? 0,
+          event.tokensUsed ?? 0,
+          event.responseTimeMs ?? null,
           event.success,
-          event.metadata ? JSON.stringify(event.metadata) : null
+          event.metadata ? JSON.stringify(event.metadata) : null,
+          cost
         ]
       );
     } catch (error) {
@@ -337,12 +350,134 @@ export class AdminAdapter {
       eventType: row.event_type,
       command: row.command,
       provider: row.provider,
+      model: row.model,
+      inputTokens: row.input_tokens,
+      outputTokens: row.output_tokens,
       tokensUsed: row.tokens_used,
+      estimatedCostUsd: row.estimated_cost_usd,
       responseTimeMs: row.response_time_ms,
       success: row.success,
       metadata: row.metadata,
       createdAt: new Date(row.created_at)
     }));
+  }
+
+  async getGuildCostAggregate(guildId: string): Promise<{
+    inputTokens: number;
+    outputTokens: number;
+    images: number;
+    totalCost: number;
+    providerBreakdown: Record<string, number>;
+  }> {
+    const result = await this.pool.query(
+      `SELECT
+         COALESCE(SUM(input_tokens), 0) AS input_tokens,
+         COALESCE(SUM(output_tokens), 0) AS output_tokens,
+         COALESCE(SUM(images), 0) AS images,
+         COALESCE(SUM(provider_cost), 0) AS total_cost,
+         COALESCE(
+           jsonb_object_agg(provider, provider_cost) FILTER (WHERE provider IS NOT NULL),
+           '{}'::jsonb
+         ) AS provider_breakdown
+       FROM (
+         SELECT provider,
+                COALESCE(SUM(COALESCE(estimated_cost_usd, 0)), 0) AS provider_cost,
+                SUM(COALESCE(input_tokens, 0)) AS input_tokens,
+                SUM(COALESCE(output_tokens, 0)) AS output_tokens,
+                SUM(CASE WHEN command = 'draw' AND success THEN 1 ELSE 0 END) AS images
+           FROM analytics_events
+          WHERE guild_id = $1
+            AND created_at >= NOW() - INTERVAL '30 days'
+          GROUP BY provider
+       ) AS per_provider;`,
+      [guildId]
+    );
+
+    const row = result.rows[0] || {};
+    return {
+      inputTokens: Number(row.input_tokens) || 0,
+      outputTokens: Number(row.output_tokens) || 0,
+      images: Number(row.images) || 0,
+      totalCost: Number(row.total_cost) || 0,
+      providerBreakdown: row.provider_breakdown || {}
+    };
+  }
+
+  async upsertGuildCostSummary(guildId: string): Promise<void> {
+    const agg = await this.getGuildCostAggregate(guildId);
+    const periodStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const periodEnd = new Date();
+
+    await this.pool.query(
+      `INSERT INTO guild_cost_summary (
+         guild_id, period_start, period_end, total_input_tokens, total_output_tokens,
+         total_images, total_voice_minutes, text_cost_usd, image_cost_usd, voice_cost_usd,
+         provider_breakdown, last_updated_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, 0, $7, 0, 0, $8, NOW())
+       ON CONFLICT (guild_id)
+       DO UPDATE SET
+         period_start = EXCLUDED.period_start,
+         period_end = EXCLUDED.period_end,
+         total_input_tokens = EXCLUDED.total_input_tokens,
+         total_output_tokens = EXCLUDED.total_output_tokens,
+         total_images = EXCLUDED.total_images,
+         text_cost_usd = EXCLUDED.text_cost_usd,
+         provider_breakdown = EXCLUDED.provider_breakdown,
+         last_updated_at = NOW()`,
+      [
+        guildId,
+        periodStart,
+        periodEnd,
+        agg.inputTokens,
+        agg.outputTokens,
+        agg.images,
+        agg.totalCost,
+        JSON.stringify(agg.providerBreakdown)
+      ]
+    );
+  }
+
+  // --- Cost helpers ---
+  async calculateEventCost(params: {
+    provider?: string;
+    model?: string;
+    inputTokens?: number | null;
+    outputTokens?: number | null;
+    images?: number;
+    voiceMinutes?: number;
+  }): Promise<number> {
+    const provider = params.provider || 'unknown';
+    const model = params.model || 'unknown';
+    const input = params.inputTokens ?? 0;
+    const output = params.outputTokens ?? 0;
+    const images = params.images ?? 0;
+    const voice = params.voiceMinutes ?? 0;
+
+    // Fetch latest pricing for provider/model; fall back to zero if absent
+    const priceResult = await this.pool.query(
+      `SELECT input_cost_per_1k, output_cost_per_1k, image_cost, voice_cost_per_minute
+         FROM provider_pricing
+        WHERE provider = $1 AND model = $2
+        ORDER BY effective_from DESC
+        LIMIT 1`,
+      [provider, model]
+    );
+
+    if (priceResult.rows.length === 0) {
+      logger.warn(
+        `Pricing not found for provider="${provider}" model="${model}"; falling back to cost=$0`
+      );
+      return 0;
+    }
+
+    const price = priceResult.rows[0];
+    const costTokens =
+      (input / 1000) * (price.input_cost_per_1k || 0) +
+      (output / 1000) * (price.output_cost_per_1k || 0);
+    const costImages = images * (price.image_cost || 0);
+    const costVoice = voice * (price.voice_cost_per_minute || 0);
+
+    return Number((costTokens + costImages + costVoice).toFixed(6));
   }
 
   // User Roles
@@ -456,6 +591,25 @@ export class AdminAdapter {
       textTokensMax: row.text_tokens_max,
       imagesMax: row.images_max,
       voiceMinutesMax: row.voice_minutes_max
+    };
+  }
+
+  async isGuildExempt(
+    guildId: string
+  ): Promise<{ quotaExempt: boolean; rateLimitExempt: boolean }> {
+    const result = await this.pool.query(
+      `SELECT quota_exempt, rate_limit_exempt FROM guild_quotas WHERE guild_id = $1`,
+      [guildId]
+    );
+
+    if (result.rows.length === 0) {
+      return { quotaExempt: false, rateLimitExempt: false };
+    }
+
+    const row = result.rows[0];
+    return {
+      quotaExempt: row.quota_exempt === true,
+      rateLimitExempt: row.rate_limit_exempt === true
     };
   }
 

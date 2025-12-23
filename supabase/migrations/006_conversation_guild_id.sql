@@ -40,6 +40,7 @@ ON conversation_messages(channel_id, prompt_hash, created_at DESC);
 DROP POLICY IF EXISTS "service_role_all_conversations" ON conversation_messages;
 CREATE POLICY "service_role_all_conversations" ON conversation_messages
   FOR ALL
+  TO service_role
   USING (true)
   WITH CHECK (true);
 

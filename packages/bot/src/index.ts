@@ -44,6 +44,7 @@ import {
   systemPromptManager
 } from './security';
 import { QuotaMiddleware } from './middleware/quota';
+import { CostAggregator } from './services/cost-aggregator';
 
 /**
  * Handle modal submissions (e.g., system prompt editor)
@@ -127,6 +128,7 @@ async function main() {
   const adminDb = new AdminAdapter(db.pool);
   const permissions = new PermissionManager(adminDb);
   const quotaMiddleware = new QuotaMiddleware(adminDb, permissions);
+  const costAggregator = new CostAggregator(adminDb);
 
   const providers = new ProviderRegistry(config);
   const available = providers.getAvailableProviders();
@@ -156,6 +158,9 @@ async function main() {
   // Initialize health server
   const healthServer = new HealthServer(client, db);
   await healthServer.start();
+
+  // Start periodic cost aggregation
+  costAggregator.start();
 
   client.once(Events.ClientReady, async readyClient => {
     logger.info(`Bot ready! Logged in as ${readyClient.user.tag}`);

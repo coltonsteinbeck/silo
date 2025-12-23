@@ -60,8 +60,16 @@ ENV/
 models/
 !models/.gitkeep
 
+supabase/.temp
+supabase/.env
+supabase/.env.local
+supabase/.supabase/
+
 # Docker
 .dockerignore
 
 # Local deployment docs (hardware-specific)
 DEPLOYMENT.local.md
+
+# CodeRabbit setup guide
+docs/CODERABBIT.md

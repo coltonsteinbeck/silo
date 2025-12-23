@@ -63,6 +63,12 @@ export class QuotaMiddleware {
     usageType: UsageType,
     amount: number = 1
   ): Promise<QuotaCheckResult> {
+    // Fast path: guild exemptions
+    const exemptions = await this.adminDb.isGuildExempt(guildId);
+    if (exemptions.quotaExempt) {
+      return { allowed: true, remaining: Infinity, max: Infinity };
+    }
+
     // Get user's role tier
     const tier = await this.permissions.getUserRoleTier(guildId, userId, member);
 

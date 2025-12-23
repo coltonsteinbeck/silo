@@ -66,7 +66,7 @@ CREATE TABLE user_feedback (
     user_id TEXT NOT NULL,
     channel_id TEXT,
     -- Feedback content
-    feedback_type TEXT NOT NULL CHECK (feedback_type IN ('bug', 'feature', 'praise', 'other')),
+    feedback_type TEXT NOT NULL CHECK (feedback_type IN ('bug', 'feature', 'praise', 'general')),
     message TEXT NOT NULL,
     -- Status tracking
     status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'reviewed', 'resolved', 'rejected')),

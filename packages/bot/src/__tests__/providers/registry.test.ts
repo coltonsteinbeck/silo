@@ -102,6 +102,29 @@ describe('ProviderRegistry', () => {
       expect(available.text).toContain('openai');
       expect(available.text).toContain('anthropic');
     });
+
+    test('initializes local provider when enabled', () => {
+      const config = createMinimalConfig({
+        providers: {
+          local: {
+            apiKey: 'local',
+            model: 'llama3.1',
+            baseURL: 'http://localhost:11434/v1'
+          }
+        },
+        features: {
+          enableRAG: false,
+          enableLocalModels: true,
+          enableVoice: true,
+          enableImages: true
+        }
+      });
+
+      const registry = new ProviderRegistry(config as any);
+      const available = registry.getAvailableProviders();
+
+      expect(available.text).toContain('local');
+    });
   });
 
   describe('getTextProvider', () => {

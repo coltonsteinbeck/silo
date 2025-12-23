@@ -86,8 +86,11 @@ export class AnalyticsCommand implements Command {
       const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
       // Get analytics data
-      const events = await this.adminDb.getAnalytics(interaction.guildId, since);
-      const feedbackRaw = await this.adminDb.getFeedbackStats(interaction.guildId, since);
+      const [events, feedbackRaw, costAggregate] = await Promise.all([
+        this.adminDb.getAnalytics(interaction.guildId, since),
+        this.adminDb.getFeedbackStats(interaction.guildId, since),
+        this.adminDb.getGuildCostAggregate(interaction.guildId)
+      ]);
 
       // Command usage stats
       const commandStats = new Map<string, number>();
@@ -95,6 +98,7 @@ export class AnalyticsCommand implements Command {
       let totalCommands = 0;
       let successfulCommands = 0;
       let totalTokens = 0;
+      let totalCost = 0;
       let totalResponseTime = 0;
       let responseTimeCount = 0;
 
@@ -106,6 +110,7 @@ export class AnalyticsCommand implements Command {
 
           if (event.success) successfulCommands++;
           if (event.tokensUsed) totalTokens += event.tokensUsed;
+          if (event.estimatedCostUsd) totalCost += event.estimatedCostUsd;
           if (event.responseTimeMs) {
             totalResponseTime += event.responseTimeMs;
             responseTimeCount++;
@@ -152,7 +157,24 @@ export class AnalyticsCommand implements Command {
         totalCommands > 0 ? ((successfulCommands / totalCommands) * 100).toFixed(1) : '0';
 
       // Estimated cost (rough approximation)
-      const estimatedCost = ((totalTokens / 1000) * 0.002).toFixed(4); // Rough estimate at $0.002/1K tokens
+      const aggCost = costAggregate?.totalCost ?? 0;
+      const aggTokens = (costAggregate?.inputTokens ?? 0) + (costAggregate?.outputTokens ?? 0);
+
+      const estimatedCost =
+        aggCost > 0
+          ? aggCost.toFixed(4)
+          : totalCost > 0
+            ? totalCost.toFixed(4)
+            : ((totalTokens / 1000) * 0.002).toFixed(4); // fallback rough estimate
+
+      const displayTokens = aggTokens > 0 ? aggTokens : totalTokens;
+
+      const providerCostBreakdown = costAggregate?.providerBreakdown
+        ? Object.entries(costAggregate.providerBreakdown)
+            .filter(([, value]) => Number(value) > 0)
+            .map(([provider, value]) => `• **${provider}**: $${Number(value).toFixed(4)}`)
+            .join('\n') || 'No provider cost data'
+        : 'No provider cost data';
 
       const embed = new EmbedBuilder()
         .setTitle(`📊 Analytics Dashboard (${days}d)`)
@@ -179,8 +201,13 @@ export class AnalyticsCommand implements Command {
             inline: false
           },
           {
-            name: '💰 Token Usage',
-            value: `Total Tokens: **${totalTokens.toLocaleString()}**\nEst. Cost: **$${estimatedCost}**`,
+            name: '💰 Usage & Cost',
+            value: `Total Tokens: **${displayTokens.toLocaleString()}**\nEst. Cost (30d window data): **$${estimatedCost}**`,
+            inline: false
+          },
+          {
+            name: '🧾 Provider Cost Breakdown (30d)',
+            value: providerCostBreakdown,
             inline: false
           }
         )
