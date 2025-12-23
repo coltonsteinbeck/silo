@@ -137,7 +137,9 @@ class GuildManager {
 
     // Last resort: return first text channel without permission check
     if (textChannels.size > 0) {
-      console.warn(`No channels with verified permissions in ${guild.name}, trying first text channel`);
+      console.warn(
+        `No channels with verified permissions in ${guild.name}, trying first text channel`
+      );
       return textChannels.first() as TextChannel;
     }
 
@@ -292,7 +294,9 @@ class GuildManager {
     try {
       const channel = await this.findWarningChannel(guild);
       if (!channel) {
-        console.error(`[Welcome] Could not find a channel to send welcome message in ${guild.name}`);
+        console.error(
+          `[Welcome] Could not find a channel to send welcome message in ${guild.name}`
+        );
         return;
       }
 
@@ -303,7 +307,7 @@ class GuildManager {
         .setColor(0x5865f2) // Discord blurple
         .setDescription(
           `Thanks for adding **Silo** to **${guild.name}**!\n\n` +
-          `I'm an AI-powered bot that can help with conversations, voice chat, image generation, and more.`
+            `I'm an AI-powered bot that can help with conversations, voice chat, image generation, and more.`
         )
         .addFields(
           {
@@ -352,8 +356,8 @@ class GuildManager {
       .setColor(0xffa500) // Orange
       .setDescription(
         `Thank you for adding Silo to your server!\n\n` +
-        `Due to high demand, we've reached our current capacity of **5 active guilds**. ` +
-        `Your server has been added to our waitlist.`
+          `Due to high demand, we've reached our current capacity of **5 active guilds**. ` +
+          `Your server has been added to our waitlist.`
       )
       .addFields(
         { name: 'Your Position', value: `#${position}`, inline: true },
@@ -417,7 +421,7 @@ class GuildManager {
             .setColor(0xff0000) // Red
             .setDescription(
               `Due to **30 days of inactivity**, Silo has been deactivated on this server.\n\n` +
-              `Your data will be retained for **30 days** in case you want to return.`
+                `Your data will be retained for **30 days** in case you want to return.`
             )
             .addFields(
               {
@@ -471,7 +475,7 @@ class GuildManager {
             .setColor(0x00ff00) // Green
             .setDescription(
               `Great news! A spot has opened up and **${guild.name}** can now use Silo!\n\n` +
-              `You have **48 hours** to activate your slot by using any Silo command.`
+                `You have **48 hours** to activate your slot by using any Silo command.`
             )
             .addFields(
               {
@@ -548,8 +552,8 @@ class GuildManager {
         .setColor(urgencyColor)
         .setDescription(
           `This server hasn't used Silo in **${daysInactive} days**.\n\n` +
-          `To keep our limited slots available for active communities, ` +
-          `inactive servers are automatically rotated out.`
+            `To keep our limited slots available for active communities, ` +
+            `inactive servers are automatically rotated out.`
         )
         .addFields(
           {

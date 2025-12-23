@@ -240,8 +240,10 @@ export class HealthServer {
    */
   private createHealthEmbed(status: 'healthy' | 'unhealthy' | 'shutdown', health: HealthStatus) {
     const statusEmoji = status === 'healthy' ? '✅' : status === 'unhealthy' ? '⚠️' : '🔴';
-    const statusColor = status === 'healthy' ? 0x00ff00 : status === 'unhealthy' ? 0xffaa00 : 0xff0000;
-    const statusText = status === 'shutdown' ? 'Shutting Down' : status === 'healthy' ? 'Healthy' : 'Unhealthy';
+    const statusColor =
+      status === 'healthy' ? 0x00ff00 : status === 'unhealthy' ? 0xffaa00 : 0xff0000;
+    const statusText =
+      status === 'shutdown' ? 'Shutting Down' : status === 'healthy' ? 'Healthy' : 'Unhealthy';
 
     return {
       title: `${statusEmoji} Bot Health Status: ${statusText}`,

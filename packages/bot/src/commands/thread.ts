@@ -7,6 +7,7 @@ import {
 import { Command } from './types';
 import { DatabaseAdapter } from '@silo/core';
 import { ProviderRegistry } from '../providers/registry';
+import { AdminAdapter } from '../database/admin-adapter';
 
 export class ThreadCommand implements Command {
   data = new SlashCommandBuilder()
@@ -21,7 +22,8 @@ export class ThreadCommand implements Command {
 
   constructor(
     private db: DatabaseAdapter,
-    private registry: ProviderRegistry
+    private registry: ProviderRegistry,
+    private adminDb?: AdminAdapter
   ) {}
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -38,7 +40,14 @@ export class ThreadCommand implements Command {
     if (!threadName) {
       const history = await this.db.getConversationHistory(interaction.channelId, 5);
       if (history.length > 0) {
-        const provider = this.registry.getTextProvider();
+        // Get guild's preferred provider
+        let preferredProvider: string | undefined;
+        if (this.adminDb && interaction.guildId) {
+          const serverConfig = await this.adminDb.getServerConfig(interaction.guildId);
+          preferredProvider = serverConfig?.defaultProvider || undefined;
+        }
+
+        const provider = this.registry.getTextProvider(preferredProvider);
         const context = history.map(m => m.content).join('\n');
 
         const response = await provider.generateText(

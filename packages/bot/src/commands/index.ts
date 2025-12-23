@@ -17,13 +17,15 @@ import { DatabaseAdapter, Config } from '@silo/core';
 import { ProviderRegistry } from '../providers/registry';
 import { AdminAdapter } from '../database/admin-adapter';
 import { PermissionManager } from '../permissions/manager';
+import { QuotaMiddleware } from '../middleware/quota';
 
 export function createCommands(
   db: DatabaseAdapter,
   registry: ProviderRegistry,
   _config: Config, // Reserved for future use
   adminDb: AdminAdapter,
-  permissions: PermissionManager
+  permissions: PermissionManager,
+  quotaMiddleware?: QuotaMiddleware
 ): Collection<string, Command> {
   const commands = new Collection<string, Command>();
 
@@ -37,14 +39,14 @@ export function createCommands(
   commands.set(clearMemory.data.name, clearMemory);
 
   // Media generation
-  const draw = new DrawCommand(registry);
+  const draw = new DrawCommand(registry, quotaMiddleware);
   commands.set(draw.data.name, draw);
 
   // Collaboration features
-  const thread = new ThreadCommand(db, registry);
+  const thread = new ThreadCommand(db, registry, adminDb);
   commands.set(thread.data.name, thread);
 
-  const digest = new DigestCommand(registry);
+  const digest = new DigestCommand(registry, adminDb);
   commands.set(digest.data.name, digest);
 
   // Admin commands
@@ -61,7 +63,7 @@ export function createCommands(
   commands.set(analytics.data.name, analytics);
 
   // Voice commands
-  const speak = new SpeakCommand(adminDb);
+  const speak = new SpeakCommand(adminDb, quotaMiddleware);
   commands.set(speak.data.name, speak);
   commands.set(StopSpeakingCommand.data.name, StopSpeakingCommand);
 

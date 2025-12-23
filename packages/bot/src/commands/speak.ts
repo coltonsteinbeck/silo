@@ -8,6 +8,7 @@ import type { Command } from './types';
 import { voiceSessionManager } from '../voice';
 import { AdminAdapter } from '../database/admin-adapter';
 import { systemPromptManager } from '../security';
+import { QuotaMiddleware } from '../middleware/quota';
 
 export class SpeakCommand implements Command {
   public readonly data = new SlashCommandBuilder()
@@ -37,7 +38,10 @@ export class SpeakCommand implements Command {
         )
     );
 
-  constructor(private adminDb: AdminAdapter) {}
+  constructor(
+    private adminDb: AdminAdapter,
+    private quotaMiddleware?: QuotaMiddleware
+  ) {}
 
   async execute(interaction: ChatInputCommandInteraction) {
     const member = interaction.member as GuildMember;
@@ -92,6 +96,25 @@ export class SpeakCommand implements Command {
         ephemeral: true
       });
       return;
+    }
+
+    // Check voice quota before starting
+    if (this.quotaMiddleware) {
+      const quotaCheck = await this.quotaMiddleware.checkQuota(
+        guildId,
+        userId,
+        member,
+        'voice_minutes',
+        1
+      );
+
+      if (!quotaCheck.allowed) {
+        await interaction.reply({
+          content: `⚠️ ${quotaCheck.reason}`,
+          ephemeral: true
+        });
+        return;
+      }
     }
 
     await interaction.deferReply();

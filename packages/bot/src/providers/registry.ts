@@ -1,6 +1,7 @@
 import type { TextProvider, ImageProvider, Config } from '@silo/core';
 import { OpenAIProvider } from './openai';
 import { AnthropicProvider } from './anthropic';
+import { XAIProvider } from './xai';
 
 export class ProviderRegistry {
   private textProviders: TextProvider[] = [];
@@ -21,6 +22,11 @@ export class ProviderRegistry {
         config.providers.anthropic.apiKey,
         config.providers.anthropic.model
       );
+      this.textProviders.push(provider);
+    }
+
+    if (config.providers.xai?.apiKey) {
+      const provider = new XAIProvider(config.providers.xai.apiKey, config.providers.xai.model);
       this.textProviders.push(provider);
     }
   }

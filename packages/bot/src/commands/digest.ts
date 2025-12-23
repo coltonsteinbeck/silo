@@ -6,6 +6,7 @@ import {
 } from 'discord.js';
 import { Command } from './types';
 import { ProviderRegistry } from '../providers/registry';
+import { AdminAdapter } from '../database/admin-adapter';
 
 export class DigestCommand implements Command {
   data = new SlashCommandBuilder()
@@ -30,7 +31,10 @@ export class DigestCommand implements Command {
         .setRequired(false)
     );
 
-  constructor(private registry: ProviderRegistry) {}
+  constructor(
+    private registry: ProviderRegistry,
+    private adminDb?: AdminAdapter
+  ) {}
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     await interaction.deferReply();
@@ -82,8 +86,15 @@ export class DigestCommand implements Command {
       return;
     }
 
+    // Get guild's preferred provider
+    let preferredProvider: string | undefined;
+    if (this.adminDb && interaction.guildId) {
+      const serverConfig = await this.adminDb.getServerConfig(interaction.guildId);
+      preferredProvider = serverConfig?.defaultProvider || undefined;
+    }
+
     // Generate AI summary
-    const provider = this.registry.getTextProvider();
+    const provider = this.registry.getTextProvider(preferredProvider);
     const context = allMessages.join('\n');
 
     const response = await provider.generateText(

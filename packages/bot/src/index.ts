@@ -42,6 +42,7 @@ import {
   deploymentDetector,
   systemPromptManager
 } from './security';
+import { QuotaMiddleware } from './middleware/quota';
 
 /**
  * Handle modal submissions (e.g., system prompt editor)
@@ -124,13 +125,14 @@ async function main() {
   // Initialize admin database
   const adminDb = new AdminAdapter(db.pool);
   const permissions = new PermissionManager(adminDb);
+  const quotaMiddleware = new QuotaMiddleware(adminDb, permissions);
 
   const providers = new ProviderRegistry(config);
   const available = providers.getAvailableProviders();
   logger.info('Available providers:', available);
 
   // Create commands
-  const commands = createCommands(db, providers, config, adminDb, permissions);
+  const commands = createCommands(db, providers, config, adminDb, permissions, quotaMiddleware);
   logger.info(`Loaded ${commands.size} commands`);
 
   // Initialize security modules and log deployment mode
@@ -282,7 +284,28 @@ async function main() {
         );
       }
 
-      const textProvider = providers.getTextProvider();
+      // Check quota before processing (estimate ~500 tokens for a typical request)
+      const member = await message.guild!.members.fetch(message.author.id);
+      const quotaCheck = await quotaMiddleware.checkQuota(
+        message.guildId,
+        message.author.id,
+        member,
+        'text_tokens',
+        500
+      );
+
+      if (!quotaCheck.allowed) {
+        await message.reply({
+          content: `⚠️ ${quotaCheck.reason}`,
+          allowedMentions: { repliedUser: false }
+        });
+        return;
+      }
+
+      // Get guild's preferred provider (from /config provider command)
+      const serverConfig = await adminDb.getServerConfig(message.guildId);
+      const preferredProvider = serverConfig?.defaultProvider;
+      const textProvider = providers.getTextProvider(preferredProvider || undefined);
 
       // Get the system prompt for this guild
       const { prompt: dbPrompt, enabled: promptEnabled } = await adminDb.getSystemPrompt(
@@ -331,6 +354,15 @@ async function main() {
         role: 'assistant',
         content: response.content
       });
+
+      // Record actual token usage
+      const tokensUsed = response.usage?.totalTokens || 500;
+      await quotaMiddleware.recordUsage(
+        message.guildId,
+        message.author.id,
+        'text_tokens',
+        tokensUsed
+      );
 
       await message.reply({
         content: response.content,

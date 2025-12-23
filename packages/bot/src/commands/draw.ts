@@ -2,10 +2,12 @@ import {
   AttachmentBuilder,
   ChatInputCommandInteraction,
   EmbedBuilder,
+  GuildMember,
   SlashCommandBuilder
 } from 'discord.js';
 import { Command } from './types';
 import { ProviderRegistry } from '../providers/registry';
+import { QuotaMiddleware } from '../middleware/quota';
 
 export class DrawCommand implements Command {
   data = new SlashCommandBuilder()
@@ -38,9 +40,32 @@ export class DrawCommand implements Command {
         )
     );
 
-  constructor(private registry: ProviderRegistry) {}
+  constructor(
+    private registry: ProviderRegistry,
+    private quotaMiddleware?: QuotaMiddleware
+  ) {}
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
+    // Check quota before deferring (if quota middleware is available)
+    if (this.quotaMiddleware && interaction.guildId) {
+      const member = interaction.member as GuildMember;
+      const quotaCheck = await this.quotaMiddleware.checkQuota(
+        interaction.guildId,
+        interaction.user.id,
+        member,
+        'images',
+        1
+      );
+
+      if (!quotaCheck.allowed) {
+        await interaction.reply({
+          content: `⚠️ ${quotaCheck.reason}`,
+          ephemeral: true
+        });
+        return;
+      }
+    }
+
     await interaction.deferReply();
 
     const prompt = interaction.options.getString('prompt', true);
@@ -110,6 +135,16 @@ export class DrawCommand implements Command {
         embeds: [embed],
         files: [fileAttachment]
       });
+
+      // Record usage after successful generation
+      if (this.quotaMiddleware && interaction.guildId) {
+        await this.quotaMiddleware.recordUsage(
+          interaction.guildId,
+          interaction.user.id,
+          'images',
+          1
+        );
+      }
     } catch (error) {
       console.error('[DrawCommand] Error generating image:', error);
       await interaction.editReply(
