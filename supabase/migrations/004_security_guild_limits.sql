@@ -344,13 +344,25 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION get_waitlist_position(p_guild_id TEXT)
 RETURNS INTEGER AS $$
 DECLARE
-    v_position INTEGER;
+    v_target_position INTEGER;
+    v_count INTEGER;
 BEGIN
-    SELECT COUNT(*)::INTEGER INTO v_position
-    FROM guild_waitlist w
-    WHERE w.status = 'waiting'
-      AND w.position <= (SELECT position FROM guild_waitlist WHERE guild_id = p_guild_id);
+    -- Get the target guild's position
+    SELECT position INTO v_target_position
+    FROM guild_waitlist
+    WHERE guild_id = p_guild_id;
     
-    RETURN v_position;
+    -- Return NULL if guild not found
+    IF v_target_position IS NULL THEN
+        RETURN NULL;
+    END IF;
+    
+    -- Count guilds ahead of or at the same position
+    SELECT COUNT(*)::INTEGER INTO v_count
+    FROM guild_waitlist
+    WHERE status = 'waiting'
+      AND position <= v_target_position;
+    
+    RETURN v_count;
 END;
 $$ LANGUAGE plpgsql;

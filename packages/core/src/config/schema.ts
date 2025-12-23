@@ -21,6 +21,13 @@ export const ProviderConfigSchema = z.object({
       baseURL: z.string().url().default('https://api.x.ai/v1')
     })
     .optional(),
+  local: z
+    .object({
+      apiKey: z.string().optional(),
+      model: z.string().default('llama3.1'),
+      baseURL: z.string().url().default('http://localhost:11434/v1')
+    })
+    .optional(),
   google: z
     .object({
       apiKey: z.string().optional(),

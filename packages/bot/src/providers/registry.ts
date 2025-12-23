@@ -2,6 +2,7 @@ import type { TextProvider, ImageProvider, Config } from '@silo/core';
 import { OpenAIProvider } from './openai';
 import { AnthropicProvider } from './anthropic';
 import { XAIProvider } from './xai';
+import { LocalOpenAIProvider } from './local-openai';
 
 export class ProviderRegistry {
   private textProviders: TextProvider[] = [];
@@ -27,6 +28,15 @@ export class ProviderRegistry {
 
     if (config.providers.xai?.apiKey) {
       const provider = new XAIProvider(config.providers.xai.apiKey, config.providers.xai.model);
+      this.textProviders.push(provider);
+    }
+
+    if (config.features.enableLocalModels && config.providers.local?.baseURL) {
+      const provider = new LocalOpenAIProvider(
+        config.providers.local.apiKey,
+        config.providers.local.model,
+        config.providers.local.baseURL
+      );
       this.textProviders.push(provider);
     }
   }

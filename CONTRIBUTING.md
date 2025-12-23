@@ -473,7 +473,7 @@ silo/
 │           ├── providers/    # AI provider integrations
 │           ├── security/     # Security utilities
 │           └── voice/        # Voice session management
-├── database/
+├── supabase/
 │   └── migrations/           # SQL migrations (numbered)
 ├── scripts/                  # Setup and deployment scripts
 ├── logs/                     # Application logs (git-ignored)
@@ -518,7 +518,7 @@ Don't forget to:
 
 ### Database Changes
 
-1. Create a new migration file in `database/migrations/`
+1. Create a new migration file in `supabase/migrations/`
 2. Use sequential numbering: `006_feature_name.sql`
 3. Make migrations idempotent with `IF NOT EXISTS`
 4. Test with `bun run migrate`

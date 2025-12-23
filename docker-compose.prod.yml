@@ -39,7 +39,7 @@ services:
       POSTGRES_DB: silo
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./database/migrations:/docker-entrypoint-initdb.d:ro
+      - ./supabase/migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U silo -d silo"]
       interval: 10s

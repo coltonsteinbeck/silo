@@ -42,6 +42,7 @@ export class RealtimeSession {
   private isListening = false;
   private currentAudioStream: Readable | null = null;
   private opusDecoder: OpusEncoder | null = null;
+  private startTime: number | null = null;
 
   constructor(apiKey: string, userId: string, options: RealtimeSessionOptions = {}) {
     this.apiKey = apiKey;
@@ -91,6 +92,7 @@ export class RealtimeSession {
 
       this.ws.on('open', () => {
         clearTimeout(timeout);
+        this.startTime = Date.now();
         this.configureSession();
         resolve();
       });
@@ -505,17 +507,21 @@ export class RealtimeSession {
   }
 
   /**
-   * Disconnect from the API
+   * Disconnect from the API and return session duration in milliseconds
    */
-  async disconnect(): Promise<void> {
+  async disconnect(): Promise<number> {
     this.stopListening();
     this.audioQueue = [];
     this.audioPlayer.stop();
+
+    const durationMs = this.startTime ? Date.now() - this.startTime : 0;
 
     if (this.ws) {
       this.ws.close();
       this.ws = null;
     }
+
+    return durationMs;
   }
 
   /**

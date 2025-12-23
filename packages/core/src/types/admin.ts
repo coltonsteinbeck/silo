@@ -46,7 +46,12 @@ export interface AnalyticsEvent {
   eventType: string;
   command?: string;
   provider?: string;
+  model?: string;
+  inputTokens?: number;
+  outputTokens?: number;
   tokensUsed?: number;
+  durationMs?: number;
+  estimatedCostUsd?: number;
   responseTimeMs?: number;
   success: boolean;
   metadata?: Record<string, unknown>;

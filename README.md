@@ -58,6 +58,34 @@ bun run dev:bot
 bun run start:prod
 ```
 
+### Deployment Modes & Environments
+
+- `DEPLOYMENT_MODE=production` (hosted) uses `HOSTED_DB_IDENTIFIER` + `SUPABASE_PW` to build `DATABASE_URL`.
+- `DEPLOYMENT_MODE=development` uses `DEV_DB_IDENTIFIER` + `SUPABASE_DEV_PW` (Supabase branch-friendly).
+- `DEPLOYMENT_MODE=self-hosted` or explicit `DATABASE_URL` keeps full manual control.
+
+Supabase branch examples:
+
+```bash
+DEPLOYMENT_MODE=development
+DEV_DB_IDENTIFIER=dev-xxxxx.supabase.co
+SUPABASE_DEV_PW=your-dev-postgres-password
+
+# For prod/hosted
+DEPLOYMENT_MODE=production
+HOSTED_DB_IDENTIFIER=prod-xxxxx.supabase.co
+SUPABASE_PW=your-prod-postgres-password
+```
+
+Local model (Ollama / LM Studio) example:
+
+```bash
+ENABLE_LOCAL_MODELS=true
+LOCAL_BASE_URL=http://localhost:11434/v1
+LOCAL_MODEL=llama3.1
+# LOCAL_API_KEY=optional (many local endpoints ignore it)
+```
+
 ### Docker Deployment
 
 ```bash
@@ -90,7 +118,7 @@ docker-compose -f docker-compose.prod.yml up -d
 
 ### Core Capabilities
 
-- **Multi-Provider AI**: OpenAI (gpt-5-mini), Anthropic, xAI, Google support
+- **Multi-Provider AI**: OpenAI (gpt-5-mini), Anthropic, xAI, Google, local OpenAI-compatible (Ollama/LM Studio)
 - **Conversational AI**: @mention bot for natural conversations with context
 - **Realtime Voice**: Talk to Silo in voice channels with multiple voice options (alloy, ash, ballad, coral, echo, sage, shimmer, verse)
 - **Advanced Memory**: User and server memory systems with search
@@ -181,9 +209,7 @@ silo/
 ├── packages/
 │   ├── core/          # Shared config, types, utilities
 │   └── bot/           # Discord bot implementation
-├── services/
-│   └── ml/            # Python ML service (optional)
-├── database/
+├── supabase/
 │   └── migrations/    # SQL migrations
 ├── scripts/           # Setup and deployment scripts
 └── docker-compose.yml # Local infrastructure

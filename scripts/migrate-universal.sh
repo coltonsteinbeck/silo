@@ -18,7 +18,7 @@ if ! command -v psql &> /dev/null; then
 fi
 
 # Run migrations
-for migration in database/migrations/*.sql; do
+for migration in supabase/migrations/*.sql; do
     if [ -f "$migration" ]; then
         echo "Running $(basename "$migration")..."
         psql "$DATABASE_URL" < "$migration"
