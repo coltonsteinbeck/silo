@@ -324,16 +324,26 @@ export class PostgresAdapter implements DatabaseAdapter {
   }
 
   // Conversation History
-  async getConversationHistory(channelId: string, limit = 20): Promise<ConversationMessage[]> {
+  // Retrieves conversation history scoped to: channel + prompt context
+  // This maintains natural group conversation flow while isolating different prompt personalities
+  async getConversationHistory(
+    channelId: string,
+    promptHash: string,
+    limit = 20
+  ): Promise<ConversationMessage[]> {
     const result = await this.pool.query(
-      'SELECT * FROM conversation_messages WHERE channel_id = $1 ORDER BY created_at DESC LIMIT $2',
-      [channelId, limit]
+      `SELECT * FROM conversation_messages 
+       WHERE channel_id = $1 AND prompt_hash = $2 
+       ORDER BY created_at DESC LIMIT $3`,
+      [channelId, promptHash, limit]
     );
 
     return result.rows.reverse().map((row: any) => ({
       id: row.id,
+      guildId: row.guild_id,
       channelId: row.channel_id,
       userId: row.user_id,
+      promptHash: row.prompt_hash,
       role: row.role,
       content: row.content,
       createdAt: new Date(row.created_at)
@@ -344,24 +354,42 @@ export class PostgresAdapter implements DatabaseAdapter {
     message: Omit<ConversationMessage, 'id' | 'createdAt'>
   ): Promise<ConversationMessage> {
     const result = await this.pool.query(
-      `INSERT INTO conversation_messages (channel_id, user_id, role, content)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO conversation_messages (guild_id, channel_id, user_id, prompt_hash, role, content)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
-      [message.channelId, message.userId, message.role, message.content]
+      [
+        message.guildId,
+        message.channelId,
+        message.userId,
+        message.promptHash,
+        message.role,
+        message.content
+      ]
     );
 
     const row = result.rows[0];
     return {
       id: row.id,
+      guildId: row.guild_id,
       channelId: row.channel_id,
       userId: row.user_id,
+      promptHash: row.prompt_hash,
       role: row.role,
       content: row.content,
       createdAt: new Date(row.created_at)
     };
   }
 
-  async clearConversationHistory(channelId: string): Promise<void> {
-    await this.pool.query('DELETE FROM conversation_messages WHERE channel_id = $1', [channelId]);
+  async clearConversationHistory(channelId: string, promptHash?: string): Promise<void> {
+    if (promptHash) {
+      // Clear history for a specific prompt context in this channel
+      await this.pool.query(
+        'DELETE FROM conversation_messages WHERE channel_id = $1 AND prompt_hash = $2',
+        [channelId, promptHash]
+      );
+    } else {
+      // Clear all history for this channel
+      await this.pool.query('DELETE FROM conversation_messages WHERE channel_id = $1', [channelId]);
+    }
   }
 }

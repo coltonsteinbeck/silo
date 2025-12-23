@@ -53,7 +53,7 @@ describe('ConfigSchema', () => {
       const result = ProviderConfigSchema.safeParse({
         xai: {
           apiKey: 'xai-test',
-          model: 'grok-beta',
+          model: 'grok-3-mini',
           baseURL: 'https://api.x.ai/v1'
         }
       });

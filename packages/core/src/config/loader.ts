@@ -24,7 +24,7 @@ export class ConfigLoader {
         xai: process.env.XAI_API_KEY
           ? {
               apiKey: process.env.XAI_API_KEY,
-              model: process.env.XAI_MODEL || 'grok-beta'
+              model: process.env.XAI_MODEL || 'grok-3-mini'
             }
           : undefined,
         google: process.env.GOOGLE_API_KEY

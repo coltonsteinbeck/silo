@@ -38,7 +38,8 @@ export class ThreadCommand implements Command {
 
     // AI-generate thread name if not provided
     if (!threadName) {
-      const history = await this.db.getConversationHistory(interaction.channelId, 5);
+      // For thread naming, we just need recent messages from this channel
+      const history = await this.db.getConversationHistory(interaction.channelId, 'default', 5);
       if (history.length > 0) {
         // Get guild's preferred provider
         let preferredProvider: string | undefined;

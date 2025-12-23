@@ -28,6 +28,7 @@ import {
   ButtonInteraction,
   ModalSubmitInteraction
 } from 'discord.js';
+import { createHash } from 'crypto';
 import { ConfigLoader, logger } from '@silo/core';
 import { ProviderRegistry } from './providers/registry';
 import { PostgresAdapter } from './database/postgres';
@@ -307,6 +308,10 @@ async function main() {
       const preferredProvider = serverConfig?.defaultProvider;
       const textProvider = providers.getTextProvider(preferredProvider || undefined);
 
+      logger.info(
+        `Guild ${message.guildId} using provider: ${textProvider.name} (configured: ${preferredProvider || 'default'})`
+      );
+
       // Get the system prompt for this guild
       const { prompt: dbPrompt, enabled: promptEnabled } = await adminDb.getSystemPrompt(
         message.guildId
@@ -315,13 +320,24 @@ async function main() {
 
       // Provider-specific default prompts - servers should set their own via /config system-prompt
       const providerPrompts: Record<string, string> = {
-        openai: 'You are a helpful Discord bot assistant powered by OpenAI. Be helpful, friendly, and conversational.',
-        anthropic: 'You are a helpful Discord bot assistant powered by Claude. Be helpful, friendly, and conversational.',
-        xai: 'You are a helpful Discord bot assistant powered by Grok. Be helpful, friendly, and conversational.',
-        google: 'You are a helpful Discord bot assistant powered by Gemini. Be helpful, friendly, and conversational.'
+        openai:
+          'You are a helpful Discord bot assistant. You are powered by OpenAI GPT models. Be helpful, friendly, and conversational. Never claim to be a different AI model than what you actually are.',
+        anthropic:
+          'You are a helpful Discord bot assistant. You are Claude, made by Anthropic. Be helpful, friendly, and conversational. Never claim to be a different AI model than what you actually are.',
+        xai: 'You are a helpful Discord bot assistant. You are Grok, made by xAI. You are NOT GPT, ChatGPT, or any OpenAI model. If asked what model you are, say you are Grok by xAI. Be helpful, friendly, and conversational.',
+        google:
+          'You are a helpful Discord bot assistant. You are Gemini, made by Google. Be helpful, friendly, and conversational. Never claim to be a different AI model than what you actually are.'
       };
-      const defaultPrompt = providerPrompts[textProvider.name] || 'You are a helpful Discord bot assistant. Be helpful, friendly, and conversational.';
+      const defaultPrompt =
+        providerPrompts[textProvider.name] ||
+        'You are a helpful Discord bot assistant. Be helpful, friendly, and conversational.';
       const systemPrompt = promptConfig.prompt || defaultPrompt;
+
+      // Compute prompt hash for conversation isolation
+      // 'default' for provider defaults, SHA256 hash for custom prompts
+      const promptHash = promptConfig.prompt
+        ? createHash('sha256').update(promptConfig.prompt).digest('hex').substring(0, 16)
+        : 'default';
 
       if (promptConfig.warnings.length > 0) {
         logger.warn(
@@ -329,8 +345,9 @@ async function main() {
         );
       }
 
-      // Get conversation history
-      const history = await db.getConversationHistory(message.channelId, 10);
+      // Get conversation history scoped to: channel + prompt context
+      // This maintains group conversation flow while isolating different prompt personalities
+      const history = await db.getConversationHistory(message.channelId, promptHash, 10);
       const messages = history.map(msg => ({
         role: msg.role,
         content: msg.content
@@ -338,8 +355,10 @@ async function main() {
 
       // Store user message
       await db.storeConversationMessage({
+        guildId: message.guildId,
         channelId: message.channelId,
         userId: message.author.id,
+        promptHash,
         role: 'user',
         content: processedContent
       });
@@ -358,8 +377,10 @@ async function main() {
 
       // Store assistant response
       await db.storeConversationMessage({
+        guildId: message.guildId,
         channelId: message.channelId,
         userId: message.author.id,
+        promptHash,
         role: 'assistant',
         content: response.content
       });

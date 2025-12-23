@@ -32,8 +32,10 @@ export interface UserPreference {
 
 export interface ConversationMessage {
   id: string;
+  guildId: string;
   channelId: string;
   userId: string;
+  promptHash: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
   createdAt: Date;
@@ -68,11 +70,15 @@ export interface DatabaseAdapter {
   setUserPreference(userId: string, key: string, value: string): Promise<void>;
 
   // Conversation History
-  getConversationHistory(channelId: string, limit?: number): Promise<ConversationMessage[]>;
+  getConversationHistory(
+    channelId: string,
+    promptHash: string,
+    limit?: number
+  ): Promise<ConversationMessage[]>;
   storeConversationMessage(
     message: Omit<ConversationMessage, 'id' | 'createdAt'>
   ): Promise<ConversationMessage>;
-  clearConversationHistory(channelId: string): Promise<void>;
+  clearConversationHistory(channelId: string, promptHash?: string): Promise<void>;
 
   // Cleanup
   cleanupExpiredMemories(): Promise<number>;
