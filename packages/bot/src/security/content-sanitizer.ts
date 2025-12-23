@@ -132,9 +132,10 @@ class ContentSanitizer {
       let action: ModerationAction = 'allowed';
       let allowed = true;
 
-      // Check for block-worthy categories
+      // Check for block-worthy categories - ONLY block for severe categories
+      // Regular violence, harassment etc should warn, not block (allows casual speech like "punch my friends")
       const shouldBlock = flaggedCategories.some(
-        cat => BLOCK_CATEGORIES.includes(cat) || (scores[cat] && scores[cat] >= SCORE_THRESHOLD)
+        cat => BLOCK_CATEGORIES.includes(cat) && scores[cat] && scores[cat] >= SCORE_THRESHOLD
       );
 
       if (shouldBlock) {

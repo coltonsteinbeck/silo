@@ -312,7 +312,16 @@ async function main() {
         message.guildId
       );
       const promptConfig = systemPromptManager.getEffectivePrompt(dbPrompt, promptEnabled);
-      const systemPrompt = promptConfig.prompt || 'You are a helpful Discord bot assistant.';
+
+      // Provider-specific default prompts - servers should set their own via /config system-prompt
+      const providerPrompts: Record<string, string> = {
+        openai: 'You are a helpful Discord bot assistant powered by OpenAI. Be helpful, friendly, and conversational.',
+        anthropic: 'You are a helpful Discord bot assistant powered by Claude. Be helpful, friendly, and conversational.',
+        xai: 'You are a helpful Discord bot assistant powered by Grok. Be helpful, friendly, and conversational.',
+        google: 'You are a helpful Discord bot assistant powered by Gemini. Be helpful, friendly, and conversational.'
+      };
+      const defaultPrompt = providerPrompts[textProvider.name] || 'You are a helpful Discord bot assistant. Be helpful, friendly, and conversational.';
+      const systemPrompt = promptConfig.prompt || defaultPrompt;
 
       if (promptConfig.warnings.length > 0) {
         logger.warn(
