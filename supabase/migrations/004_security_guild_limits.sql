@@ -460,46 +460,53 @@ $$ LANGUAGE plpgsql;
 -- DOWN MIGRATION (uncomment to rollback)
 -- ============================================================================
 
--- Drop functions (in reverse dependency order)
-DROP FUNCTION IF EXISTS get_waitlist_position(TEXT);
-DROP FUNCTION IF EXISTS expire_old_waitlist_notifications();
-DROP FUNCTION IF EXISTS notify_next_waitlist_guild();
-DROP FUNCTION IF EXISTS get_next_waitlist_guild();
-DROP FUNCTION IF EXISTS can_add_guild_to_registry(TEXT);
-DROP FUNCTION IF EXISTS get_active_hosted_guild_count();
-
--- Disable RLS on all tables before dropping policies
-ALTER TABLE user_memory DISABLE ROW LEVEL SECURITY;
-ALTER TABLE server_memory DISABLE ROW LEVEL SECURITY;
-ALTER TABLE conversation_messages DISABLE ROW LEVEL SECURITY;
-ALTER TABLE user_preferences DISABLE ROW LEVEL SECURITY;
-ALTER TABLE guild_registry DISABLE ROW LEVEL SECURITY;
-ALTER TABLE guild_waitlist DISABLE ROW LEVEL SECURITY;
-ALTER TABLE content_moderation_log DISABLE ROW LEVEL SECURITY;
-
--- Drop RLS policies on initial tables
-DROP POLICY IF EXISTS "service_role_all_user_memory" ON user_memory;
-DROP POLICY IF EXISTS "service_role_all_server_memory" ON server_memory;
-DROP POLICY IF EXISTS "service_role_all_conversations" ON conversation_messages;
-DROP POLICY IF EXISTS "service_role_all_preferences" ON user_preferences;
-
--- Drop RLS policies on new tables
-DROP POLICY IF EXISTS "service_role_all_guild_registry" ON guild_registry;
-DROP POLICY IF EXISTS "service_role_all_guild_waitlist" ON guild_waitlist;
-DROP POLICY IF EXISTS "service_role_all_content_moderation" ON content_moderation_log;
-
--- Drop indexes
-DROP INDEX IF EXISTS idx_guild_registry_active;
-DROP INDEX IF EXISTS idx_guild_registry_activity;
-DROP INDEX IF EXISTS idx_guild_registry_deletion;
-DROP INDEX IF EXISTS idx_waitlist_status_position;
-DROP INDEX IF EXISTS idx_waitlist_expires;
-DROP INDEX IF EXISTS idx_moderation_hash;
-DROP INDEX IF EXISTS idx_moderation_user_action;
-DROP INDEX IF EXISTS idx_moderation_guild;
-DROP INDEX IF EXISTS idx_moderation_blocked;
-
--- Drop tables (in reverse creation order)
-DROP TABLE IF EXISTS content_moderation_log;
-DROP TABLE IF EXISTS guild_waitlist;
-DROP TABLE IF EXISTS guild_registry;
+-- -- Drop functions (in reverse dependency order)
+-- DROP FUNCTION IF EXISTS get_waitlist_position(TEXT);
+-- DROP FUNCTION IF EXISTS delete_guild_data(TEXT);
+-- DROP FUNCTION IF EXISTS expire_old_waitlist_notifications();
+-- DROP FUNCTION IF EXISTS promote_from_waitlist();
+-- DROP FUNCTION IF EXISTS deactivate_guild(TEXT, TEXT);
+-- DROP FUNCTION IF EXISTS mark_warning_sent(TEXT);
+-- DROP FUNCTION IF EXISTS update_guild_activity(TEXT);
+-- DROP FUNCTION IF EXISTS get_guilds_for_data_deletion();
+-- DROP FUNCTION IF EXISTS get_guilds_to_evict();
+-- DROP FUNCTION IF EXISTS get_guilds_needing_warning();
+-- DROP FUNCTION IF EXISTS get_next_waitlist_guild();
+-- DROP FUNCTION IF EXISTS can_add_hosted_guild(INTEGER);
+-- DROP FUNCTION IF EXISTS get_active_hosted_guild_count();
+-- 
+-- -- Disable RLS on all tables before dropping policies
+-- ALTER TABLE user_memory DISABLE ROW LEVEL SECURITY;
+-- ALTER TABLE server_memory DISABLE ROW LEVEL SECURITY;
+-- ALTER TABLE conversation_messages DISABLE ROW LEVEL SECURITY;
+-- ALTER TABLE user_preferences DISABLE ROW LEVEL SECURITY;
+-- ALTER TABLE guild_registry DISABLE ROW LEVEL SECURITY;
+-- ALTER TABLE guild_waitlist DISABLE ROW LEVEL SECURITY;
+-- ALTER TABLE content_moderation_log DISABLE ROW LEVEL SECURITY;
+-- 
+-- -- Drop RLS policies on initial tables
+-- DROP POLICY IF EXISTS "service_role_all_user_memory" ON user_memory;
+-- DROP POLICY IF EXISTS "service_role_all_server_memory" ON server_memory;
+-- DROP POLICY IF EXISTS "service_role_all_conversations" ON conversation_messages;
+-- DROP POLICY IF EXISTS "service_role_all_preferences" ON user_preferences;
+-- 
+-- -- Drop RLS policies on new tables
+-- DROP POLICY IF EXISTS "service_role_all_guild_registry" ON guild_registry;
+-- DROP POLICY IF EXISTS "service_role_all_guild_waitlist" ON guild_waitlist;
+-- DROP POLICY IF EXISTS "service_role_all_content_moderation" ON content_moderation_log;
+-- 
+-- -- Drop indexes
+-- DROP INDEX IF EXISTS idx_guild_registry_active;
+-- DROP INDEX IF EXISTS idx_guild_registry_activity;
+-- DROP INDEX IF EXISTS idx_guild_registry_deletion;
+-- DROP INDEX IF EXISTS idx_waitlist_status_position;
+-- DROP INDEX IF EXISTS idx_waitlist_expires;
+-- DROP INDEX IF EXISTS idx_moderation_hash;
+-- DROP INDEX IF EXISTS idx_moderation_user_action;
+-- DROP INDEX IF EXISTS idx_moderation_guild;
+-- DROP INDEX IF EXISTS idx_moderation_blocked;
+-- 
+-- -- Drop tables (in reverse creation order)
+-- DROP TABLE IF EXISTS content_moderation_log CASCADE;
+-- DROP TABLE IF EXISTS guild_waitlist CASCADE;
+-- DROP TABLE IF EXISTS guild_registry CASCADE;
