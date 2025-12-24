@@ -50,10 +50,10 @@ CREATE INDEX IF NOT EXISTS idx_guild_cost_summary_period
 -- Seed starter pricing (can be updated by admins later)
 INSERT INTO provider_pricing (provider, model, input_cost_per_1k, output_cost_per_1k, image_cost, voice_cost_per_minute)
 VALUES
-    ('openai', 'gpt-5-mini', 0.00015, 0.0006, NULL, NULL),
+    ('openai', 'gpt-5-mini', 0.00025, 0.00200, NULL, NULL),
     ('openai', 'gpt-4o', 0.00250, 0.01000, NULL, NULL),
     ('openai', 'gpt-image-1', NULL, NULL, 0.0400, NULL),
     ('openai', 'gpt-realtime-mini', 0.00060, 0.00240, NULL, 0.0600),
     ('anthropic', 'claude-3-5-sonnet-20241022', 0.00300, 0.01500, NULL, NULL),
-    ('xai', 'grok-3-mini', 0.00200, 0.01000, NULL, NULL)
+    ('xai', 'grok-3-mini', 0.00030, 0.00050, NULL, NULL)
 ON CONFLICT DO NOTHING;

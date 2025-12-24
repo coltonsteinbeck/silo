@@ -4,77 +4,36 @@
 # CodeRabbit works via the GitHub App - no workflow file needed
 # Just install the app at: https://github.com/apps/coderabbitai
 
-review:
-  auto_review: true
-  auto_incremental_review: true
+reviews:
+  auto_review:
+    enabled: true
+    drafts: false
   path_filters:
-    # Review these paths
-    include:
-      - packages/**/*.ts
-      - packages/**/*.tsx
-      - supabase/migrations/**/*.sql
-    # Skip these
-    exclude:
-      - '**/*.test.ts'
-      - '**/__tests__/**'
-      - node_modules/**
-      - dist/**
-      - build/**
+    - packages/**/*.ts
+    - packages/**/*.tsx
+    - supabase/migrations/**/*.sql
+    - '!**/*.test.ts'
+    - '!**/__tests__/**'
+    - '!node_modules/**'
+    - '!dist/**'
+    - '!build/**'
+  path_instructions:
+    - path: 'packages/bot/src/commands/**/*.ts'
+      instructions: 'Check that new command features have corresponding tests in __tests__/commands/'
+    - path: 'packages/bot/src/providers/**/*.ts'
+      instructions: 'Check that new provider features have corresponding tests and proper error handling'
+    - path: 'packages/bot/src/security/**/*.ts'
+      instructions: 'Review for input validation, auth checks, and ensure tests cover security scenarios'
+    - path: 'supabase/migrations/**/*.sql'
+      instructions: 'Ensure SQL migrations use IF NOT EXISTS and are reversible'
+    - path: 'packages/**/*.ts'
+      instructions: 'Check for proper type annotations and no any types'
+    - path: 'packages/bot/src/database/**/*.ts'
+      instructions: 'Review for SQL injection prevention, proper parameterized queries, and input validation'
+    - path: 'packages/bot/src/services/cost-aggregator.ts'
+      instructions: 'Ensure cost calculations are correct and properly logged'
+    - path: 'packages/bot/src/database/admin-adapter.ts'
+      instructions: 'Validate cost tracking logic, proper token counting, and accurate price calculations'
 
 chat:
   auto_reply: true
-
-rules:
-  - name: 'Require test coverage for new features'
-    description: 'Check that new command/provider/security features have corresponding tests'
-    condition: 'file_modified("packages/bot/src/commands/**/*.ts") or file_modified("packages/bot/src/providers/**/*.ts") or file_modified("packages/bot/src/security/**/*.ts")'
-    suggest_fix: true
-
-  - name: 'Check migrations are idempotent'
-    description: 'Ensure SQL migrations use IF NOT EXISTS and are reversible'
-    condition: 'file_modified("supabase/migrations/**/*.sql")'
-    suggest_fix: true
-
-  - name: 'Validate TypeScript types'
-    description: 'Check for proper type annotations and no any types'
-    condition: 'file_modified("packages/**/*.ts")'
-    suggest_fix: true
-
-  - name: 'Security checks'
-    description: 'Review for SQL injection, input validation, auth issues'
-    condition: 'file_modified("packages/bot/src/database/**/*.ts") or file_modified("packages/bot/src/security/**/*.ts")'
-    suggest_fix: true
-
-  - name: 'Cost tracking validation'
-    description: 'Ensure cost calculations are correct and logged'
-    condition: 'file_modified("packages/bot/src/services/cost-aggregator.ts") or file_modified("packages/bot/src/database/admin-adapter.ts")'
-    suggest_fix: true
-
-language_models:
-  - name: 'gpt-4'
-    enabled: true
-
-comment_instructions: |
-  Please review this code and focus on:
-  1. **Type Safety**: Proper TypeScript types, no `any` usage
-  2. **Testing**: Adequate test coverage (unit + integration)
-  3. **Security**: Input validation, auth checks, SQL injection prevention
-  4. **Performance**: Efficient queries, proper caching
-  5. **Code Quality**: Clear naming, DRY principle, maintainability
-  6. **Cost Tracking**: Correct pricing calculations and logging
-  7. **Documentation**: Comments for complex logic, proper JSDoc
-  8. **Best Practices**: Following established patterns in codebase
-
-pr_description: |
-  **CodeRabbit Review Settings**
-  
-  This PR will be reviewed by CodeRabbit focusing on:
-  - Type safety and TypeScript best practices
-  - Test coverage and quality
-  - Security vulnerabilities
-  - Cost calculation accuracy (if applicable)
-  - Performance implications
-  - Code maintainability
-
-acknowledgments:
-  include_coderabbit: false
