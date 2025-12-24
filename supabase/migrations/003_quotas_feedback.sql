@@ -4,6 +4,9 @@
 -- to ('bug','feature','praise','general'). This is safe for fresh deployments with no existing data.
 -- If rolling back an existing deployment that had 'other' feedback, manually migrate those rows first.
 
+-- Enable UUID extension for uuid_generate_v4()
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
 -- Guild quotas configuration table
 CREATE TABLE IF NOT EXISTS guild_quotas (
     guild_id TEXT PRIMARY KEY,
@@ -308,3 +311,53 @@ DROP POLICY IF EXISTS "Service role full access to voice_sessions" ON voice_sess
 CREATE POLICY "Service role full access to voice_sessions"
     ON voice_sessions FOR ALL TO service_role
     USING (true) WITH CHECK (true);
+
+-- ============================================================================
+-- DOWN MIGRATION (uncomment to rollback)
+-- ============================================================================
+
+-- -- Drop RLS policies (in reverse order)
+-- DROP POLICY IF EXISTS "Service role full access to voice_sessions" ON voice_sessions;
+-- DROP POLICY IF EXISTS "Service role full access to user_feedback" ON user_feedback;
+-- DROP POLICY IF EXISTS "Service role full access to guild_daily_usage" ON guild_daily_usage;
+-- DROP POLICY IF EXISTS "Service role full access to usage_tracking" ON usage_tracking;
+-- DROP POLICY IF EXISTS "Service role full access to guild_quotas" ON guild_quotas;
+-- 
+-- -- Disable RLS on all tables
+-- ALTER TABLE voice_sessions DISABLE ROW LEVEL SECURITY;
+-- ALTER TABLE user_feedback DISABLE ROW LEVEL SECURITY;
+-- ALTER TABLE guild_daily_usage DISABLE ROW LEVEL SECURITY;
+-- ALTER TABLE usage_tracking DISABLE ROW LEVEL SECURITY;
+-- ALTER TABLE guild_quotas DISABLE ROW LEVEL SECURITY;
+-- 
+-- -- Drop triggers
+-- DROP TRIGGER IF EXISTS update_user_feedback_updated_at ON user_feedback;
+-- DROP TRIGGER IF EXISTS update_usage_tracking_updated_at ON usage_tracking;
+-- DROP TRIGGER IF EXISTS update_guild_quotas_updated_at ON guild_quotas;
+-- 
+-- -- Drop functions (in reverse dependency order)
+-- DROP FUNCTION IF EXISTS increment_usage(TEXT, TEXT, TEXT, INTEGER);
+-- DROP FUNCTION IF EXISTS check_guild_quota(TEXT, TEXT, INTEGER);
+-- DROP FUNCTION IF EXISTS get_or_create_usage(TEXT, TEXT);
+-- 
+-- -- Drop indexes
+-- DROP INDEX IF EXISTS idx_voice_sessions_started;
+-- DROP INDEX IF EXISTS idx_voice_sessions_status;
+-- DROP INDEX IF EXISTS idx_voice_sessions_guild;
+-- DROP INDEX IF EXISTS idx_user_feedback_created;
+-- DROP INDEX IF EXISTS idx_user_feedback_type;
+-- DROP INDEX IF EXISTS idx_user_feedback_status;
+-- DROP INDEX IF EXISTS idx_user_feedback_user;
+-- DROP INDEX IF EXISTS idx_user_feedback_guild;
+-- DROP INDEX IF EXISTS idx_guild_daily_usage_date;
+-- DROP INDEX IF EXISTS idx_usage_tracking_date;
+-- DROP INDEX IF EXISTS idx_usage_tracking_user;
+-- DROP INDEX IF EXISTS idx_usage_tracking_guild_date;
+-- DROP INDEX IF EXISTS idx_guild_quotas_guild;
+-- 
+-- -- Drop tables (in reverse creation order)
+-- DROP TABLE IF EXISTS voice_sessions CASCADE;
+-- DROP TABLE IF EXISTS user_feedback CASCADE;
+-- DROP TABLE IF EXISTS guild_daily_usage CASCADE;
+-- DROP TABLE IF EXISTS usage_tracking CASCADE;
+-- DROP TABLE IF EXISTS guild_quotas CASCADE;
