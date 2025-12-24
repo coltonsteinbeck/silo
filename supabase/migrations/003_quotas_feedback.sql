@@ -2,7 +2,7 @@
 -- Strict daily reset at midnight UTC, no rollover
 
 -- Guild quotas configuration table
-CREATE TABLE guild_quotas (
+CREATE TABLE IF NOT EXISTS guild_quotas (
     guild_id TEXT PRIMARY KEY,
     -- Daily limits (configurable per guild, up to global max)
     daily_text_tokens INTEGER DEFAULT 50000,
@@ -254,22 +254,27 @@ ALTER TABLE user_feedback ENABLE ROW LEVEL SECURITY;
 ALTER TABLE voice_sessions ENABLE ROW LEVEL SECURITY;
 
 -- Service role full access policies
+DROP POLICY IF EXISTS "Service role full access to guild_quotas" ON guild_quotas;
 CREATE POLICY "Service role full access to guild_quotas"
     ON guild_quotas FOR ALL TO service_role
     USING (true) WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Service role full access to usage_tracking" ON usage_tracking;
 CREATE POLICY "Service role full access to usage_tracking"
     ON usage_tracking FOR ALL TO service_role
     USING (true) WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Service role full access to guild_daily_usage" ON guild_daily_usage;
 CREATE POLICY "Service role full access to guild_daily_usage"
     ON guild_daily_usage FOR ALL TO service_role
     USING (true) WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Service role full access to user_feedback" ON user_feedback;
 CREATE POLICY "Service role full access to user_feedback"
     ON user_feedback FOR ALL TO service_role
     USING (true) WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Service role full access to voice_sessions" ON voice_sessions;
 CREATE POLICY "Service role full access to voice_sessions"
     ON voice_sessions FOR ALL TO service_role
     USING (true) WITH CHECK (true);
