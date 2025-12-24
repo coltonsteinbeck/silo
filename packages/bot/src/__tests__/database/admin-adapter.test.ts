@@ -68,6 +68,7 @@ describe('AdminAdapter cost helpers', () => {
       provider: 'openai',
       model: 'gpt-mini',
       inputTokens: 1000,
+      outputTokens: 2000,
       tokensUsed: 2000,
       success: true,
       metadata: null
@@ -82,7 +83,7 @@ describe('AdminAdapter cost helpers', () => {
     // Parameters: guildId, userId, eventType, command, provider, model, inputTokens, outputTokens, ...
     expect(insertCall?.[0]).toBe('guild1'); // guildId
     expect(insertCall?.[6]).toBe(1000); // inputTokens
-    expect(insertCall?.[7]).toBe(2000); // outputTokens (tokensUsed fallback)
+    expect(insertCall?.[7]).toBe(2000); // outputTokens
     expect(insertCall?.[12]).toBeCloseTo(0.01); // estimated_cost_usd (0.002 + 0.008)
   });
 });

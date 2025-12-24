@@ -308,7 +308,7 @@ export class AdminAdapter {
         provider: event.provider,
         model: event.model,
         inputTokens: event.inputTokens,
-        outputTokens: event.outputTokens ?? event.tokensUsed,
+        outputTokens: event.outputTokens ?? 0,
         images: event.command === 'draw' ? 1 : 0,
         voiceMinutes: event.durationMs ? event.durationMs / 60000 : 0
       });
@@ -324,7 +324,7 @@ export class AdminAdapter {
           event.provider,
           event.model ?? null,
           event.inputTokens ?? 0,
-          event.outputTokens ?? event.tokensUsed ?? 0,
+          event.outputTokens ?? 0,
           event.tokensUsed ?? 0,
           event.responseTimeMs ?? null,
           event.success,
@@ -367,6 +367,10 @@ export class AdminAdapter {
     outputTokens: number;
     images: number;
     totalCost: number;
+    textCostUsd: number;
+    imageCostUsd: number;
+    voiceCostUsd: number;
+    totalVoiceMinutes: number;
     providerBreakdown: Record<string, number>;
   }> {
     const result = await this.pool.query(
@@ -375,6 +379,10 @@ export class AdminAdapter {
          COALESCE(SUM(output_tokens), 0) AS output_tokens,
          COALESCE(SUM(images), 0) AS images,
          COALESCE(SUM(provider_cost), 0) AS total_cost,
+         COALESCE(SUM(text_cost), 0) AS text_cost,
+         COALESCE(SUM(image_cost), 0) AS image_cost,
+         COALESCE(SUM(voice_cost), 0) AS voice_cost,
+         COALESCE(SUM(voice_minutes), 0) AS voice_minutes,
          COALESCE(
            jsonb_object_agg(provider, provider_cost) FILTER (WHERE provider IS NOT NULL),
            '{}'::jsonb
@@ -384,7 +392,11 @@ export class AdminAdapter {
                 COALESCE(SUM(COALESCE(estimated_cost_usd, 0)), 0) AS provider_cost,
                 SUM(COALESCE(input_tokens, 0)) AS input_tokens,
                 SUM(COALESCE(output_tokens, 0)) AS output_tokens,
-                SUM(CASE WHEN command = 'draw' AND success THEN 1 ELSE 0 END) AS images
+                SUM(CASE WHEN command = 'draw' AND success THEN 1 ELSE 0 END) AS images,
+                COALESCE(SUM(CASE WHEN command NOT IN ('draw', 'speak') THEN COALESCE(estimated_cost_usd, 0) ELSE 0 END), 0) AS text_cost,
+                COALESCE(SUM(CASE WHEN command = 'draw' THEN COALESCE(estimated_cost_usd, 0) ELSE 0 END), 0) AS image_cost,
+                COALESCE(SUM(CASE WHEN command = 'speak' THEN COALESCE(estimated_cost_usd, 0) ELSE 0 END), 0) AS voice_cost,
+                COALESCE(SUM(CASE WHEN command = 'speak' THEN COALESCE(duration_ms, 0) / 60000.0 ELSE 0 END), 0) AS voice_minutes
            FROM analytics_events
           WHERE guild_id = $1
             AND created_at >= NOW() - INTERVAL '30 days'
@@ -399,6 +411,10 @@ export class AdminAdapter {
       outputTokens: Number(row.output_tokens) || 0,
       images: Number(row.images) || 0,
       totalCost: Number(row.total_cost) || 0,
+      textCostUsd: Number(row.text_cost) || 0,
+      imageCostUsd: Number(row.image_cost) || 0,
+      voiceCostUsd: Number(row.voice_cost) || 0,
+      totalVoiceMinutes: Number(row.voice_minutes) || 0,
       providerBreakdown: row.provider_breakdown || {}
     };
   }
@@ -413,7 +429,7 @@ export class AdminAdapter {
          guild_id, period_start, period_end, total_input_tokens, total_output_tokens,
          total_images, total_voice_minutes, text_cost_usd, image_cost_usd, voice_cost_usd,
          provider_breakdown, last_updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, 0, $7, 0, 0, $8, NOW())
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
        ON CONFLICT (guild_id)
        DO UPDATE SET
          period_start = EXCLUDED.period_start,
@@ -421,7 +437,10 @@ export class AdminAdapter {
          total_input_tokens = EXCLUDED.total_input_tokens,
          total_output_tokens = EXCLUDED.total_output_tokens,
          total_images = EXCLUDED.total_images,
+         total_voice_minutes = EXCLUDED.total_voice_minutes,
          text_cost_usd = EXCLUDED.text_cost_usd,
+         image_cost_usd = EXCLUDED.image_cost_usd,
+         voice_cost_usd = EXCLUDED.voice_cost_usd,
          provider_breakdown = EXCLUDED.provider_breakdown,
          last_updated_at = NOW()`,
       [
@@ -431,7 +450,10 @@ export class AdminAdapter {
         agg.inputTokens,
         agg.outputTokens,
         agg.images,
-        agg.totalCost,
+        agg.totalVoiceMinutes,
+        agg.textCostUsd,
+        agg.imageCostUsd,
+        agg.voiceCostUsd,
         JSON.stringify(agg.providerBreakdown)
       ]
     );
