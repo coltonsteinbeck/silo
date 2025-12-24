@@ -399,8 +399,20 @@ async function main() {
         tokensUsed
       );
 
+      // Discord has a 4000 character limit for messages
+      const MAX_MESSAGE_LENGTH = 4000;
+      let responseContent = response.content;
+
+      if (responseContent.length > MAX_MESSAGE_LENGTH) {
+        // Truncate and add ellipsis
+        responseContent = responseContent.substring(0, MAX_MESSAGE_LENGTH - 4) + '...';
+        logger.warn(
+          `Response truncated for message in guild ${message.guildId}: ${response.content.length} -> ${responseContent.length} characters`
+        );
+      }
+
       await message.reply({
-        content: response.content,
+        content: responseContent,
         allowedMentions: { repliedUser: false }
       });
     } catch (error) {

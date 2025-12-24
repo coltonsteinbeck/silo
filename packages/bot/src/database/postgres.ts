@@ -1,4 +1,6 @@
 import { Pool } from 'pg';
+import { readFileSync, readdirSync } from 'fs';
+import { join } from 'path';
 import {
   DatabaseAdapter,
   UserMemory,
@@ -22,9 +24,48 @@ export class PostgresAdapter implements DatabaseAdapter {
       const client = await this.pool.connect();
       client.release();
       logger.info('Database connected');
+
+      // Run migrations on connect
+      await this.runMigrations();
     } catch (error) {
       logger.error('Failed to connect to database', error);
       throw error;
+    }
+  }
+
+  private async runMigrations(): Promise<void> {
+    try {
+      const migrationsDir = join(process.cwd(), 'supabase', 'migrations');
+      const migrationFiles = readdirSync(migrationsDir)
+        .filter(file => file.endsWith('.sql'))
+        .sort();
+
+      logger.info(`Found ${migrationFiles.length} migration files`);
+
+      for (const file of migrationFiles) {
+        const filePath = join(migrationsDir, file);
+        const sql = readFileSync(filePath, 'utf-8');
+
+        try {
+          await this.pool.query(sql);
+          logger.info(`✓ Migration applied: ${file}`);
+        } catch (error: any) {
+          // Check if it's a "already exists" error (which is fine)
+          if (
+            error.message?.includes('already exists') ||
+            error.code === 'EEXIST' ||
+            error.message?.includes('does not exist')
+          ) {
+            logger.info(`⚠ Skipping migration ${file}: ${error.message}`);
+            continue;
+          }
+          throw error;
+        }
+      }
+      logger.info('All migrations completed successfully');
+    } catch (error) {
+      logger.error('Failed to run migrations:', error);
+      // Don't throw - continue with app startup
     }
   }
 
