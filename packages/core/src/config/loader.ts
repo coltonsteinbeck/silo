@@ -11,10 +11,16 @@ function buildDatabaseUrl(): string {
   if (mode === 'production') {
     const identifier = process.env.HOSTED_DB_IDENTIFIER;
     const password = process.env.SUPABASE_PW;
-    if (identifier && password) {
-      const encodedPassword = encodeURIComponent(password);
-      return `postgresql://postgres:${encodedPassword}@db.${identifier}:5432/postgres`;
+    if (!identifier || !password) {
+      const missing = [];
+      if (!identifier) missing.push('HOSTED_DB_IDENTIFIER');
+      if (!password) missing.push('SUPABASE_PW');
+      throw new Error(
+        `Production mode requires database configuration. Missing environment variables: ${missing.join(', ')}`
+      );
     }
+    const encodedPassword = encodeURIComponent(password);
+    return `postgresql://postgres:${encodedPassword}@db.${identifier}:5432/postgres`;
   }
 
   if (mode === 'development') {

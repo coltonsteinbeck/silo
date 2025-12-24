@@ -1,5 +1,5 @@
 -- Server configuration table
-CREATE TABLE server_config
+CREATE TABLE IF NOT EXISTS server_config
 (
   guild_id TEXT PRIMARY KEY,
   default_provider TEXT,
@@ -17,7 +17,7 @@ CREATE TABLE server_config
 );
 
   -- Audit logs table
-  CREATE TABLE audit_logs
+  CREATE TABLE IF NOT EXISTS audit_logs
   (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     guild_id TEXT NOT NULL,
@@ -30,12 +30,12 @@ CREATE TABLE server_config
     ()
 );
 
-    CREATE INDEX idx_audit_logs_guild ON audit_logs(guild_id);
-    CREATE INDEX idx_audit_logs_user ON audit_logs(user_id);
-    CREATE INDEX idx_audit_logs_created ON audit_logs(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_guild ON audit_logs(guild_id);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_user ON audit_logs(user_id);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at DESC);
 
     -- Moderation actions table
-    CREATE TABLE mod_actions
+    CREATE TABLE IF NOT EXISTS mod_actions
     (
       id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
       guild_id TEXT NOT NULL,
@@ -50,12 +50,12 @@ CREATE TABLE server_config
       ()
 );
 
-      CREATE INDEX idx_mod_actions_guild ON mod_actions(guild_id);
-      CREATE INDEX idx_mod_actions_target ON mod_actions(target_user_id);
-      CREATE INDEX idx_mod_actions_created ON mod_actions(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_mod_actions_guild ON mod_actions(guild_id);
+      CREATE INDEX IF NOT EXISTS idx_mod_actions_target ON mod_actions(target_user_id);
+      CREATE INDEX IF NOT EXISTS idx_mod_actions_created ON mod_actions(created_at DESC);
 
       -- Analytics events table
-      CREATE TABLE analytics_events
+      CREATE TABLE IF NOT EXISTS analytics_events
       (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
         guild_id TEXT NOT NULL,
@@ -72,12 +72,12 @@ CREATE TABLE server_config
         ()
 );
 
-        CREATE INDEX idx_analytics_guild ON analytics_events(guild_id, created_at DESC);
-        CREATE INDEX idx_analytics_command ON analytics_events(command);
-        CREATE INDEX idx_analytics_event_type ON analytics_events(event_type);
+        CREATE INDEX IF NOT EXISTS idx_analytics_guild ON analytics_events(guild_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_analytics_command ON analytics_events(command);
+        CREATE INDEX IF NOT EXISTS idx_analytics_event_type ON analytics_events(event_type);
 
         -- User roles/permissions table
-        CREATE TABLE user_roles
+        CREATE TABLE IF NOT EXISTS user_roles
         (
           guild_id TEXT NOT NULL,
           user_id TEXT NOT NULL,
@@ -90,11 +90,11 @@ CREATE TABLE server_config
           (guild_id, user_id)
 );
 
-          CREATE INDEX idx_user_roles_guild ON user_roles(guild_id);
-          CREATE INDEX idx_user_roles_tier ON user_roles(role_tier);
+          CREATE INDEX IF NOT EXISTS idx_user_roles_guild ON user_roles(guild_id);
+          CREATE INDEX IF NOT EXISTS idx_user_roles_tier ON user_roles(role_tier);
 
           -- Response feedback table (for reaction tracking)
-          CREATE TABLE response_feedback
+          CREATE TABLE IF NOT EXISTS response_feedback
           (
             id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
             guild_id TEXT NOT NULL,
@@ -108,8 +108,8 @@ CREATE TABLE server_config
             ()
 );
 
-            CREATE INDEX idx_response_feedback_message ON response_feedback(message_id);
-            CREATE INDEX idx_response_feedback_guild ON response_feedback(guild_id);
+            CREATE INDEX IF NOT EXISTS idx_response_feedback_message ON response_feedback(message_id);
+            CREATE INDEX IF NOT EXISTS idx_response_feedback_guild ON response_feedback(guild_id);
 
             -- Trigger to update server_config updated_at
             CREATE TRIGGER update_server_config_updated_at 
@@ -136,6 +136,7 @@ FOR EACH ROW
             -- ============================================================================
 
             -- Allow service role full access (for bot backend)
+            DROP POLICY IF EXISTS "Service role has full access to server_config" ON server_config;
             CREATE POLICY "Service role has full access to server_config"
   ON server_config
   FOR ALL
@@ -145,8 +146,7 @@ FOR EACH ROW
   WITH CHECK
             (true);
 
-            -- Allow authenticated users to read their guild's config
-            CREATE POLICY "Users can read their guild config"
+            -- Allow authenticated users to read their guild's config            DROP POLICY IF EXISTS \"Users can read their guild config\" ON server_config;            CREATE POLICY "Users can read their guild config"
   ON server_config
   FOR
             SELECT
@@ -162,8 +162,7 @@ FOR EACH ROW
     )
   );
 
-            -- Only admins can modify server config
-            CREATE POLICY "Admins can modify server config"
+            -- Only admins can modify server config            DROP POLICY IF EXISTS \"Admins can modify server config\" ON server_config;            CREATE POLICY "Admins can modify server config"
   ON server_config
   FOR ALL
   TO authenticated
@@ -450,3 +449,18 @@ FOR EACH ROW
         AND role_tier = 'admin'
     )
   );
+
+-- ============================================================================
+-- DOWN MIGRATION (uncomment to rollback)
+-- ============================================================================
+
+-- DROP TRIGGER IF EXISTS update_server_config_updated_at ON server_config;
+-- DROP POLICY IF EXISTS "Admins can modify server config" ON server_config;
+-- DROP POLICY IF EXISTS "Users can read their guild config" ON server_config;
+-- DROP POLICY IF EXISTS "Service role has full access to server_config" ON server_config;
+-- DROP TABLE IF EXISTS response_feedback;
+-- DROP TABLE IF EXISTS user_roles;
+-- DROP TABLE IF EXISTS analytics_events;
+-- DROP TABLE IF EXISTS mod_actions;
+-- DROP TABLE IF EXISTS audit_logs;
+-- DROP TABLE IF EXISTS server_config;
