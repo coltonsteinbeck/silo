@@ -1,5 +1,8 @@
 -- Migration 003: Quotas, Usage Tracking, and User Feedback
 -- Strict daily reset at midnight UTC, no rollover
+-- NOTE: This migration includes a feedback_type constraint change from ('bug','feature','praise','other')
+-- to ('bug','feature','praise','general'). This is safe for fresh deployments with no existing data.
+-- If rolling back an existing deployment that had 'other' feedback, manually migrate those rows first.
 
 -- Guild quotas configuration table
 CREATE TABLE IF NOT EXISTS guild_quotas (
@@ -17,10 +20,10 @@ CREATE TABLE IF NOT EXISTS guild_quotas (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
-CREATE INDEX idx_guild_quotas_guild ON guild_quotas(guild_id);
+CREATE INDEX IF NOT EXISTS idx_guild_quotas_guild ON guild_quotas(guild_id);
 
 -- Usage tracking table (per guild, per day)
-CREATE TABLE usage_tracking (
+CREATE TABLE IF NOT EXISTS usage_tracking (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     guild_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
@@ -40,12 +43,12 @@ CREATE TABLE usage_tracking (
     UNIQUE(guild_id, user_id, usage_date)
 );
 
-CREATE INDEX idx_usage_tracking_guild_date ON usage_tracking(guild_id, usage_date);
-CREATE INDEX idx_usage_tracking_user ON usage_tracking(user_id);
-CREATE INDEX idx_usage_tracking_date ON usage_tracking(usage_date);
+CREATE INDEX IF NOT EXISTS idx_usage_tracking_guild_date ON usage_tracking(guild_id, usage_date);
+CREATE INDEX IF NOT EXISTS idx_usage_tracking_user ON usage_tracking(user_id);
+CREATE INDEX IF NOT EXISTS idx_usage_tracking_date ON usage_tracking(usage_date);
 
 -- Guild daily aggregate view for quick quota checks
-CREATE TABLE guild_daily_usage (
+CREATE TABLE IF NOT EXISTS guild_daily_usage (
     guild_id TEXT NOT NULL,
     usage_date DATE NOT NULL DEFAULT CURRENT_DATE,
     -- Aggregated totals
@@ -57,10 +60,10 @@ CREATE TABLE guild_daily_usage (
     PRIMARY KEY(guild_id, usage_date)
 );
 
-CREATE INDEX idx_guild_daily_usage_date ON guild_daily_usage(usage_date);
+CREATE INDEX IF NOT EXISTS idx_guild_daily_usage_date ON guild_daily_usage(usage_date);
 
 -- User feedback table
-CREATE TABLE user_feedback (
+CREATE TABLE IF NOT EXISTS user_feedback (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     guild_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
@@ -79,14 +82,14 @@ CREATE TABLE user_feedback (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
-CREATE INDEX idx_user_feedback_guild ON user_feedback(guild_id);
-CREATE INDEX idx_user_feedback_user ON user_feedback(user_id);
-CREATE INDEX idx_user_feedback_status ON user_feedback(status);
-CREATE INDEX idx_user_feedback_type ON user_feedback(feedback_type);
-CREATE INDEX idx_user_feedback_created ON user_feedback(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_user_feedback_guild ON user_feedback(guild_id);
+CREATE INDEX IF NOT EXISTS idx_user_feedback_user ON user_feedback(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_feedback_status ON user_feedback(status);
+CREATE INDEX IF NOT EXISTS idx_user_feedback_type ON user_feedback(feedback_type);
+CREATE INDEX IF NOT EXISTS idx_user_feedback_created ON user_feedback(created_at DESC);
 
 -- Voice session tracking for quota enforcement
-CREATE TABLE voice_sessions (
+CREATE TABLE IF NOT EXISTS voice_sessions (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     guild_id TEXT NOT NULL,
     channel_id TEXT NOT NULL,
@@ -101,21 +104,24 @@ CREATE TABLE voice_sessions (
     status TEXT DEFAULT 'active' CHECK (status IN ('active', 'ended', 'timeout'))
 );
 
-CREATE INDEX idx_voice_sessions_guild ON voice_sessions(guild_id);
-CREATE INDEX idx_voice_sessions_status ON voice_sessions(status) WHERE status = 'active';
-CREATE INDEX idx_voice_sessions_started ON voice_sessions(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_voice_sessions_guild ON voice_sessions(guild_id);
+CREATE INDEX IF NOT EXISTS idx_voice_sessions_status ON voice_sessions(status) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_voice_sessions_started ON voice_sessions(started_at DESC);
 
 -- Triggers for updated_at
+DROP TRIGGER IF EXISTS update_guild_quotas_updated_at ON guild_quotas;
 CREATE TRIGGER update_guild_quotas_updated_at 
 BEFORE UPDATE ON guild_quotas
 FOR EACH ROW
 EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_usage_tracking_updated_at ON usage_tracking;
 CREATE TRIGGER update_usage_tracking_updated_at 
 BEFORE UPDATE ON usage_tracking
 FOR EACH ROW
 EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_user_feedback_updated_at ON user_feedback;
 CREATE TRIGGER update_user_feedback_updated_at 
 BEFORE UPDATE ON user_feedback
 FOR EACH ROW
@@ -247,11 +253,35 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Enable RLS on new tables
-ALTER TABLE guild_quotas ENABLE ROW LEVEL SECURITY;
-ALTER TABLE usage_tracking ENABLE ROW LEVEL SECURITY;
-ALTER TABLE guild_daily_usage ENABLE ROW LEVEL SECURITY;
-ALTER TABLE user_feedback ENABLE ROW LEVEL SECURITY;
-ALTER TABLE voice_sessions ENABLE ROW LEVEL SECURITY;
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'guild_quotas' AND schemaname = 'public') THEN
+    EXECUTE 'ALTER TABLE guild_quotas ENABLE ROW LEVEL SECURITY';
+  END IF;
+END $$;
+
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'usage_tracking' AND schemaname = 'public') THEN
+    EXECUTE 'ALTER TABLE usage_tracking ENABLE ROW LEVEL SECURITY';
+  END IF;
+END $$;
+
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'guild_daily_usage' AND schemaname = 'public') THEN
+    EXECUTE 'ALTER TABLE guild_daily_usage ENABLE ROW LEVEL SECURITY';
+  END IF;
+END $$;
+
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'user_feedback' AND schemaname = 'public') THEN
+    EXECUTE 'ALTER TABLE user_feedback ENABLE ROW LEVEL SECURITY';
+  END IF;
+END $$;
+
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'voice_sessions' AND schemaname = 'public') THEN
+    EXECUTE 'ALTER TABLE voice_sessions ENABLE ROW LEVEL SECURITY';
+  END IF;
+END $$;
 
 -- Service role full access policies
 DROP POLICY IF EXISTS "Service role full access to guild_quotas" ON guild_quotas;
