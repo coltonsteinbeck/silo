@@ -57,3 +57,19 @@ VALUES
     ('anthropic', 'claude-3-5-sonnet-20241022', 0.00300, 0.01500, NULL, NULL),
     ('xai', 'grok-3-mini', 0.00030, 0.00050, NULL, NULL)
 ON CONFLICT DO NOTHING;
+
+-- ============================================================================
+-- DOWN MIGRATION (uncomment to rollback)
+-- ============================================================================
+
+-- DROP INDEX IF EXISTS idx_guild_cost_summary_period;
+-- DROP TABLE IF EXISTS guild_cost_summary;
+-- 
+-- ALTER TABLE analytics_events
+--     DROP COLUMN IF EXISTS estimated_cost_usd,
+--     DROP COLUMN IF EXISTS model,
+--     DROP COLUMN IF EXISTS output_tokens,
+--     DROP COLUMN IF EXISTS input_tokens;
+-- 
+-- DROP INDEX IF EXISTS idx_provider_pricing_lookup;
+-- DROP TABLE IF EXISTS provider_pricing;

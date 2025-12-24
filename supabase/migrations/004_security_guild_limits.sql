@@ -86,8 +86,12 @@ CREATE INDEX IF NOT EXISTS idx_moderation_blocked ON content_moderation_log(acti
 -- ============================================
 
 -- Enable RLS on user_memory
-ALTER TABLE user_memory ENABLE ROW LEVEL SECURITY;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'user_memory' AND schemaname = 'public') THEN RETURN; END IF;
+  EXECUTE 'ALTER TABLE user_memory ENABLE ROW LEVEL SECURITY';
+END $$;
 
+DROP POLICY IF EXISTS "service_role_all_user_memory" ON user_memory;
 CREATE POLICY "service_role_all_user_memory" ON user_memory
 FOR ALL
 TO service_role
@@ -97,8 +101,12 @@ WITH CHECK
 (true);
 
 -- Enable RLS on server_memory
-ALTER TABLE server_memory ENABLE ROW LEVEL SECURITY;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'server_memory' AND schemaname = 'public') THEN RETURN; END IF;
+  EXECUTE 'ALTER TABLE server_memory ENABLE ROW LEVEL SECURITY';
+END $$;
 
+DROP POLICY IF EXISTS "service_role_all_server_memory" ON server_memory;
 CREATE POLICY "service_role_all_server_memory" ON server_memory
 FOR ALL
 TO service_role
@@ -108,8 +116,12 @@ WITH CHECK
 (true);
 
 -- Enable RLS on conversation_messages
-ALTER TABLE conversation_messages ENABLE ROW LEVEL SECURITY;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'conversation_messages' AND schemaname = 'public') THEN RETURN; END IF;
+  EXECUTE 'ALTER TABLE conversation_messages ENABLE ROW LEVEL SECURITY';
+END $$;
 
+DROP POLICY IF EXISTS "service_role_all_conversations" ON conversation_messages;
 CREATE POLICY "service_role_all_conversations" ON conversation_messages
 FOR ALL
 TO service_role
@@ -119,8 +131,12 @@ WITH CHECK
 (true);
 
 -- Enable RLS on user_preferences
-ALTER TABLE user_preferences ENABLE ROW LEVEL SECURITY;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'user_preferences' AND schemaname = 'public') THEN RETURN; END IF;
+  EXECUTE 'ALTER TABLE user_preferences ENABLE ROW LEVEL SECURITY';
+END $$;
 
+DROP POLICY IF EXISTS "service_role_all_preferences" ON user_preferences;
 CREATE POLICY "service_role_all_preferences" ON user_preferences
 FOR ALL
 TO service_role
@@ -130,8 +146,12 @@ WITH CHECK
 (true);
 
 -- Enable RLS on guild_registry
-ALTER TABLE guild_registry ENABLE ROW LEVEL SECURITY;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'guild_registry' AND schemaname = 'public') THEN RETURN; END IF;
+  EXECUTE 'ALTER TABLE guild_registry ENABLE ROW LEVEL SECURITY';
+END $$;
 
+DROP POLICY IF EXISTS "service_role_all_guild_registry" ON guild_registry;
 CREATE POLICY "service_role_all_guild_registry" ON guild_registry
 FOR ALL
 TO service_role
@@ -141,8 +161,12 @@ WITH CHECK
 (true);
 
 -- Enable RLS on guild_waitlist
-ALTER TABLE guild_waitlist ENABLE ROW LEVEL SECURITY;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'guild_waitlist' AND schemaname = 'public') THEN RETURN; END IF;
+  EXECUTE 'ALTER TABLE guild_waitlist ENABLE ROW LEVEL SECURITY';
+END $$;
 
+DROP POLICY IF EXISTS "service_role_all_guild_waitlist" ON guild_waitlist;
 CREATE POLICY "service_role_all_guild_waitlist" ON guild_waitlist
 FOR ALL
 TO service_role
@@ -152,8 +176,12 @@ WITH CHECK
 (true);
 
 -- Enable RLS on content_moderation_log
-ALTER TABLE content_moderation_log ENABLE ROW LEVEL SECURITY;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'content_moderation_log' AND schemaname = 'public') THEN RETURN; END IF;
+  EXECUTE 'ALTER TABLE content_moderation_log ENABLE ROW LEVEL SECURITY';
+END $$;
 
+DROP POLICY IF EXISTS "service_role_all_content_moderation" ON content_moderation_log;
 CREATE POLICY "service_role_all_content_moderation" ON content_moderation_log
 FOR ALL
 TO service_role
@@ -427,3 +455,51 @@ WHERE status = 'waiting'
 RETURN v_count;
 END;
 $$ LANGUAGE plpgsql;
+
+-- ============================================================================
+-- DOWN MIGRATION (uncomment to rollback)
+-- ============================================================================
+
+-- Drop functions (in reverse dependency order)
+DROP FUNCTION IF EXISTS get_waitlist_position(TEXT);
+DROP FUNCTION IF EXISTS expire_old_waitlist_notifications();
+DROP FUNCTION IF EXISTS notify_next_waitlist_guild();
+DROP FUNCTION IF EXISTS get_next_waitlist_guild();
+DROP FUNCTION IF EXISTS can_add_guild_to_registry(TEXT);
+DROP FUNCTION IF EXISTS get_active_hosted_guild_count();
+
+-- Disable RLS on all tables before dropping policies
+ALTER TABLE user_memory DISABLE ROW LEVEL SECURITY;
+ALTER TABLE server_memory DISABLE ROW LEVEL SECURITY;
+ALTER TABLE conversation_messages DISABLE ROW LEVEL SECURITY;
+ALTER TABLE user_preferences DISABLE ROW LEVEL SECURITY;
+ALTER TABLE guild_registry DISABLE ROW LEVEL SECURITY;
+ALTER TABLE guild_waitlist DISABLE ROW LEVEL SECURITY;
+ALTER TABLE content_moderation_log DISABLE ROW LEVEL SECURITY;
+
+-- Drop RLS policies on initial tables
+DROP POLICY IF EXISTS "service_role_all_user_memory" ON user_memory;
+DROP POLICY IF EXISTS "service_role_all_server_memory" ON server_memory;
+DROP POLICY IF EXISTS "service_role_all_conversations" ON conversation_messages;
+DROP POLICY IF EXISTS "service_role_all_preferences" ON user_preferences;
+
+-- Drop RLS policies on new tables
+DROP POLICY IF EXISTS "service_role_all_guild_registry" ON guild_registry;
+DROP POLICY IF EXISTS "service_role_all_guild_waitlist" ON guild_waitlist;
+DROP POLICY IF EXISTS "service_role_all_content_moderation" ON content_moderation_log;
+
+-- Drop indexes
+DROP INDEX IF EXISTS idx_guild_registry_active;
+DROP INDEX IF EXISTS idx_guild_registry_activity;
+DROP INDEX IF EXISTS idx_guild_registry_deletion;
+DROP INDEX IF EXISTS idx_waitlist_status_position;
+DROP INDEX IF EXISTS idx_waitlist_expires;
+DROP INDEX IF EXISTS idx_moderation_hash;
+DROP INDEX IF EXISTS idx_moderation_user_action;
+DROP INDEX IF EXISTS idx_moderation_guild;
+DROP INDEX IF EXISTS idx_moderation_blocked;
+
+-- Drop tables (in reverse creation order)
+DROP TABLE IF EXISTS content_moderation_log;
+DROP TABLE IF EXISTS guild_waitlist;
+DROP TABLE IF EXISTS guild_registry;

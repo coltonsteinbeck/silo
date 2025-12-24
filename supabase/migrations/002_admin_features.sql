@@ -112,6 +112,7 @@ CREATE TABLE IF NOT EXISTS server_config
             CREATE INDEX IF NOT EXISTS idx_response_feedback_guild ON response_feedback(guild_id);
 
             -- Trigger to update server_config updated_at
+            DROP TRIGGER IF EXISTS update_server_config_updated_at ON server_config;
             CREATE TRIGGER update_server_config_updated_at 
 BEFORE
             UPDATE ON server_config
@@ -146,7 +147,9 @@ FOR EACH ROW
   WITH CHECK
             (true);
 
-            -- Allow authenticated users to read their guild's config            DROP POLICY IF EXISTS \"Users can read their guild config\" ON server_config;            CREATE POLICY "Users can read their guild config"
+            -- Allow authenticated users to read their guild's config
+            DROP POLICY IF EXISTS "Users can read their guild config" ON server_config;
+            CREATE POLICY "Users can read their guild config"
   ON server_config
   FOR
             SELECT
@@ -162,7 +165,9 @@ FOR EACH ROW
     )
   );
 
-            -- Only admins can modify server config            DROP POLICY IF EXISTS \"Admins can modify server config\" ON server_config;            CREATE POLICY "Admins can modify server config"
+            -- Only admins can modify server config
+            DROP POLICY IF EXISTS "Admins can modify server config" ON server_config;
+            CREATE POLICY "Admins can modify server config"
   ON server_config
   FOR ALL
   TO authenticated
@@ -196,6 +201,7 @@ FOR EACH ROW
             -- ============================================================================
 
             -- Service role full access
+            DROP POLICY IF EXISTS "Service role has full access to audit_logs" ON audit_logs;
             CREATE POLICY "Service role has full access to audit_logs"
   ON audit_logs
   FOR ALL
@@ -206,6 +212,7 @@ FOR EACH ROW
             (true);
 
             -- Admins and moderators can read audit logs for their guild
+            DROP POLICY IF EXISTS "Admins and moderators can read audit logs" ON audit_logs;
             CREATE POLICY "Admins and moderators can read audit logs"
   ON audit_logs
   FOR
@@ -225,6 +232,7 @@ FOR EACH ROW
   );
 
             -- Only service role can insert audit logs (prevents tampering)
+            DROP POLICY IF EXISTS "Only service role can insert audit logs" ON audit_logs;
             CREATE POLICY "Only service role can insert audit logs"
   ON audit_logs
   FOR
@@ -238,6 +246,7 @@ FOR EACH ROW
             -- ============================================================================
 
             -- Service role full access
+            DROP POLICY IF EXISTS "Service role has full access to mod_actions" ON mod_actions;
             CREATE POLICY "Service role has full access to mod_actions"
   ON mod_actions
   FOR ALL
@@ -248,6 +257,7 @@ FOR EACH ROW
             (true);
 
             -- Admins and moderators can read mod actions for their guild
+            DROP POLICY IF EXISTS "Admins and moderators can read mod actions" ON mod_actions;
             CREATE POLICY "Admins and moderators can read mod actions"
   ON mod_actions
   FOR
@@ -267,6 +277,7 @@ FOR EACH ROW
   );
 
             -- Users can read mod actions where they are the target
+            DROP POLICY IF EXISTS "Users can read their own mod history" ON mod_actions;
             CREATE POLICY "Users can read their own mod history"
   ON mod_actions
   FOR
@@ -281,6 +292,7 @@ FOR EACH ROW
             -- ============================================================================
 
             -- Service role full access
+            DROP POLICY IF EXISTS "Service role has full access to analytics_events" ON analytics_events;
             CREATE POLICY "Service role has full access to analytics_events"
   ON analytics_events
   FOR ALL
@@ -291,6 +303,7 @@ FOR EACH ROW
             (true);
 
             -- Admins and moderators can read analytics for their guild
+            DROP POLICY IF EXISTS "Admins and moderators can read analytics" ON analytics_events;
             CREATE POLICY "Admins and moderators can read analytics"
   ON analytics_events
   FOR
@@ -310,6 +323,7 @@ FOR EACH ROW
   );
 
             -- Users can read their own analytics events
+            DROP POLICY IF EXISTS "Users can read their own analytics" ON analytics_events;
             CREATE POLICY "Users can read their own analytics"
   ON analytics_events
   FOR
@@ -324,6 +338,7 @@ FOR EACH ROW
             -- ============================================================================
 
             -- Service role full access
+            DROP POLICY IF EXISTS "Service role has full access to user_roles" ON user_roles;
             CREATE POLICY "Service role has full access to user_roles"
   ON user_roles
   FOR ALL
@@ -334,6 +349,7 @@ FOR EACH ROW
             (true);
 
             -- Users can read roles in their guilds
+            DROP POLICY IF EXISTS "Users can read roles in their guilds" ON user_roles;
             CREATE POLICY "Users can read roles in their guilds"
   ON user_roles
   FOR
@@ -351,6 +367,7 @@ FOR EACH ROW
   );
 
             -- Only admins can modify user roles
+            DROP POLICY IF EXISTS "Admins can modify user roles" ON user_roles;
             CREATE POLICY "Admins can modify user roles"
   ON user_roles
   FOR ALL
@@ -385,6 +402,7 @@ FOR EACH ROW
             -- ============================================================================
 
             -- Service role full access
+            DROP POLICY IF EXISTS "Service role has full access to response_feedback" ON response_feedback;
             CREATE POLICY "Service role has full access to response_feedback"
   ON response_feedback
   FOR ALL
@@ -395,6 +413,7 @@ FOR EACH ROW
             (true);
 
             -- Users can read feedback in their guilds
+            DROP POLICY IF EXISTS "Users can read feedback in their guilds" ON response_feedback;
             CREATE POLICY "Users can read feedback in their guilds"
   ON response_feedback
   FOR
@@ -412,6 +431,7 @@ FOR EACH ROW
   );
 
             -- Users can insert their own feedback
+            DROP POLICY IF EXISTS "Users can insert their own feedback" ON response_feedback;
             CREATE POLICY "Users can insert their own feedback"
   ON response_feedback
   FOR
@@ -425,6 +445,7 @@ FOR EACH ROW
             ()::text);
 
             -- Users can delete their own feedback
+            DROP POLICY IF EXISTS "Users can delete their own feedback" ON response_feedback;
             CREATE POLICY "Users can delete their own feedback"
   ON response_feedback
   FOR
@@ -433,6 +454,7 @@ FOR EACH ROW
   USING (user_id = auth.uid()::text);
 
             -- Admins can view all feedback stats for their guild
+            DROP POLICY IF EXISTS "Admins can read all guild feedback" ON response_feedback;
             CREATE POLICY "Admins can read all guild feedback"
   ON response_feedback
   FOR
