@@ -361,9 +361,9 @@ async function main() {
       // Retrieve relevant user memories using semantic search
       let memoryContext = '';
       try {
-        // Generate embedding for the user's message to find relevant memories
-        const embeddingProvider = providers.getEmbeddingProvider();
-        if (embeddingProvider && embeddingProvider.isConfigured()) {
+        // Check if we have an embedding provider and it's configured
+        if (providers && providers.getEmbeddingProvider()) {
+          const embeddingProvider = providers.getEmbeddingProvider();
           const embedding = await embeddingProvider.generateEmbeddings([processedContent]);
           if (embedding && embedding.length > 0 && embedding[0]) {
             // Get relevant memories based on semantic similarity
