@@ -1,12 +1,14 @@
-import type { TextProvider, ImageProvider, Config } from '@silo/core';
+import type { TextProvider, ImageProvider, EmbeddingProvider, Config } from '@silo/core';
 import { OpenAIProvider } from './openai';
 import { AnthropicProvider } from './anthropic';
 import { XAIProvider } from './xai';
 import { LocalOpenAIProvider } from './local-openai';
+import { OpenAIEmbeddingsProvider } from './openai-embeddings';
 
 export class ProviderRegistry {
   private textProviders: TextProvider[] = [];
   private imageProviders: ImageProvider[] = [];
+  private embeddingProvider: EmbeddingProvider | null = null;
 
   constructor(config: Config) {
     if (config.providers.openai?.apiKey) {
@@ -38,6 +40,11 @@ export class ProviderRegistry {
         config.providers.local.baseURL
       );
       this.textProviders.push(provider);
+    }
+
+    // Initialize embeddings provider if OpenAI is configured and RAG is enabled
+    if (config.features.enableRAG && config.providers.openai?.apiKey) {
+      this.embeddingProvider = new OpenAIEmbeddingsProvider(config.providers.openai.apiKey);
     }
   }
 
@@ -72,5 +79,12 @@ export class ProviderRegistry {
       text: this.textProviders.filter(p => p.isConfigured()).map(p => p.name),
       image: this.imageProviders.filter(p => p.isConfigured()).map(p => p.name)
     };
+  }
+
+  getEmbeddingProvider(): EmbeddingProvider {
+    if (!this.embeddingProvider || !this.embeddingProvider.isConfigured()) {
+      throw new Error('No embedding provider configured. Enable RAG and add OpenAI API key');
+    }
+    return this.embeddingProvider;
   }
 }
