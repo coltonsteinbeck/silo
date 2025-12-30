@@ -358,6 +358,38 @@ async function main() {
         content: msg.content
       }));
 
+      // Retrieve relevant user memories using semantic search
+      let memoryContext = '';
+      try {
+        // Generate embedding for the user's message to find relevant memories
+        const embeddingProvider = providers.getEmbeddingProvider();
+        if (embeddingProvider && embeddingProvider.isConfigured()) {
+          const embedding = await embeddingProvider.generateEmbeddings([processedContent]);
+          if (embedding && embedding.length > 0 && embedding[0]) {
+            // Get relevant memories based on semantic similarity
+            const relevantMemories = await db.getRelevantUserMemoriesForContext(
+              message.author.id,
+              embedding[0],
+              undefined,
+              5 // Limit to 5 most relevant memories
+            );
+
+            if (relevantMemories.length > 0) {
+              memoryContext = '\n\n**User Memories:**\n';
+              for (const memory of relevantMemories) {
+                memoryContext += `- [${memory.contextType}] ${memory.memoryContent}\n`;
+              }
+              logger.info(
+                `Retrieved ${relevantMemories.length} relevant memories for user ${message.author.id}`
+              );
+            }
+          }
+        }
+      } catch (error) {
+        logger.warn('Failed to retrieve user memories:', error);
+        // Continue without memories if embedding fails
+      }
+
       // Store user message
       await db.storeConversationMessage({
         guildId: message.guildId,
@@ -371,7 +403,7 @@ async function main() {
       const response = await textProvider.generateText([
         {
           role: 'system',
-          content: systemPrompt
+          content: systemPrompt + memoryContext
         },
         ...messages,
         {
