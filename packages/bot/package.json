@@ -23,7 +23,7 @@
     "@silo/core": "workspace:*",
     "@snazzah/davey": "0.1.9",
     "discord.js": "^14.16.3",
-    "libsodium-wrappers": "0.7.15",
+    "libsodium-wrappers": "0.7.16",
     "mediaplex": "1.0.0",
     "openai": "^4.73.0",
     "pg": "^8.13.1",
