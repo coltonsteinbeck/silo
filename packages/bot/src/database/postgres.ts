@@ -10,8 +10,84 @@ import {
   logger
 } from '@silo/core';
 
+// Type for database rows returned from queries
+interface UserMemoryRow {
+  id: string;
+  user_id: string;
+  memory_content: string;
+  context_type: string;
+  metadata: Record<string, unknown>;
+  similarity?: number;
+  expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ServerMemoryRow {
+  id: string;
+  server_id: string;
+  user_id: string;
+  memory_content: string;
+  title: string;
+  context_type: string;
+  metadata: Record<string, unknown>;
+  similarity?: number;
+  expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ConversationMessageRow {
+  id: string;
+  guild_id: string;
+  channel_id: string;
+  user_id: string;
+  prompt_hash: string;
+  role: string; // Note: This comes from DB, may be any string
+  content: string;
+  created_at: string;
+}
+
 export class PostgresAdapter implements DatabaseAdapter {
   public readonly pool: Pool;
+
+  /**
+   * Validates and converts embedding array to a valid PostgreSQL vector string
+   * Ensures the embedding is a non-empty array of finite numbers
+   * @param embedding - The embedding array to validate
+   * @returns A valid vector string like "[0.1,0.2,0.3]" or null if invalid
+   */
+  private validateAndBuildVectorStr(embedding: unknown): string | null {
+    // Type guard: ensure it's an array
+    if (!Array.isArray(embedding)) {
+      logger.warn('Invalid embedding: not an array', { type: typeof embedding });
+      return null;
+    }
+
+    // Ensure non-empty
+    if (embedding.length === 0) {
+      logger.warn('Invalid embedding: empty array');
+      return null;
+    }
+
+    // Validate and coerce each element to a number
+    const validatedNumbers: number[] = [];
+    for (const value of embedding) {
+      // Try to coerce to number
+      const num = typeof value === 'number' ? value : Number(value);
+
+      // Check if it's a valid finite number
+      if (!Number.isFinite(num)) {
+        logger.warn('Invalid embedding: contains non-finite number', { value, coercedTo: num });
+        return null;
+      }
+
+      validatedNumbers.push(num);
+    }
+
+    // Build the vector string from validated numbers
+    return `[${validatedNumbers.join(',')}]`;
+  }
 
   constructor(connectionUrl: string) {
     this.pool = new Pool({
@@ -90,13 +166,13 @@ export class PostgresAdapter implements DatabaseAdapter {
       : 'SELECT * FROM user_memory WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2';
 
     const params = contextType ? [userId, contextType, limit] : [userId, limit];
-    const result = await this.pool.query(query, params);
+    const result = await this.pool.query<UserMemoryRow>(query, params);
 
-    return result.rows.map((row: any) => ({
+    return result.rows.map(row => ({
       id: row.id,
       userId: row.user_id,
       memoryContent: row.memory_content,
-      contextType: row.context_type,
+      contextType: row.context_type as UserMemory['contextType'],
       metadata: row.metadata,
       expiresAt: row.expires_at ? new Date(row.expires_at) : undefined,
       createdAt: new Date(row.created_at),
@@ -189,18 +265,18 @@ export class PostgresAdapter implements DatabaseAdapter {
   }
 
   async searchUserMemories(userId: string, query: string, limit = 20): Promise<UserMemory[]> {
-    const result = await this.pool.query(
+    const result = await this.pool.query<UserMemoryRow>(
       `SELECT * FROM user_memory 
        WHERE user_id = $1 AND memory_content ILIKE $2 
        ORDER BY created_at DESC LIMIT $3`,
       [userId, `%${query}%`, limit]
     );
 
-    return result.rows.map((row: any) => ({
+    return result.rows.map(row => ({
       id: row.id,
       userId: row.user_id,
       memoryContent: row.memory_content,
-      contextType: row.context_type,
+      contextType: row.context_type as UserMemory['contextType'],
       metadata: row.metadata,
       expiresAt: row.expires_at ? new Date(row.expires_at) : undefined,
       createdAt: new Date(row.created_at),
@@ -220,7 +296,13 @@ export class PostgresAdapter implements DatabaseAdapter {
     limit = 10
   ): Promise<(UserMemory & { similarity: number })[]> {
     try {
-      const vectorStr = `[${embedding.join(',')}]`;
+      // Validate and build vector string from embedding
+      const vectorStr = this.validateAndBuildVectorStr(embedding);
+      if (!vectorStr) {
+        logger.warn('Embedding validation failed, returning empty results');
+        return [];
+      }
+
       const query = contextType
         ? `SELECT *, (1 - (embedding <=> $3::vector)) as similarity 
            FROM user_memory 
@@ -237,15 +319,15 @@ export class PostgresAdapter implements DatabaseAdapter {
         ? [userId, contextType, vectorStr, limit]
         : [userId, vectorStr, limit];
 
-      const result = await this.pool.query(query, params);
+      const result = await this.pool.query<UserMemoryRow>(query, params);
 
-      return result.rows.map((row: any) => ({
+      return result.rows.map(row => ({
         id: row.id,
         userId: row.user_id,
         memoryContent: row.memory_content,
-        contextType: row.context_type,
+        contextType: row.context_type as UserMemory['contextType'],
         metadata: row.metadata,
-        similarity: row.similarity,
+        similarity: row.similarity ?? 0,
         expiresAt: row.expires_at ? new Date(row.expires_at) : undefined,
         createdAt: new Date(row.created_at),
         updatedAt: new Date(row.updated_at)
@@ -300,15 +382,15 @@ export class PostgresAdapter implements DatabaseAdapter {
       : 'SELECT * FROM server_memory WHERE server_id = $1 ORDER BY created_at DESC LIMIT $2';
 
     const params = contextType ? [serverId, contextType, limit] : [serverId, limit];
-    const result = await this.pool.query(query, params);
+    const result = await this.pool.query<ServerMemoryRow>(query, params);
 
-    return result.rows.map((row: any) => ({
+    return result.rows.map(row => ({
       id: row.id,
       serverId: row.server_id,
       userId: row.user_id,
       memoryContent: row.memory_content,
       title: row.title,
-      contextType: row.context_type,
+      contextType: row.context_type as ServerMemory['contextType'],
       metadata: row.metadata,
       expiresAt: row.expires_at ? new Date(row.expires_at) : undefined,
       createdAt: new Date(row.created_at),
@@ -466,20 +548,20 @@ export class PostgresAdapter implements DatabaseAdapter {
     promptHash: string,
     limit = 20
   ): Promise<ConversationMessage[]> {
-    const result = await this.pool.query(
+    const result = await this.pool.query<ConversationMessageRow>(
       `SELECT * FROM conversation_messages 
        WHERE channel_id = $1 AND prompt_hash = $2 
        ORDER BY created_at DESC LIMIT $3`,
       [channelId, promptHash, limit]
     );
 
-    return result.rows.reverse().map((row: any) => ({
+    return result.rows.reverse().map(row => ({
       id: row.id,
       guildId: row.guild_id,
       channelId: row.channel_id,
       userId: row.user_id,
       promptHash: row.prompt_hash,
-      role: row.role,
+      role: row.role as ConversationMessage['role'],
       content: row.content,
       createdAt: new Date(row.created_at)
     }));
