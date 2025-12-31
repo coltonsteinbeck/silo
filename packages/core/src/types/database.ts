@@ -48,9 +48,17 @@ export interface DatabaseAdapter {
 
   // User Memory
   getUserMemories(userId: string, contextType?: string, limit?: number): Promise<UserMemory[]>;
-  storeUserMemory(memory: Omit<UserMemory, 'id' | 'createdAt' | 'updatedAt'>): Promise<UserMemory>;
-  updateUserMemory(id: string, updates: Partial<UserMemory>): Promise<UserMemory>;
+  storeUserMemory(
+    memory: Omit<UserMemory, 'id' | 'createdAt' | 'updatedAt'>,
+    embedding?: number[]
+  ): Promise<UserMemory>;
+  updateUserMemory(
+    id: string,
+    updates: Partial<UserMemory>,
+    embedding?: number[]
+  ): Promise<UserMemory>;
   deleteUserMemory(id: string): Promise<void>;
+  findUserMemoryByIdPrefix(userId: string, idPrefix: string): Promise<UserMemory | null>;
   searchUserMemories(userId: string, query: string, limit?: number): Promise<UserMemory[]>;
 
   // Server Memory
