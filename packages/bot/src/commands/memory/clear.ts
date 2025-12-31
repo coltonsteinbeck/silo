@@ -37,8 +37,14 @@ export class ClearMemoryCommand implements Command {
     }
 
     if (memoryId) {
-      await this.db.deleteUserMemory(memoryId);
-      await interaction.editReply(`Memory \`${memoryId}\` deleted successfully.`);
+      // Support partial ID matching (user sees truncated IDs in memory-view)
+      const memory = await this.db.findUserMemoryByIdPrefix(interaction.user.id, memoryId);
+      if (!memory) {
+        await interaction.editReply(`No memory found with ID starting with \`${memoryId}\`.`);
+        return;
+      }
+      await this.db.deleteUserMemory(memory.id);
+      await interaction.editReply(`Memory \`${memory.id.slice(0, 8)}\` deleted successfully.`);
       return;
     }
 
