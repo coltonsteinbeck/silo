@@ -264,6 +264,31 @@ export class PostgresAdapter implements DatabaseAdapter {
     await this.pool.query('DELETE FROM user_memory WHERE id = $1', [id]);
   }
 
+  async findUserMemoryByIdPrefix(userId: string, idPrefix: string): Promise<UserMemory | null> {
+    const result = await this.pool.query<UserMemoryRow>(
+      `SELECT * FROM user_memory 
+       WHERE user_id = $1 AND id::text LIKE $2
+       LIMIT 1`,
+      [userId, `${idPrefix}%`]
+    );
+
+    if (result.rows.length === 0) {
+      return null;
+    }
+
+    const row = result.rows[0]!;
+    return {
+      id: row.id,
+      userId: row.user_id,
+      memoryContent: row.memory_content,
+      contextType: row.context_type as UserMemory['contextType'],
+      metadata: row.metadata,
+      expiresAt: row.expires_at ? new Date(row.expires_at) : undefined,
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(row.updated_at)
+    };
+  }
+
   async searchUserMemories(userId: string, query: string, limit = 20): Promise<UserMemory[]> {
     const result = await this.pool.query<UserMemoryRow>(
       `SELECT * FROM user_memory 

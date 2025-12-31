@@ -179,6 +179,12 @@ describe('ClearMemoryCommand', () => {
     mockDb = createMockDatabaseAdapter();
     mockDb.deleteUserMemory = mock(async () => {});
     mockDb.getUserMemories = mock(async () => [{ id: 'mem1' }, { id: 'mem2' }]);
+    mockDb.findUserMemoryByIdPrefix = mock(async (userId: string, idPrefix: string) => ({
+      id: `${idPrefix}-full-uuid`,
+      userId,
+      memoryContent: 'test memory',
+      contextType: 'conversation'
+    }));
     command = new ClearMemoryCommand(mockDb);
   });
 
@@ -209,7 +215,8 @@ describe('ClearMemoryCommand', () => {
 
       await command.execute(interaction as any);
 
-      expect(mockDb.deleteUserMemory).toHaveBeenCalledWith('specific-memory-id');
+      expect(mockDb.findUserMemoryByIdPrefix).toHaveBeenCalled();
+      expect(mockDb.deleteUserMemory).toHaveBeenCalledWith('specific-memory-id-full-uuid');
       const reply = interaction._getReplies()[0];
       expect(reply).toContain('deleted successfully');
     });
