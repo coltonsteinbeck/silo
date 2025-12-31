@@ -23,7 +23,7 @@ export class ClearMemoryCommand implements Command {
         )
     );
 
-  constructor(private db: DatabaseAdapter) {}
+  constructor(private db: DatabaseAdapter) { }
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     await interaction.deferReply({ ephemeral: true });
