@@ -58,6 +58,7 @@ export interface DatabaseAdapter {
     embedding?: number[]
   ): Promise<UserMemory>;
   deleteUserMemory(id: string): Promise<void>;
+  findUserMemoryByIdPrefix(userId: string, idPrefix: string): Promise<UserMemory | null>;
   searchUserMemories(userId: string, query: string, limit?: number): Promise<UserMemory[]>;
 
   // Server Memory
