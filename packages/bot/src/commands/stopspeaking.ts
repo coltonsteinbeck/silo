@@ -1,11 +1,15 @@
-import { SlashCommandBuilder, ChatInputCommandInteraction } from 'discord.js';
+import { SlashCommandBuilder, ChatInputCommandInteraction, GuildMember } from 'discord.js';
 import type { Command } from './types';
 import { voiceSessionManager } from '../voice';
+import type { QuotaMiddleware } from '../middleware/quota';
+import { logger } from '@silo/core';
 
-export const StopSpeakingCommand: Command = {
-  data: new SlashCommandBuilder()
+export class StopSpeakingCommand implements Command {
+  public readonly data = new SlashCommandBuilder()
     .setName('stopspeaking')
-    .setDescription('Stop your voice conversation with Silo'),
+    .setDescription('Stop your voice conversation with Silo');
+
+  constructor(private quotaMiddleware?: QuotaMiddleware) { }
 
   async execute(interaction: ChatInputCommandInteraction) {
     const guildId = interaction.guildId!;
@@ -21,9 +25,35 @@ export const StopSpeakingCommand: Command = {
     }
 
     try {
+      // Get session start time before stopping
+      const session = voiceSessionManager.getSession(guildId);
+      const sessionStartTime = session?.createdAt;
+
       const stopped = await voiceSessionManager.stopSpeaking(guildId, userId);
 
       if (stopped) {
+        // Record voice minutes used
+        if (this.quotaMiddleware && sessionStartTime) {
+          const durationMs = Date.now() - sessionStartTime.getTime();
+          const durationMinutes = Math.ceil(durationMs / 60000);
+
+          const member = interaction.member as GuildMember;
+          await this.quotaMiddleware.recordUsageAtomic(
+            guildId,
+            userId,
+            member,
+            'voice_minutes',
+            durationMinutes
+          );
+
+          logger.debug('Voice session ended, usage recorded', {
+            guildId,
+            userId,
+            durationMs,
+            durationMinutes
+          });
+        }
+
         const remainingSpeakers = voiceSessionManager.getActiveSpeakerCount(guildId);
 
         // If no more speakers, optionally leave the channel
@@ -47,11 +77,11 @@ export const StopSpeakingCommand: Command = {
         });
       }
     } catch (error) {
-      console.error('[StopSpeakingCommand] Error:', error);
+      logger.error('[StopSpeakingCommand] Error:', error);
       await interaction.reply({
         content: 'An error occurred while stopping the voice session.',
         ephemeral: true
       });
     }
   }
-};
+}

@@ -290,17 +290,24 @@ async function main() {
         );
       }
 
-      // Check quota before processing (estimate ~500 tokens for a typical request)
+      // Check quota before processing (estimate based on input length)
       const member = await message.guild!.members.fetch(message.author.id);
+      const estimatedTokens = await quotaMiddleware.estimateResponseTokens(processedContent.length);
       const quotaCheck = await quotaMiddleware.checkQuota(
         message.guildId,
         message.author.id,
         member,
         'text_tokens',
-        500
+        estimatedTokens
       );
 
       if (!quotaCheck.allowed) {
+        // Mark user for reset notification when quota is exhausted
+        await quotaMiddleware.markForResetNotification(
+          message.guildId,
+          message.author.id,
+          message.channelId
+        );
         await message.reply({
           content: `⚠️ ${quotaCheck.reason}`,
           allowedMentions: { repliedUser: false }
@@ -422,17 +429,27 @@ async function main() {
         content: response.content
       });
 
-      // Record actual token usage
-      const tokensUsed = response.usage?.totalTokens || 500;
+      // Record actual response token usage (completionTokens only, not input)
+      // This maximizes message quantity since users aren't charged for their input
+      const actualTokens = response.usage?.completionTokens || response.usage?.totalTokens || 500;
       await quotaMiddleware.recordUsage(
         message.guildId,
         message.author.id,
         'text_tokens',
-        tokensUsed
+        actualTokens
       );
 
-      // Discord has a 4000 character limit for messages
-      const MAX_MESSAGE_LENGTH = 4000;
+      // Log accuracy for estimate tuning (7-day rolling analysis)
+      await quotaMiddleware.logAccuracy(
+        message.guildId,
+        message.author.id,
+        processedContent.length,
+        estimatedTokens,
+        actualTokens
+      );
+
+      // Discord has a 2000 character limit for messages
+      const MAX_MESSAGE_LENGTH = 2000;
       let responseContent = response.content;
 
       if (responseContent.length > MAX_MESSAGE_LENGTH) {
