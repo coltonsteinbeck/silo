@@ -11,7 +11,7 @@ import {
 } from '@silo/core';
 
 export class AdminAdapter {
-  constructor(private pool: Pool) {}
+  constructor(private pool: Pool) { }
 
   // Server Configuration
   async getServerConfig(guildId: string): Promise<ServerConfig | null> {
@@ -609,10 +609,11 @@ export class AdminAdapter {
     if (result.rows.length === 0) return null;
 
     const row = result.rows[0];
+    // Fixed: use correct column names (daily_* instead of *_max)
     return {
-      textTokensMax: row.text_tokens_max,
-      imagesMax: row.images_max,
-      voiceMinutesMax: row.voice_minutes_max
+      textTokensMax: row.daily_text_tokens ?? row.text_tokens_max ?? 50000,
+      imagesMax: row.daily_images ?? row.images_max ?? 5,
+      voiceMinutesMax: row.daily_voice_minutes ?? row.voice_minutes_max ?? 15
     };
   }
 
@@ -797,5 +798,257 @@ export class AdminAdapter {
       images: parseInt(row.images) || 5,
       voiceMinutes: parseInt(row.voice_minutes) || 15
     };
+  }
+
+  // ============================================================================
+  // NEW: Role Tier Quota Methods (database-driven quotas)
+  // ============================================================================
+
+  /**
+   * Get quota limits for a role tier (guild-specific or global fallback)
+   */
+  async getRoleTierQuota(
+    guildId: string,
+    roleTier: 'admin' | 'moderator' | 'trusted' | 'member' | 'restricted'
+  ): Promise<{ textTokens: number; images: number; voiceMinutes: number }> {
+    // Use the SQL function for proper fallback logic
+    const result = await this.pool.query(`SELECT * FROM get_role_tier_quota($1, $2)`, [
+      guildId,
+      roleTier
+    ]);
+
+    if (result.rows.length === 0) {
+      // Fallback to hardcoded defaults if no database entries exist
+      const defaults: Record<string, { textTokens: number; images: number; voiceMinutes: number }> =
+      {
+        admin: { textTokens: 50000, images: 5, voiceMinutes: 15 },
+        moderator: { textTokens: 20000, images: 3, voiceMinutes: 10 },
+        trusted: { textTokens: 10000, images: 2, voiceMinutes: 5 },
+        member: { textTokens: 5000, images: 1, voiceMinutes: 0 },
+        restricted: { textTokens: 0, images: 0, voiceMinutes: 0 }
+      };
+      const defaultMember = { textTokens: 5000, images: 1, voiceMinutes: 0 };
+      return defaults[roleTier] ?? defaultMember;
+    }
+
+    const row = result.rows[0];
+    return {
+      textTokens: row.text_tokens ?? 0,
+      images: row.images ?? 0,
+      voiceMinutes: row.voice_minutes ?? 0
+    };
+  }
+
+  /**
+   * Atomic increment usage with race-condition protection
+   * Returns success status, new total, and remaining quota
+   */
+  async atomicIncrementUsage(
+    guildId: string,
+    userId: string,
+    usageType: 'text_tokens' | 'images' | 'voice_minutes',
+    amount: number,
+    userLimit: number
+  ): Promise<{ success: boolean; newTotal: number; remaining: number }> {
+    const result = await this.pool.query(
+      `SELECT * FROM increment_usage_atomic($1, $2, $3, $4, $5)`,
+      [guildId, userId, usageType, amount, userLimit]
+    );
+
+    if (result.rows.length === 0) {
+      return { success: false, newTotal: 0, remaining: 0 };
+    }
+
+    const row = result.rows[0];
+    return {
+      success: row.success ?? false,
+      newTotal: row.new_total ?? 0,
+      remaining: row.remaining ?? 0
+    };
+  }
+
+  /**
+   * Log quota accuracy for estimate tuning (7-day rolling analysis)
+   */
+  async logQuotaAccuracy(
+    guildId: string,
+    userId: string,
+    inputLength: number,
+    estimatedTokens: number,
+    actualTokens: number
+  ): Promise<void> {
+    try {
+      await this.pool.query(
+        `INSERT INTO quota_accuracy_log (guild_id, user_id, input_length, estimated_tokens, actual_tokens)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [guildId, userId, inputLength, estimatedTokens, actualTokens]
+      );
+    } catch (error) {
+      logger.warn('Failed to log quota accuracy:', error);
+    }
+  }
+
+  /**
+   * Get accuracy stats for estimate tuning (7-day rolling average)
+   */
+  async getQuotaAccuracyStats(days: number = 7): Promise<{
+    avgRatio: number | null;
+    sampleCount: number;
+    stdDev: number | null;
+  }> {
+    const result = await this.pool.query(`SELECT * FROM get_accuracy_stats($1)`, [days]);
+
+    if (result.rows.length === 0) {
+      return { avgRatio: null, sampleCount: 0, stdDev: null };
+    }
+
+    const row = result.rows[0];
+    return {
+      avgRatio: row.avg_ratio ? parseFloat(row.avg_ratio) : null,
+      sampleCount: parseInt(row.sample_count) || 0,
+      stdDev: row.std_dev ? parseFloat(row.std_dev) : null
+    };
+  }
+
+  /**
+   * Mark a user for reset notification (called when quota is exhausted)
+   */
+  async markUserForResetNotification(
+    guildId: string,
+    userId: string,
+    channelId: string
+  ): Promise<void> {
+    try {
+      await this.pool.query(
+        `INSERT INTO quota_reset_notifications (guild_id, user_id, channel_id)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (guild_id, user_id) DO UPDATE SET
+           channel_id = EXCLUDED.channel_id,
+           exhausted_at = NOW()`,
+        [guildId, userId, channelId]
+      );
+    } catch (error) {
+      logger.warn('Failed to mark user for reset notification:', error);
+    }
+  }
+
+  /**
+   * Get users needing reset notification (quota has reset since exhaustion)
+   */
+  async getUsersNeedingResetNotification(): Promise<
+    Array<{
+      guildId: string;
+      userId: string;
+      channelId: string;
+      exhaustedAt: Date;
+    }>
+  > {
+    const result = await this.pool.query(`SELECT * FROM get_users_needing_reset_notification()`);
+
+    return result.rows.map(
+      (row: { guild_id: string; user_id: string; channel_id: string; exhausted_at: string }) => ({
+        guildId: row.guild_id,
+        userId: row.user_id,
+        channelId: row.channel_id,
+        exhaustedAt: new Date(row.exhausted_at)
+      })
+    );
+  }
+
+  /**
+   * Clear reset notification after it's been sent
+   */
+  async clearResetNotification(guildId: string, userId: string): Promise<void> {
+    await this.pool.query(
+      `DELETE FROM quota_reset_notifications WHERE guild_id = $1 AND user_id = $2`,
+      [guildId, userId]
+    );
+  }
+
+  /**
+   * Get guild quota stats for admin view
+   */
+  async getGuildQuotaStats(guildId: string): Promise<{
+    textTokensUsed: number;
+    imagesUsed: number;
+    voiceMinutesUsed: number;
+    uniqueUsers: number;
+    pendingResetNotifications: number;
+  }> {
+    const result = await this.pool.query(`SELECT * FROM get_guild_quota_stats($1)`, [guildId]);
+
+    if (result.rows.length === 0) {
+      return {
+        textTokensUsed: 0,
+        imagesUsed: 0,
+        voiceMinutesUsed: 0,
+        uniqueUsers: 0,
+        pendingResetNotifications: 0
+      };
+    }
+
+    const row = result.rows[0];
+    return {
+      textTokensUsed: parseInt(row.text_tokens_used) || 0,
+      imagesUsed: parseInt(row.images_used) || 0,
+      voiceMinutesUsed: parseInt(row.voice_minutes_used) || 0,
+      uniqueUsers: parseInt(row.unique_users) || 0,
+      pendingResetNotifications: parseInt(row.pending_reset_notifications) || 0
+    };
+  }
+
+  /**
+   * Cleanup old accuracy logs (>30 days) and usage data (>90 days)
+   */
+  async cleanupOldData(): Promise<{
+    accuracyLogsDeleted: number;
+    usageDeleted: number;
+    guildUsageDeleted: number;
+  }> {
+    // Cleanup accuracy logs
+    const accuracyResult = await this.pool.query(`SELECT cleanup_old_accuracy_logs(30) as deleted`);
+    const accuracyLogsDeleted = accuracyResult.rows[0]?.deleted ?? 0;
+
+    // Cleanup usage data
+    const usageResult = await this.pool.query(`SELECT * FROM cleanup_old_usage(90)`);
+    const usageRow = usageResult.rows[0] ?? {};
+
+    return {
+      accuracyLogsDeleted,
+      usageDeleted: usageRow.usage_deleted ?? 0,
+      guildUsageDeleted: usageRow.guild_usage_deleted ?? 0
+    };
+  }
+
+  /**
+   * Verify quota data integrity on startup
+   */
+  async verifyQuotaDataIntegrity(): Promise<void> {
+    // Check for guilds with NULL quota values
+    const nullQuotas = await this.pool.query(
+      `SELECT guild_id FROM guild_quotas 
+       WHERE daily_text_tokens IS NULL 
+          OR daily_images IS NULL 
+          OR daily_voice_minutes IS NULL`
+    );
+
+    if (nullQuotas.rows.length > 0) {
+      logger.warn(`Found ${nullQuotas.rows.length} guilds with NULL quota values`);
+    }
+
+    // Check that global role tier quotas exist
+    const globalQuotas = await this.pool.query(
+      `SELECT role_tier FROM role_tier_quotas WHERE guild_id IS NULL`
+    );
+
+    const expectedTiers = ['admin', 'moderator', 'trusted', 'member', 'restricted'];
+    const existingTiers = globalQuotas.rows.map((r: { role_tier: string }) => r.role_tier);
+    const missingTiers = expectedTiers.filter(t => !existingTiers.includes(t));
+
+    if (missingTiers.length > 0) {
+      logger.warn(`Missing global role tier quotas for: ${missingTiers.join(', ')}`);
+    }
+
+    logger.info('Quota data integrity check completed');
   }
 }
