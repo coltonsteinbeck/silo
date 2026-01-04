@@ -11,7 +11,7 @@ import {
 } from '@silo/core';
 
 export class AdminAdapter {
-  constructor(private pool: Pool) { }
+  constructor(private pool: Pool) {}
 
   // Server Configuration
   async getServerConfig(guildId: string): Promise<ServerConfig | null> {
@@ -820,13 +820,13 @@ export class AdminAdapter {
     if (result.rows.length === 0) {
       // Fallback to hardcoded defaults if no database entries exist
       const defaults: Record<string, { textTokens: number; images: number; voiceMinutes: number }> =
-      {
-        admin: { textTokens: 50000, images: 5, voiceMinutes: 15 },
-        moderator: { textTokens: 20000, images: 3, voiceMinutes: 10 },
-        trusted: { textTokens: 10000, images: 2, voiceMinutes: 5 },
-        member: { textTokens: 5000, images: 1, voiceMinutes: 0 },
-        restricted: { textTokens: 0, images: 0, voiceMinutes: 0 }
-      };
+        {
+          admin: { textTokens: 50000, images: 5, voiceMinutes: 15 },
+          moderator: { textTokens: 20000, images: 3, voiceMinutes: 10 },
+          trusted: { textTokens: 10000, images: 2, voiceMinutes: 5 },
+          member: { textTokens: 5000, images: 1, voiceMinutes: 0 },
+          restricted: { textTokens: 0, images: 0, voiceMinutes: 0 }
+        };
       const defaultMember = { textTokens: 5000, images: 1, voiceMinutes: 0 };
       return defaults[roleTier] ?? defaultMember;
     }

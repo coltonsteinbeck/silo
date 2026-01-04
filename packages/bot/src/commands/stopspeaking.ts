@@ -9,7 +9,7 @@ export class StopSpeakingCommand implements Command {
     .setName('stopspeaking')
     .setDescription('Stop your voice conversation with Silo');
 
-  constructor(private quotaMiddleware?: QuotaMiddleware) { }
+  constructor(private quotaMiddleware?: QuotaMiddleware) {}
 
   async execute(interaction: ChatInputCommandInteraction) {
     const guildId = interaction.guildId!;
