@@ -20,9 +20,9 @@ describe('QuotaMiddleware', () => {
       getRoleTierQuota: mock(async () => ({ textTokens: 5000, images: 1, voiceMinutes: 0 })),
       incrementUsage: mock(async () => true),
       atomicIncrementUsage: mock(async () => ({ success: true, newTotal: 100, remaining: 4900 })),
-      logQuotaAccuracy: mock(async () => { }),
+      logQuotaAccuracy: mock(async () => {}),
       getQuotaAccuracyStats: mock(async () => ({ avgRatio: null, sampleCount: 0, stdDev: null })),
-      markUserForResetNotification: mock(async () => { }),
+      markUserForResetNotification: mock(async () => {}),
       getGuildDailyUsage: mock(async () => null),
       getGuildQuota: mock(async () => null)
     };

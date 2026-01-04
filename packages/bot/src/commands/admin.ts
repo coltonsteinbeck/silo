@@ -298,12 +298,12 @@ export class AdminCommand implements Command {
           name: '🎯 Estimate Accuracy (7-day)',
           value: accuracy.avgRatio
             ? [
-              `Avg Ratio: ${accuracy.avgRatio.toFixed(3)}`,
-              `Samples: ${accuracy.sampleCount.toLocaleString()}`,
-              accuracy.stdDev ? `Std Dev: ${accuracy.stdDev.toFixed(3)}` : ''
-            ]
-              .filter(Boolean)
-              .join('\n')
+                `Avg Ratio: ${accuracy.avgRatio.toFixed(3)}`,
+                `Samples: ${accuracy.sampleCount.toLocaleString()}`,
+                accuracy.stdDev ? `Std Dev: ${accuracy.stdDev.toFixed(3)}` : ''
+              ]
+                .filter(Boolean)
+                .join('\n')
             : 'No data yet (need 10+ samples)',
           inline: false
         }
@@ -355,10 +355,10 @@ export class AdminCommand implements Command {
           name: "📅 Today's Usage",
           value: usage
             ? [
-              `💬 Tokens: ${usage.textTokens.toLocaleString()}`,
-              `🎨 Images: ${usage.images}`,
-              `🎤 Voice: ${usage.voiceMinutes} min`
-            ].join('\n')
+                `💬 Tokens: ${usage.textTokens.toLocaleString()}`,
+                `🎨 Images: ${usage.images}`,
+                `🎤 Voice: ${usage.voiceMinutes} min`
+              ].join('\n')
             : 'No usage today',
           inline: true
         }
