@@ -13,6 +13,47 @@ Self-hosted Discord bot framework with customizable AI providers, advanced memor
 
 ### Local Setup with Docker
 
+#### Docker on WSL (Windows)
+
+If you're running Silo inside WSL, the easiest setup is to use **Docker Desktop on Windows** and enable WSL integration:
+
+1. Install Docker Desktop
+2. Settings → General: enable **Use the WSL 2 based engine**
+3. Settings → Resources → WSL Integration: enable integration for your distro (e.g. Ubuntu)
+4. Restart your WSL terminal
+
+Sanity checks inside WSL:
+
+```bash
+docker version
+docker compose version
+```
+
+If Docker isn't available in WSL yet, you can still install deps and create `.env` by skipping the local DB startup:
+
+```bash
+SKIP_DB=1 bun run setup
+```
+
+#### IPv6 / Supabase on WSL
+
+Supabase database hosts are **IPv6-only**. WSL's default NAT networking doesn't route IPv6, so connections will fail with `ECONNREFUSED`. Fix this by enabling **mirrored networking** (WSL 2.x):
+
+Create or edit `C:\Users\<you>\.wslconfig`:
+
+```ini
+[wsl2]
+networkingMode=mirrored
+```
+
+Then restart WSL from PowerShell:
+
+```powershell
+wsl --shutdown
+```
+
+Re-open your WSL terminal — IPv6 traffic now passes through your Windows host's network stack.
+
 ```bash
 git clone <your-repo>
 cd silo
