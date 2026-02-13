@@ -29,6 +29,7 @@ import {
   ModalSubmitInteraction
 } from 'discord.js';
 import { createHash } from 'crypto';
+import dns from 'node:dns';
 import { ConfigLoader, logger } from '@silo/core';
 import { ProviderRegistry } from './providers/registry';
 import { PostgresAdapter } from './database/postgres';
@@ -117,11 +118,23 @@ async function handleModalSubmit(interaction: ModalSubmitInteraction, adminDb: A
 async function main() {
   logger.info('Starting Silo Discord Bot...');
 
+  if (process.env.DB_PREFER_IPV4 === 'true') {
+    try {
+      dns.setDefaultResultOrder?.('ipv4first');
+      logger.info('DB_PREFER_IPV4 enabled (DNS result order: ipv4first)');
+    } catch (error) {
+      logger.warn('DB_PREFER_IPV4 enabled but could not set DNS result order', error);
+    }
+  }
+
   const config = ConfigLoader.load();
   logger.info('Configuration loaded successfully');
 
   // Initialize database
-  const db = new PostgresAdapter(config.database.url);
+  const db = new PostgresAdapter(config.database.url, {
+    ssl: config.database.ssl,
+    maxConnections: config.database.maxConnections
+  });
   await db.connect();
 
   // Initialize admin database

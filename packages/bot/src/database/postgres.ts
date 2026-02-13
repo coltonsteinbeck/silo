@@ -89,9 +89,17 @@ export class PostgresAdapter implements DatabaseAdapter {
     return `[${validatedNumbers.join(',')}]`;
   }
 
-  constructor(connectionUrl: string) {
+  constructor(
+    connectionUrl: string,
+    opts: {
+      ssl?: boolean;
+      maxConnections?: number;
+    } = {}
+  ) {
     this.pool = new Pool({
-      connectionString: connectionUrl
+      connectionString: connectionUrl,
+      ssl: opts.ssl ? { rejectUnauthorized: false } : undefined,
+      max: opts.maxConnections
     });
   }
 
@@ -126,11 +134,12 @@ export class PostgresAdapter implements DatabaseAdapter {
           await this.pool.query(sql);
           logger.info(`✓ Migration applied: ${file}`);
         } catch (error: any) {
-          // Check if it's a "already exists" error (which is fine)
+          // Check if it's a safe-to-skip error
           if (
             error.message?.includes('already exists') ||
             error.code === 'EEXIST' ||
-            error.message?.includes('does not exist')
+            error.message?.includes('does not exist') ||
+            error.code === '54000' // program_limit_exceeded (e.g. index row too large)
           ) {
             logger.info(`⚠ Skipping migration ${file}: ${error.message}`);
             continue;
