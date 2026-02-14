@@ -47,6 +47,17 @@ import {
 import { QuotaMiddleware } from './middleware/quota';
 import { CostAggregator } from './services/cost-aggregator';
 
+// Global error handlers to prevent silent crashes
+process.on('uncaughtException', error => {
+  console.error('[FATAL] Uncaught exception:', error);
+  // Give time for logs to flush before exiting
+  setTimeout(() => process.exit(1), 1000);
+});
+
+process.on('unhandledRejection', reason => {
+  console.error('[FATAL] Unhandled promise rejection:', reason);
+  // Don't exit — log and let the process continue
+});
 /**
  * Handle modal submissions (e.g., system prompt editor)
  */
@@ -182,6 +193,22 @@ async function main() {
     // Set client reference for security modules
     guildManager.setClient(client);
 
+    // Ensure all guilds the bot is in are registered in guild_registry.
+    // This prevents the inactivity scheduler from evicting guilds that were
+    // never registered (e.g. after a database reset or migration issue).
+    try {
+      const syncResult = await guildManager.ensureGuildsRegistered();
+      if (syncResult.synced > 0) {
+        logger.info(
+          `Guild sync: registered ${syncResult.synced} missing guild(s), ${syncResult.skipped} already registered`
+        );
+      } else {
+        logger.info(`Guild sync: all ${syncResult.skipped} guild(s) already registered`);
+      }
+    } catch (error) {
+      logger.error('Guild sync failed:', error);
+    }
+
     // Start inactivity scheduler (only in hosted mode)
     inactivityScheduler.init(db.pool, client);
     inactivityScheduler.start();
@@ -277,17 +304,19 @@ async function main() {
     });
 
     try {
+      const requestStart = Date.now();
       await message.channel.sendTyping();
 
       const userContent = message.content.replace(`<@${client.user!.id}>`, '').trim();
 
-      // Content moderation
-      const { processedContent, moderation } = await contentSanitizer.processContent(
-        userContent,
-        message.guildId,
-        message.author.id,
-        'message'
-      );
+      // === Phase 1: Gates (moderation + quota — can early-exit) ===
+      // Run content moderation and member fetch in parallel (independent operations)
+      const [moderationResult, member] = await Promise.all([
+        contentSanitizer.processContent(userContent, message.guildId, message.author.id, 'message'),
+        message.guild!.members.fetch(message.author.id)
+      ]);
+
+      const { processedContent, moderation } = moderationResult;
 
       if (!moderation.allowed) {
         await message.reply({
@@ -303,8 +332,7 @@ async function main() {
         );
       }
 
-      // Check quota before processing (estimate based on input length)
-      const member = await message.guild!.members.fetch(message.author.id);
+      // Quota check (depends on moderation result + member)
       const estimatedTokens = await quotaMiddleware.estimateResponseTokens(processedContent.length);
       const quotaCheck = await quotaMiddleware.checkQuota(
         message.guildId,
@@ -328,8 +356,15 @@ async function main() {
         return;
       }
 
-      // Get guild's preferred provider (from /config provider command)
-      const serverConfig = await adminDb.getServerConfig(message.guildId);
+      logger.info(`[Perf] Gates completed in ${Date.now() - requestStart}ms`);
+
+      // === Phase 2: Config lookups (parallel — both are independent DB reads) ===
+      const configStart = Date.now();
+      const [serverConfig, systemPromptResult] = await Promise.all([
+        adminDb.getServerConfig(message.guildId),
+        adminDb.getSystemPrompt(message.guildId)
+      ]);
+
       const preferredProvider = serverConfig?.defaultProvider;
       const textProvider = providers.getTextProvider(preferredProvider || undefined);
 
@@ -337,10 +372,7 @@ async function main() {
         `Guild ${message.guildId} using provider: ${textProvider.name} (configured: ${preferredProvider || 'default'})`
       );
 
-      // Get the system prompt for this guild
-      const { prompt: dbPrompt, enabled: promptEnabled } = await adminDb.getSystemPrompt(
-        message.guildId
-      );
+      const { prompt: dbPrompt, enabled: promptEnabled } = systemPromptResult;
       const promptConfig = systemPromptManager.getEffectivePrompt(dbPrompt, promptEnabled);
 
       // Provider-specific default prompts - servers should set their own via /config system-prompt
@@ -370,56 +402,71 @@ async function main() {
         );
       }
 
-      // Get conversation history scoped to: channel + prompt context
-      // This maintains group conversation flow while isolating different prompt personalities
-      const history = await db.getConversationHistory(message.channelId, promptHash, 10);
+      logger.info(`[Perf] Config loaded in ${Date.now() - configStart}ms`);
+
+      // === Phase 3: Data fetch (parallel — history, memory, store user msg) ===
+      const dataStart = Date.now();
+
+      // Build memory retrieval as a parallel task
+      // Skip the expensive OpenAI Embeddings API call if user has no memories
+      const memoryPromise = (async (): Promise<string> => {
+        try {
+          if (providers && providers.getEmbeddingProvider()) {
+            // Fast DB check: does this user have any memories at all?
+            const memoryCount = await db.getUserMemoryCount(message.author.id);
+            if (memoryCount === 0) return '';
+
+            const embeddingProvider = providers.getEmbeddingProvider();
+            const embedding = await embeddingProvider.generateEmbeddings([processedContent]);
+            if (embedding && embedding.length > 0 && embedding[0]) {
+              const relevantMemories = await db.getRelevantUserMemoriesForContext(
+                message.author.id,
+                embedding[0],
+                undefined,
+                5
+              );
+
+              if (relevantMemories.length > 0) {
+                let ctx = '\n\n**User Memories:**\n';
+                for (const memory of relevantMemories) {
+                  ctx += `- [${memory.contextType}] ${memory.memoryContent}\n`;
+                }
+                logger.info(
+                  `Retrieved ${relevantMemories.length} relevant memories for user ${message.author.id}`
+                );
+                return ctx;
+              }
+            }
+          }
+        } catch (error) {
+          logger.warn('Failed to retrieve user memories:', error);
+        }
+        return '';
+      })();
+
+      // Run history fetch, memory retrieval, and user message store in parallel
+      const [history, memoryContext] = await Promise.all([
+        db.getConversationHistory(message.channelId, promptHash, 10),
+        memoryPromise,
+        db.storeConversationMessage({
+          guildId: message.guildId,
+          channelId: message.channelId,
+          userId: message.author.id,
+          promptHash,
+          role: 'user',
+          content: processedContent
+        })
+      ]);
+
       const messages = history.map(msg => ({
         role: msg.role,
         content: msg.content
       }));
 
-      // Retrieve relevant user memories using semantic search
-      let memoryContext = '';
-      try {
-        // Check if we have an embedding provider and it's configured
-        if (providers && providers.getEmbeddingProvider()) {
-          const embeddingProvider = providers.getEmbeddingProvider();
-          const embedding = await embeddingProvider.generateEmbeddings([processedContent]);
-          if (embedding && embedding.length > 0 && embedding[0]) {
-            // Get relevant memories based on semantic similarity
-            const relevantMemories = await db.getRelevantUserMemoriesForContext(
-              message.author.id,
-              embedding[0],
-              undefined,
-              5 // Limit to 5 most relevant memories
-            );
+      logger.info(`[Perf] Data fetched in ${Date.now() - dataStart}ms`);
 
-            if (relevantMemories.length > 0) {
-              memoryContext = '\n\n**User Memories:**\n';
-              for (const memory of relevantMemories) {
-                memoryContext += `- [${memory.contextType}] ${memory.memoryContent}\n`;
-              }
-              logger.info(
-                `Retrieved ${relevantMemories.length} relevant memories for user ${message.author.id}`
-              );
-            }
-          }
-        }
-      } catch (error) {
-        logger.warn('Failed to retrieve user memories:', error);
-        // Continue without memories if embedding fails
-      }
-
-      // Store user message
-      await db.storeConversationMessage({
-        guildId: message.guildId,
-        channelId: message.channelId,
-        userId: message.author.id,
-        promptHash,
-        role: 'user',
-        content: processedContent
-      });
-
+      // === Phase 4: LLM call ===
+      const llmStart = Date.now();
       const response = await textProvider.generateText([
         {
           role: 'system',
@@ -432,35 +479,11 @@ async function main() {
         }
       ]);
 
-      // Store assistant response
-      await db.storeConversationMessage({
-        guildId: message.guildId,
-        channelId: message.channelId,
-        userId: message.author.id,
-        promptHash,
-        role: 'assistant',
-        content: response.content
-      });
-
-      // Record actual response token usage (completionTokens only, not input)
-      // This maximizes message quantity since users aren't charged for their input
-      const actualTokens = response.usage?.completionTokens || response.usage?.totalTokens || 500;
-      await quotaMiddleware.recordUsage(
-        message.guildId,
-        message.author.id,
-        'text_tokens',
-        actualTokens
+      logger.info(
+        `[Perf] LLM responded in ${Date.now() - llmStart}ms (model: ${response.model || 'unknown'})`
       );
 
-      // Log accuracy for estimate tuning (7-day rolling analysis)
-      await quotaMiddleware.logAccuracy(
-        message.guildId,
-        message.author.id,
-        processedContent.length,
-        estimatedTokens,
-        actualTokens
-      );
-
+      // === Phase 5: Reply immediately, then fire-and-forget post-LLM writes ===
       // Discord has a 2000 character limit for messages
       const MAX_MESSAGE_LENGTH = 2000;
       let responseContent = response.content;
@@ -476,6 +499,36 @@ async function main() {
       await message.reply({
         content: responseContent,
         allowedMentions: { repliedUser: false }
+      });
+
+      logger.info(`[Perf] Total response time: ${Date.now() - requestStart}ms`);
+
+      // Fire-and-forget: post-LLM writes don't block the user-facing response
+      const actualTokens = response.usage?.completionTokens || response.usage?.totalTokens || 500;
+      Promise.all([
+        db.storeConversationMessage({
+          guildId: message.guildId,
+          channelId: message.channelId,
+          userId: message.author.id,
+          promptHash,
+          role: 'assistant',
+          content: response.content
+        }),
+        quotaMiddleware.recordUsage(
+          message.guildId,
+          message.author.id,
+          'text_tokens',
+          actualTokens
+        ),
+        quotaMiddleware.logAccuracy(
+          message.guildId,
+          message.author.id,
+          processedContent.length,
+          estimatedTokens,
+          actualTokens
+        )
+      ]).catch(err => {
+        logger.error('Failed to complete post-response writes:', err);
       });
     } catch (error) {
       logger.error('Error handling message:', error);
