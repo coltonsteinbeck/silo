@@ -17,7 +17,7 @@ export const ProviderConfigSchema = z.object({
   xai: z
     .object({
       apiKey: z.string().optional(),
-      model: z.string().default('grok-3-mini'),
+      model: z.string().default('grok-4-1-fast-non-reasoning'),
       baseURL: z.string().url().default('https://api.x.ai/v1')
     })
     .optional(),
