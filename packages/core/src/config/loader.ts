@@ -60,7 +60,7 @@ export class ConfigLoader {
         xai: process.env.XAI_API_KEY
           ? {
               apiKey: process.env.XAI_API_KEY,
-              model: process.env.XAI_MODEL || 'grok-3-mini'
+              model: process.env.XAI_MODEL || 'grok-4-1-fast-non-reasoning'
             }
           : undefined,
         local:
