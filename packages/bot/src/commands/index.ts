@@ -65,7 +65,8 @@ export function createCommands(
   // Voice commands
   const speak = new SpeakCommand(adminDb, quotaMiddleware);
   commands.set(speak.data.name, speak);
-  commands.set(StopSpeakingCommand.data.name, StopSpeakingCommand);
+  const stopSpeaking = new StopSpeakingCommand(quotaMiddleware);
+  commands.set(stopSpeaking.data.name, stopSpeaking);
 
   // Feedback command
   const feedback = new FeedbackCommand(adminDb);
