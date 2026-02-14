@@ -98,8 +98,16 @@ export class PostgresAdapter implements DatabaseAdapter {
   ) {
     this.pool = new Pool({
       connectionString: connectionUrl,
+      connectionTimeoutMillis: 10000,
+      idleTimeoutMillis: 30000,
       ssl: opts.ssl ? { rejectUnauthorized: false } : undefined,
-      max: opts.maxConnections
+      max: opts.maxConnections ?? 10
+    });
+
+    // Handle unexpected pool errors (e.g. idle client disconnections)
+    // Without this handler, pool errors become uncaught exceptions that crash the process
+    this.pool.on('error', err => {
+      logger.error('Unexpected database pool error:', err);
     });
   }
 
@@ -119,20 +127,64 @@ export class PostgresAdapter implements DatabaseAdapter {
 
   private async runMigrations(): Promise<void> {
     try {
+      // Create migration tracking table if it doesn't exist
+      await this.pool.query(`
+        CREATE TABLE IF NOT EXISTS _migrations (
+          name TEXT PRIMARY KEY,
+          applied_at TIMESTAMPTZ DEFAULT NOW()
+        )
+      `);
+
+      // Get already-applied migrations
+      const applied = await this.pool.query<{ name: string }>('SELECT name FROM _migrations');
+      const appliedSet = new Set(applied.rows.map(r => r.name));
+
       const migrationsDir = join(process.cwd(), 'supabase', 'migrations');
       const migrationFiles = readdirSync(migrationsDir)
         .filter(file => file.endsWith('.sql'))
         .sort();
 
-      logger.info(`Found ${migrationFiles.length} migration files`);
+      // Bootstrap: if _migrations is empty but the database already has tables,
+      // mark all existing migrations as applied to avoid destructive re-runs
+      if (appliedSet.size === 0) {
+        const tableCheck = await this.pool.query<{ exists: boolean }>(`
+          SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'conversation_messages'
+          ) as exists
+        `);
 
+        if (tableCheck.rows[0]?.exists) {
+          logger.info('Bootstrap: existing database detected — marking all migrations as applied');
+          for (const file of migrationFiles) {
+            await this.pool.query(
+              'INSERT INTO _migrations (name) VALUES ($1) ON CONFLICT DO NOTHING',
+              [file]
+            );
+          }
+          logger.info(`Bootstrap: marked ${migrationFiles.length} migrations as already applied`);
+          return;
+        }
+      }
+
+      logger.info(
+        `Found ${migrationFiles.length} migration files (${appliedSet.size} already applied)`
+      );
+
+      let newMigrations = 0;
       for (const file of migrationFiles) {
+        if (appliedSet.has(file)) {
+          continue; // Already applied, skip
+        }
+
         const filePath = join(migrationsDir, file);
         const sql = readFileSync(filePath, 'utf-8');
 
         try {
           await this.pool.query(sql);
+          await this.pool.query('INSERT INTO _migrations (name) VALUES ($1)', [file]);
           logger.info(`✓ Migration applied: ${file}`);
+          newMigrations++;
         } catch (error: any) {
           // Check if it's a safe-to-skip error
           if (
@@ -141,13 +193,23 @@ export class PostgresAdapter implements DatabaseAdapter {
             error.message?.includes('does not exist') ||
             error.code === '54000' // program_limit_exceeded (e.g. index row too large)
           ) {
+            // Still record it as applied so we don't retry
+            await this.pool.query(
+              'INSERT INTO _migrations (name) VALUES ($1) ON CONFLICT DO NOTHING',
+              [file]
+            );
             logger.info(`⚠ Skipping migration ${file}: ${error.message}`);
             continue;
           }
           throw error;
         }
       }
-      logger.info('All migrations completed successfully');
+
+      if (newMigrations > 0) {
+        logger.info(`${newMigrations} new migration(s) applied successfully`);
+      } else {
+        logger.info('All migrations already applied');
+      }
     } catch (error) {
       logger.error('Failed to run migrations:', error);
       // Don't throw - continue with app startup
@@ -169,6 +231,18 @@ export class PostgresAdapter implements DatabaseAdapter {
   }
 
   // User Memory
+
+  /**
+   * Fast count check to avoid expensive embedding API calls when user has no memories
+   */
+  async getUserMemoryCount(userId: string): Promise<number> {
+    const result = await this.pool.query<{ count: string }>(
+      'SELECT COUNT(*) as count FROM user_memory WHERE user_id = $1',
+      [userId]
+    );
+    return parseInt(result.rows[0]?.count || '0', 10);
+  }
+
   async getUserMemories(userId: string, contextType?: string, limit = 50): Promise<UserMemory[]> {
     const query = contextType
       ? 'SELECT * FROM user_memory WHERE user_id = $1 AND context_type = $2 ORDER BY created_at DESC LIMIT $3'

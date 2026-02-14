@@ -15,12 +15,13 @@ export class XAIProvider implements TextProvider {
   private client: OpenAI | null = null;
   private defaultModel: string;
 
-  constructor(apiKey?: string, model: string = 'grok-3-mini') {
+  constructor(apiKey?: string, model: string = 'grok-4-1-fast-non-reasoning') {
     this.defaultModel = model;
     if (apiKey) {
       this.client = new OpenAI({
         apiKey,
-        baseURL: 'https://api.x.ai/v1'
+        baseURL: 'https://api.x.ai/v1',
+        timeout: 60000
       });
     }
   }
@@ -44,7 +45,7 @@ export class XAIProvider implements TextProvider {
         content: m.content
       })),
       temperature: options?.temperature ?? 0.8,
-      max_tokens: options?.maxTokens,
+      max_tokens: options?.maxTokens ?? 1024,
       stream: false
     });
 

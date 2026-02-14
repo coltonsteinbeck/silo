@@ -1,11 +1,18 @@
 -- Migration: Add guild_id and prompt_hash to conversation_messages
--- This migration wipes existing conversations to:
--- 1. Clear stale/hallucinated context from old AI responses
--- 2. Ensure all records have the new columns populated
+-- Originally wiped conversations for fresh column addition.
+-- Now idempotent: only truncates if the columns don't exist yet.
 
--- First, truncate the table to clear old conversation history
--- This stops hallucination from cached "I'm GPT-3.5" type responses
-TRUNCATE TABLE conversation_messages;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'conversation_messages' AND column_name = 'guild_id'
+  ) THEN
+    -- Only truncate on first run when adding new required columns
+    TRUNCATE TABLE conversation_messages;
+  END IF;
+END
+$$;
 
 -- Add guild_id column (required for per-guild conversation management)
 ALTER TABLE conversation_messages
