@@ -501,17 +501,25 @@ async function main() {
       // === Phase 4: LLM call ===
       const llmStart = Date.now();
       let usedVision = false;
+      const MAX_TEXT_RESPONSE_TOKENS = 350;
+      const MAX_VISION_RESPONSE_TOKENS = 350;
+      const VISION_MEMORY_CONTEXT_MAX_CHARS = 1000;
 
       const response = useVision
         ? await (async () => {
             const imageUrls = imageAttachments.map(att => att.url);
-            const visionPrompt = processedContent || 'Describe this image.';
+            const userVisionPrompt = processedContent || 'Describe this image.';
+            const limitedMemoryContext =
+              memoryContext.length > VISION_MEMORY_CONTEXT_MAX_CHARS
+                ? `${memoryContext.slice(0, VISION_MEMORY_CONTEXT_MAX_CHARS)}\n- [memory context truncated for token efficiency]`
+                : memoryContext;
+            const visionPrompt = `${systemPrompt}${limitedMemoryContext}\n\n${userVisionPrompt}`;
             const visionResult = await visionProvider.analyzeImage!(
               imageUrls[0]!,
               imageUrls.length > 1
                 ? `${visionPrompt}\n\nUser attached ${imageUrls.length} images; analyze the first image in detail.`
                 : visionPrompt,
-              { maxTokens: 1024 }
+              { maxTokens: MAX_VISION_RESPONSE_TOKENS }
             );
             usedVision = true;
             return {
@@ -520,17 +528,22 @@ async function main() {
               model: `${visionProvider.name}-vision`
             };
           })()
-        : await textProvider.generateText([
+        : await textProvider.generateText(
+            [
+              {
+                role: 'system',
+                content: systemPrompt + memoryContext
+              },
+              ...messages,
+              {
+                role: 'user',
+                content: processedContent
+              }
+            ],
             {
-              role: 'system',
-              content: systemPrompt + memoryContext
-            },
-            ...messages,
-            {
-              role: 'user',
-              content: processedContent
+              maxTokens: MAX_TEXT_RESPONSE_TOKENS
             }
-          ]);
+          );
 
       logger.info(
         `[Perf] LLM responded in ${Date.now() - llmStart}ms (model: ${response.model || 'unknown'}${usedVision ? ', vision' : ''})`
