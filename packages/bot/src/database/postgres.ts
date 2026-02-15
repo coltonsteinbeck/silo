@@ -89,19 +89,13 @@ export class PostgresAdapter implements DatabaseAdapter {
     return `[${validatedNumbers.join(',')}]`;
   }
 
-  constructor(
-    connectionUrl: string,
-    opts: {
-      ssl?: boolean;
-      maxConnections?: number;
-    } = {}
-  ) {
+  constructor(connectionUrl: string, options?: { ssl?: boolean; maxConnections?: number }) {
     this.pool = new Pool({
       connectionString: connectionUrl,
       connectionTimeoutMillis: 10000,
       idleTimeoutMillis: 30000,
-      ssl: opts.ssl ? { rejectUnauthorized: false } : undefined,
-      max: opts.maxConnections ?? 10
+      max: options?.maxConnections ?? 10,
+      ...(options?.ssl ? { ssl: { rejectUnauthorized: false } } : {})
     });
 
     // Handle unexpected pool errors (e.g. idle client disconnections)
@@ -127,89 +121,34 @@ export class PostgresAdapter implements DatabaseAdapter {
 
   private async runMigrations(): Promise<void> {
     try {
-      // Create migration tracking table if it doesn't exist
-      await this.pool.query(`
-        CREATE TABLE IF NOT EXISTS _migrations (
-          name TEXT PRIMARY KEY,
-          applied_at TIMESTAMPTZ DEFAULT NOW()
-        )
-      `);
-
-      // Get already-applied migrations
-      const applied = await this.pool.query<{ name: string }>('SELECT name FROM _migrations');
-      const appliedSet = new Set(applied.rows.map(r => r.name));
-
       const migrationsDir = join(process.cwd(), 'supabase', 'migrations');
       const migrationFiles = readdirSync(migrationsDir)
         .filter(file => file.endsWith('.sql'))
         .sort();
 
-      // Bootstrap: if _migrations is empty but the database already has tables,
-      // mark all existing migrations as applied to avoid destructive re-runs
-      if (appliedSet.size === 0) {
-        const tableCheck = await this.pool.query<{ exists: boolean }>(`
-          SELECT EXISTS (
-            SELECT 1 FROM information_schema.tables
-            WHERE table_schema = 'public' AND table_name = 'conversation_messages'
-          ) as exists
-        `);
+      logger.info(`Found ${migrationFiles.length} migration files`);
 
-        if (tableCheck.rows[0]?.exists) {
-          logger.info('Bootstrap: existing database detected — marking all migrations as applied');
-          for (const file of migrationFiles) {
-            await this.pool.query(
-              'INSERT INTO _migrations (name) VALUES ($1) ON CONFLICT DO NOTHING',
-              [file]
-            );
-          }
-          logger.info(`Bootstrap: marked ${migrationFiles.length} migrations as already applied`);
-          return;
-        }
-      }
-
-      logger.info(
-        `Found ${migrationFiles.length} migration files (${appliedSet.size} already applied)`
-      );
-
-      let newMigrations = 0;
       for (const file of migrationFiles) {
-        if (appliedSet.has(file)) {
-          continue; // Already applied, skip
-        }
-
         const filePath = join(migrationsDir, file);
         const sql = readFileSync(filePath, 'utf-8');
 
         try {
           await this.pool.query(sql);
-          await this.pool.query('INSERT INTO _migrations (name) VALUES ($1)', [file]);
           logger.info(`✓ Migration applied: ${file}`);
-          newMigrations++;
         } catch (error: any) {
-          // Check if it's a safe-to-skip error
+          // Check if it's a "already exists" error (which is fine)
           if (
             error.message?.includes('already exists') ||
             error.code === 'EEXIST' ||
-            error.message?.includes('does not exist') ||
-            error.code === '54000' // program_limit_exceeded (e.g. index row too large)
+            error.message?.includes('does not exist')
           ) {
-            // Still record it as applied so we don't retry
-            await this.pool.query(
-              'INSERT INTO _migrations (name) VALUES ($1) ON CONFLICT DO NOTHING',
-              [file]
-            );
             logger.info(`⚠ Skipping migration ${file}: ${error.message}`);
             continue;
           }
           throw error;
         }
       }
-
-      if (newMigrations > 0) {
-        logger.info(`${newMigrations} new migration(s) applied successfully`);
-      } else {
-        logger.info('All migrations already applied');
-      }
+      logger.info('All migrations completed successfully');
     } catch (error) {
       logger.error('Failed to run migrations:', error);
       // Don't throw - continue with app startup
@@ -231,16 +170,17 @@ export class PostgresAdapter implements DatabaseAdapter {
   }
 
   // User Memory
-
-  /**
-   * Fast count check to avoid expensive embedding API calls when user has no memories
-   */
   async getUserMemoryCount(userId: string): Promise<number> {
-    const result = await this.pool.query<{ count: string }>(
-      'SELECT COUNT(*) as count FROM user_memory WHERE user_id = $1',
+    const result = await this.pool.query(
+      'SELECT COUNT(*)::int AS count FROM user_memory WHERE user_id = $1',
       [userId]
     );
-    return parseInt(result.rows[0]?.count || '0', 10);
+    return result.rows[0]?.count ?? 0;
+  }
+
+  async getAllMemoryCount(): Promise<number> {
+    const result = await this.pool.query('SELECT COUNT(*)::int AS count FROM user_memory');
+    return result.rows[0]?.count ?? 0;
   }
 
   async getUserMemories(userId: string, contextType?: string, limit = 50): Promise<UserMemory[]> {
@@ -249,6 +189,26 @@ export class PostgresAdapter implements DatabaseAdapter {
       : 'SELECT * FROM user_memory WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2';
 
     const params = contextType ? [userId, contextType, limit] : [userId, limit];
+    const result = await this.pool.query<UserMemoryRow>(query, params);
+
+    return result.rows.map(row => ({
+      id: row.id,
+      userId: row.user_id,
+      memoryContent: row.memory_content,
+      contextType: row.context_type as UserMemory['contextType'],
+      metadata: row.metadata,
+      expiresAt: row.expires_at ? new Date(row.expires_at) : undefined,
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(row.updated_at)
+    }));
+  }
+
+  async getAllMemories(contextType?: string, limit = 50): Promise<UserMemory[]> {
+    const query = contextType
+      ? 'SELECT * FROM user_memory WHERE context_type = $1 ORDER BY created_at DESC LIMIT $2'
+      : 'SELECT * FROM user_memory ORDER BY created_at DESC LIMIT $1';
+
+    const params = contextType ? [contextType, limit] : [limit];
     const result = await this.pool.query<UserMemoryRow>(query, params);
 
     return result.rows.map(row => ({

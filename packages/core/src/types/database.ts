@@ -47,7 +47,10 @@ export interface DatabaseAdapter {
   healthCheck(): Promise<boolean>;
 
   // User Memory
+  getUserMemoryCount(userId: string): Promise<number>;
+  getAllMemoryCount(): Promise<number>;
   getUserMemories(userId: string, contextType?: string, limit?: number): Promise<UserMemory[]>;
+  getAllMemories(contextType?: string, limit?: number): Promise<UserMemory[]>;
   storeUserMemory(
     memory: Omit<UserMemory, 'id' | 'createdAt' | 'updatedAt'>,
     embedding?: number[]

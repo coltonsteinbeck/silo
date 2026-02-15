@@ -441,76 +441,29 @@ async function main() {
       const dataStart = Date.now();
 
       // Build memory retrieval as a parallel task
-      // Skip the expensive OpenAI Embeddings API call if user has no memories
+      // Load ALL memories (from any user) so the bot has full context
       const memoryPromise = (async (): Promise<string> => {
         try {
-          // Fast DB check: does this user have any memories at all?
-          const memoryCount = await db.getUserMemoryCount(message.author.id);
+          // Fast DB check: are there any memories at all?
+          const memoryCount = await db.getAllMemoryCount();
           if (memoryCount === 0) return '';
 
-          if (providers.hasEmbeddingProvider()) {
-            const embeddingProvider = providers.getEmbeddingProvider();
-            const embedding = await embeddingProvider.generateEmbeddings([processedContent]);
-            if (embedding && embedding.length > 0 && embedding[0]) {
-              const relevantMemories = await db.getRelevantUserMemoriesForContext(
-                message.author.id,
-                embedding[0],
-                undefined,
-                5
-              );
+          // Load all memories regardless of who created them
+          const allMemories = await db.getAllMemories(undefined, 30);
 
-              if (relevantMemories.length > 0) {
-                let ctx = '\n\n**User Memories:**\n';
-                for (const memory of relevantMemories) {
-                  ctx += `- [${memory.contextType}] ${memory.memoryContent}\n`;
-                }
-                logger.info(
-                  `Retrieved ${relevantMemories.length} relevant memories for user ${message.author.id}`
-                );
-                return ctx;
-              }
+          if (allMemories.length > 0) {
+            let ctx =
+              '\n\n**Stored Memories (IMPORTANT — always honor these facts in your response):**\n';
+            for (const memory of allMemories) {
+              ctx += `- [${memory.contextType}] ${memory.memoryContent}\n`;
             }
-          } else {
-            const keywordTokens = processedContent
-              .toLowerCase()
-              .replace(/[^a-z0-9\s]/g, ' ')
-              .split(/\s+/)
-              .filter(token => token.length >= 4);
-
-            const keywordMatches: Array<{ contextType: string; memoryContent: string }> = [];
-            const seenMemoryContent = new Set<string>();
-
-            for (const token of keywordTokens.slice(0, 3)) {
-              const matches = await db.searchUserMemories(message.author.id, token, 2);
-              for (const match of matches) {
-                if (!seenMemoryContent.has(match.memoryContent)) {
-                  seenMemoryContent.add(match.memoryContent);
-                  keywordMatches.push(match);
-                }
-              }
-              if (keywordMatches.length >= 5) {
-                break;
-              }
-            }
-
-            const fallbackMemories =
-              keywordMatches.length > 0
-                ? keywordMatches.slice(0, 5)
-                : await db.getUserMemories(message.author.id, undefined, 3);
-
-            if (fallbackMemories.length > 0) {
-              let ctx = '\n\n**User Memories:**\n';
-              for (const memory of fallbackMemories) {
-                ctx += `- [${memory.contextType}] ${memory.memoryContent}\n`;
-              }
-              logger.info(
-                `Retrieved ${fallbackMemories.length} fallback memories for user ${message.author.id}`
-              );
-              return ctx;
-            }
+            logger.info(
+              `Retrieved ${allMemories.length} total memories (requested by user ${message.author.id})`
+            );
+            return ctx;
           }
         } catch (error) {
-          logger.warn('Failed to retrieve user memories:', error);
+          logger.warn('Failed to retrieve memories:', error);
         }
         return '';
       })();
