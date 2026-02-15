@@ -89,6 +89,10 @@ export class ProviderRegistry {
     return this.embeddingProvider;
   }
 
+  hasEmbeddingProvider(): boolean {
+    return !!this.embeddingProvider && this.embeddingProvider.isConfigured();
+  }
+
   getVisionProvider(name?: string): ImageProvider | null {
     const candidates = name
       ? this.imageProviders.filter(p => p.name === name)
