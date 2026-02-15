@@ -444,11 +444,11 @@ async function main() {
       // Skip the expensive OpenAI Embeddings API call if user has no memories
       const memoryPromise = (async (): Promise<string> => {
         try {
-          if (providers && providers.getEmbeddingProvider()) {
-            // Fast DB check: does this user have any memories at all?
-            const memoryCount = await db.getUserMemoryCount(message.author.id);
-            if (memoryCount === 0) return '';
+          // Fast DB check: does this user have any memories at all?
+          const memoryCount = await db.getUserMemoryCount(message.author.id);
+          if (memoryCount === 0) return '';
 
+          if (providers.hasEmbeddingProvider()) {
             const embeddingProvider = providers.getEmbeddingProvider();
             const embedding = await embeddingProvider.generateEmbeddings([processedContent]);
             if (embedding && embedding.length > 0 && embedding[0]) {
@@ -469,6 +469,44 @@ async function main() {
                 );
                 return ctx;
               }
+            }
+          } else {
+            const keywordTokens = processedContent
+              .toLowerCase()
+              .replace(/[^a-z0-9\s]/g, ' ')
+              .split(/\s+/)
+              .filter(token => token.length >= 4);
+
+            const keywordMatches: Array<{ contextType: string; memoryContent: string }> = [];
+            const seenMemoryContent = new Set<string>();
+
+            for (const token of keywordTokens.slice(0, 3)) {
+              const matches = await db.searchUserMemories(message.author.id, token, 2);
+              for (const match of matches) {
+                if (!seenMemoryContent.has(match.memoryContent)) {
+                  seenMemoryContent.add(match.memoryContent);
+                  keywordMatches.push(match);
+                }
+              }
+              if (keywordMatches.length >= 5) {
+                break;
+              }
+            }
+
+            const fallbackMemories =
+              keywordMatches.length > 0
+                ? keywordMatches.slice(0, 5)
+                : await db.getUserMemories(message.author.id, undefined, 3);
+
+            if (fallbackMemories.length > 0) {
+              let ctx = '\n\n**User Memories:**\n';
+              for (const memory of fallbackMemories) {
+                ctx += `- [${memory.contextType}] ${memory.memoryContent}\n`;
+              }
+              logger.info(
+                `Retrieved ${fallbackMemories.length} fallback memories for user ${message.author.id}`
+              );
+              return ctx;
             }
           }
         } catch (error) {
@@ -495,6 +533,13 @@ async function main() {
         role: msg.role,
         content: msg.content
       }));
+
+      const memoryItemCount = (memoryContext.match(/\n- \[/g) || []).length;
+      if (memoryItemCount > 0) {
+        logger.info(
+          `Injected ${memoryItemCount} memories into prompt for user ${message.author.id} (${memoryContext.length} chars)`
+        );
+      }
 
       logger.info(`[Perf] Data fetched in ${Date.now() - dataStart}ms`);
 
