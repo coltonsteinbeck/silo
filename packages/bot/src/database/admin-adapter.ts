@@ -601,6 +601,7 @@ export class AdminAdapter {
     textTokensMax: number;
     imagesMax: number;
     voiceMinutesMax: number;
+    visionTokensMax: number;
   } | null> {
     const result = await this.pool.query('SELECT * FROM guild_quotas WHERE guild_id = $1', [
       guildId
@@ -613,7 +614,8 @@ export class AdminAdapter {
     return {
       textTokensMax: row.daily_text_tokens ?? row.text_tokens_max ?? 50000,
       imagesMax: row.daily_images ?? row.images_max ?? 5,
-      voiceMinutesMax: row.daily_voice_minutes ?? row.voice_minutes_max ?? 15
+      voiceMinutesMax: row.daily_voice_minutes ?? row.voice_minutes_max ?? 15,
+      visionTokensMax: row.daily_vision_tokens ?? 20000
     };
   }
 
@@ -659,7 +661,7 @@ export class AdminAdapter {
 
   async checkGuildQuota(
     guildId: string,
-    usageType: 'text_tokens' | 'images' | 'voice_minutes',
+    usageType: 'text_tokens' | 'images' | 'voice_minutes' | 'vision_tokens',
     amount: number
   ): Promise<{ allowed: boolean; remaining: number; max: number }> {
     // Get quota limit for this guild
@@ -669,14 +671,22 @@ export class AdminAdapter {
           WHEN 'text_tokens' THEN COALESCE(daily_text_tokens, 50000)
           WHEN 'images' THEN COALESCE(daily_images, 5)
           WHEN 'voice_minutes' THEN COALESCE(daily_voice_minutes, 15)
+          WHEN 'vision_tokens' THEN COALESCE(daily_vision_tokens, 20000)
         END as quota_limit
       FROM guild_quotas WHERE guild_id = $1`,
       [guildId, usageType]
     );
 
-    const quotaLimit =
+    const rawQuotaLimit =
       quotaResult.rows[0]?.quota_limit ||
-      (usageType === 'text_tokens' ? 50000 : usageType === 'images' ? 5 : 15);
+      (usageType === 'text_tokens'
+        ? 50000
+        : usageType === 'images'
+          ? 5
+          : usageType === 'voice_minutes'
+            ? 15
+            : 20000);
+    const quotaLimit = Number(rawQuotaLimit) || 0;
 
     // Get current usage for today
     const usageResult = await this.pool.query(
@@ -685,13 +695,14 @@ export class AdminAdapter {
           WHEN 'text_tokens' THEN COALESCE(total_text_tokens, 0)
           WHEN 'images' THEN COALESCE(total_images, 0)
           WHEN 'voice_minutes' THEN COALESCE(total_voice_minutes, 0)
+          WHEN 'vision_tokens' THEN COALESCE(total_vision_tokens, 0)
         END as current_usage
       FROM guild_daily_usage 
       WHERE guild_id = $1 AND usage_date = CURRENT_DATE`,
       [guildId, usageType]
     );
 
-    const currentUsage = usageResult.rows[0]?.current_usage || 0;
+    const currentUsage = Number(usageResult.rows[0]?.current_usage || 0);
     const remaining = Math.max(0, quotaLimit - currentUsage);
     const allowed = currentUsage + amount <= quotaLimit;
 
@@ -705,9 +716,14 @@ export class AdminAdapter {
   async incrementUsage(
     guildId: string,
     userId: string,
-    usageType: 'text_tokens' | 'images' | 'voice_minutes',
+    usageType: 'text_tokens' | 'images' | 'voice_minutes' | 'vision_tokens',
     amount: number
   ): Promise<boolean> {
+    if (usageType === 'vision_tokens') {
+      logger.warn('incrementUsage called for vision_tokens without atomic limit; skipping');
+      return false;
+    }
+
     const result = await this.pool.query('SELECT increment_usage($1, $2, $3, $4) as success', [
       guildId,
       userId,
@@ -722,6 +738,7 @@ export class AdminAdapter {
     textTokens: number;
     images: number;
     voiceMinutes: number;
+    visionTokens: number;
     date: Date;
   } | null> {
     const result = await this.pool.query(
@@ -737,6 +754,7 @@ export class AdminAdapter {
       textTokens: row.total_text_tokens || 0,
       images: row.total_images || 0,
       voiceMinutes: row.total_voice_minutes || 0,
+      visionTokens: row.total_vision_tokens || 0,
       date: new Date(row.usage_date)
     };
   }
@@ -748,12 +766,14 @@ export class AdminAdapter {
     textTokens: number;
     images: number;
     voiceMinutes: number;
+    visionTokens: number;
   } | null> {
     const result = await this.pool.query(
       `SELECT 
          COALESCE(text_tokens_used, 0) as text_tokens,
          COALESCE(images_used, 0) as images,
-         COALESCE(voice_minutes_used, 0) as voice_minutes
+         COALESCE(voice_minutes_used, 0) as voice_minutes,
+         COALESCE(vision_tokens_used, 0) as vision_tokens
        FROM usage_tracking
        WHERE guild_id = $1 AND user_id = $2 AND usage_date = CURRENT_DATE`,
       [guildId, userId]
@@ -765,7 +785,8 @@ export class AdminAdapter {
     return {
       textTokens: parseInt(row.text_tokens) || 0,
       images: parseInt(row.images) || 0,
-      voiceMinutes: parseInt(row.voice_minutes) || 0
+      voiceMinutes: parseInt(row.voice_minutes) || 0,
+      visionTokens: parseInt(row.vision_tokens) || 0
     };
   }
 
@@ -810,7 +831,7 @@ export class AdminAdapter {
   async getRoleTierQuota(
     guildId: string,
     roleTier: 'admin' | 'moderator' | 'trusted' | 'member' | 'restricted'
-  ): Promise<{ textTokens: number; images: number; voiceMinutes: number }> {
+  ): Promise<{ textTokens: number; images: number; voiceMinutes: number; visionTokens: number }> {
     // Use the SQL function for proper fallback logic
     const result = await this.pool.query(`SELECT * FROM get_role_tier_quota($1, $2)`, [
       guildId,
@@ -819,15 +840,17 @@ export class AdminAdapter {
 
     if (result.rows.length === 0) {
       // Fallback to hardcoded defaults if no database entries exist
-      const defaults: Record<string, { textTokens: number; images: number; voiceMinutes: number }> =
-        {
-          admin: { textTokens: 50000, images: 5, voiceMinutes: 15 },
-          moderator: { textTokens: 20000, images: 3, voiceMinutes: 10 },
-          trusted: { textTokens: 10000, images: 2, voiceMinutes: 5 },
-          member: { textTokens: 5000, images: 1, voiceMinutes: 0 },
-          restricted: { textTokens: 0, images: 0, voiceMinutes: 0 }
-        };
-      const defaultMember = { textTokens: 5000, images: 1, voiceMinutes: 0 };
+      const defaults: Record<
+        string,
+        { textTokens: number; images: number; voiceMinutes: number; visionTokens: number }
+      > = {
+        admin: { textTokens: 50000, images: 5, voiceMinutes: 15, visionTokens: 10000 },
+        moderator: { textTokens: 20000, images: 3, voiceMinutes: 10, visionTokens: 5000 },
+        trusted: { textTokens: 10000, images: 2, voiceMinutes: 5, visionTokens: 3000 },
+        member: { textTokens: 5000, images: 1, voiceMinutes: 0, visionTokens: 1000 },
+        restricted: { textTokens: 0, images: 0, voiceMinutes: 0, visionTokens: 0 }
+      };
+      const defaultMember = { textTokens: 5000, images: 1, voiceMinutes: 0, visionTokens: 1000 };
       return defaults[roleTier] ?? defaultMember;
     }
 
@@ -835,7 +858,8 @@ export class AdminAdapter {
     return {
       textTokens: row.text_tokens ?? 0,
       images: row.images ?? 0,
-      voiceMinutes: row.voice_minutes ?? 0
+      voiceMinutes: row.voice_minutes ?? 0,
+      visionTokens: row.vision_tokens ?? 0
     };
   }
 
@@ -846,7 +870,7 @@ export class AdminAdapter {
   async atomicIncrementUsage(
     guildId: string,
     userId: string,
-    usageType: 'text_tokens' | 'images' | 'voice_minutes',
+    usageType: 'text_tokens' | 'images' | 'voice_minutes' | 'vision_tokens',
     amount: number,
     userLimit: number
   ): Promise<{ success: boolean; newTotal: number; remaining: number }> {
