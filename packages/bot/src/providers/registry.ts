@@ -31,6 +31,7 @@ export class ProviderRegistry {
     if (config.providers.xai?.apiKey) {
       const provider = new XAIProvider(config.providers.xai.apiKey, config.providers.xai.model);
       this.textProviders.push(provider);
+      this.imageProviders.push(provider);
     }
 
     if (config.features.enableLocalModels && config.providers.local?.baseURL) {
@@ -86,5 +87,19 @@ export class ProviderRegistry {
       throw new Error('No embedding provider configured. Enable RAG and add OpenAI API key');
     }
     return this.embeddingProvider;
+  }
+
+  getVisionProvider(name?: string): ImageProvider | null {
+    const candidates = name
+      ? this.imageProviders.filter(p => p.name === name)
+      : this.imageProviders;
+
+    for (const provider of candidates) {
+      if (provider.isConfigured() && provider.analyzeImage) {
+        return provider;
+      }
+    }
+
+    return null;
   }
 }

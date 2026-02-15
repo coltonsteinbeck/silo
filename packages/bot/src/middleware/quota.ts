@@ -3,7 +3,7 @@ import type { AdminAdapter } from '../database/admin-adapter';
 import type { PermissionManager } from '../permissions/manager';
 import { logger } from '@silo/core';
 
-export type UsageType = 'text_tokens' | 'images' | 'voice_minutes';
+export type UsageType = 'text_tokens' | 'images' | 'voice_minutes' | 'vision_tokens';
 export type RoleTier = 'admin' | 'moderator' | 'trusted' | 'member' | 'restricted';
 
 interface QuotaCheckResult {
@@ -23,7 +23,8 @@ interface AtomicRecordResult {
 const GUILD_MAX_QUOTAS = {
   text_tokens: 50000,
   images: 5,
-  voice_minutes: 15
+  voice_minutes: 15,
+  vision_tokens: 20000
 } as const;
 
 // Estimate tuning constants
@@ -346,10 +347,11 @@ export class QuotaMiddleware {
     const result: Record<UsageType, { remaining: number; max: number }> = {
       text_tokens: { remaining: 0, max: 0 },
       images: { remaining: 0, max: 0 },
-      voice_minutes: { remaining: 0, max: 0 }
+      voice_minutes: { remaining: 0, max: 0 },
+      vision_tokens: { remaining: 0, max: 0 }
     };
 
-    for (const usageType of ['text_tokens', 'images', 'voice_minutes'] as UsageType[]) {
+    for (const usageType of ['text_tokens', 'images', 'voice_minutes', 'vision_tokens'] as UsageType[]) {
       const max = this.getQuotaByType(quotaLimits, usageType);
       const used = userUsage ? this.getUserUsageByType(userUsage, usageType) : 0;
       result[usageType] = {
@@ -368,6 +370,7 @@ export class QuotaMiddleware {
     textTokens: { used: number; max: number };
     images: { used: number; max: number };
     voiceMinutes: { used: number; max: number };
+    visionTokens: { used: number; max: number };
   }> {
     const usage = await this.adminDb.getGuildDailyUsage(guildId);
     const quota = await this.adminDb.getGuildQuota(guildId);
@@ -384,6 +387,10 @@ export class QuotaMiddleware {
       voiceMinutes: {
         used: usage?.voiceMinutes || 0,
         max: quota?.voiceMinutesMax || GUILD_MAX_QUOTAS.voice_minutes
+      },
+      visionTokens: {
+        used: usage?.visionTokens || 0,
+        max: quota?.visionTokensMax || GUILD_MAX_QUOTAS.vision_tokens
       }
     };
   }
@@ -392,7 +399,7 @@ export class QuotaMiddleware {
    * Get quota value by usage type from quota limits object
    */
   private getQuotaByType(
-    quotaLimits: { textTokens: number; images: number; voiceMinutes: number },
+    quotaLimits: { textTokens: number; images: number; voiceMinutes: number; visionTokens: number },
     usageType: UsageType
   ): number {
     switch (usageType) {
@@ -402,6 +409,8 @@ export class QuotaMiddleware {
         return quotaLimits.images;
       case 'voice_minutes':
         return quotaLimits.voiceMinutes;
+      case 'vision_tokens':
+        return quotaLimits.visionTokens;
       default:
         return 0;
     }
@@ -418,6 +427,8 @@ export class QuotaMiddleware {
         return 'image generation';
       case 'voice_minutes':
         return 'voice minute';
+      case 'vision_tokens':
+        return 'vision token';
       default:
         return usageType;
     }
@@ -427,7 +438,7 @@ export class QuotaMiddleware {
    * Extract usage value by type from user usage object
    */
   private getUserUsageByType(
-    usage: { textTokens: number; images: number; voiceMinutes: number },
+    usage: { textTokens: number; images: number; voiceMinutes: number; visionTokens: number },
     usageType: UsageType
   ): number {
     switch (usageType) {
@@ -437,6 +448,8 @@ export class QuotaMiddleware {
         return usage.images;
       case 'voice_minutes':
         return usage.voiceMinutes;
+      case 'vision_tokens':
+        return usage.visionTokens;
       default:
         return 0;
     }

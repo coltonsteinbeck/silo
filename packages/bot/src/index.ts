@@ -308,6 +308,10 @@ async function main() {
       await message.channel.sendTyping();
 
       const userContent = message.content.replace(`<@${client.user!.id}>`, '').trim();
+      const imageAttachments = message.attachments.filter(
+        att => att.contentType?.startsWith('image/') && att.size <= 20 * 1024 * 1024
+      );
+      const hasImages = imageAttachments.size > 0;
 
       // === Phase 1: Gates (moderation + quota — can early-exit) ===
       // Run content moderation and member fetch in parallel (independent operations)
@@ -332,30 +336,6 @@ async function main() {
         );
       }
 
-      // Quota check (depends on moderation result + member)
-      const estimatedTokens = await quotaMiddleware.estimateResponseTokens(processedContent.length);
-      const quotaCheck = await quotaMiddleware.checkQuota(
-        message.guildId,
-        message.author.id,
-        member,
-        'text_tokens',
-        estimatedTokens
-      );
-
-      if (!quotaCheck.allowed) {
-        // Mark user for reset notification when quota is exhausted
-        await quotaMiddleware.markForResetNotification(
-          message.guildId,
-          message.author.id,
-          message.channelId
-        );
-        await message.reply({
-          content: `⚠️ ${quotaCheck.reason}`,
-          allowedMentions: { repliedUser: false }
-        });
-        return;
-      }
-
       logger.info(`[Perf] Gates completed in ${Date.now() - requestStart}ms`);
 
       // === Phase 2: Config lookups (parallel — both are independent DB reads) ===
@@ -367,6 +347,59 @@ async function main() {
 
       const preferredProvider = serverConfig?.defaultProvider;
       const textProvider = providers.getTextProvider(preferredProvider || undefined);
+      const visionProvider = providers.getVisionProvider(preferredProvider || undefined);
+      const useVision = hasImages && !!visionProvider;
+
+      let estimatedTokens = 0;
+      let visionUserLimit: number | undefined;
+
+      if (useVision) {
+        const estimatedVisionTokens = imageAttachments.size * 1000;
+        const visionQuotaCheck = await quotaMiddleware.checkQuota(
+          message.guildId,
+          message.author.id,
+          member,
+          'vision_tokens',
+          estimatedVisionTokens
+        );
+
+        if (!visionQuotaCheck.allowed) {
+          await quotaMiddleware.markForResetNotification(
+            message.guildId,
+            message.author.id,
+            message.channelId
+          );
+          await message.reply({
+            content: `⚠️ ${visionQuotaCheck.reason}`,
+            allowedMentions: { repliedUser: false }
+          });
+          return;
+        }
+
+        visionUserLimit = visionQuotaCheck.max;
+      } else {
+        estimatedTokens = await quotaMiddleware.estimateResponseTokens(processedContent.length);
+        const quotaCheck = await quotaMiddleware.checkQuota(
+          message.guildId,
+          message.author.id,
+          member,
+          'text_tokens',
+          estimatedTokens
+        );
+
+        if (!quotaCheck.allowed) {
+          await quotaMiddleware.markForResetNotification(
+            message.guildId,
+            message.author.id,
+            message.channelId
+          );
+          await message.reply({
+            content: `⚠️ ${quotaCheck.reason}`,
+            allowedMentions: { repliedUser: false }
+          });
+          return;
+        }
+      }
 
       logger.info(
         `Guild ${message.guildId} using provider: ${textProvider.name} (configured: ${preferredProvider || 'default'})`
@@ -467,20 +500,40 @@ async function main() {
 
       // === Phase 4: LLM call ===
       const llmStart = Date.now();
-      const response = await textProvider.generateText([
-        {
-          role: 'system',
-          content: systemPrompt + memoryContext
-        },
-        ...messages,
-        {
-          role: 'user',
-          content: processedContent
-        }
-      ]);
+      let usedVision = false;
+
+      const response = useVision
+        ? await (async () => {
+            const imageUrls = imageAttachments.map(att => att.url);
+            const visionPrompt = processedContent || 'Describe this image.';
+            const visionResult = await visionProvider.analyzeImage!(
+              imageUrls[0]!,
+              imageUrls.length > 1
+                ? `${visionPrompt}\n\nUser attached ${imageUrls.length} images; analyze the first image in detail.`
+                : visionPrompt,
+              { maxTokens: 1024 }
+            );
+            usedVision = true;
+            return {
+              content: visionResult.content,
+              usage: visionResult.usage,
+              model: `${visionProvider.name}-vision`
+            };
+          })()
+        : await textProvider.generateText([
+            {
+              role: 'system',
+              content: systemPrompt + memoryContext
+            },
+            ...messages,
+            {
+              role: 'user',
+              content: processedContent
+            }
+          ]);
 
       logger.info(
-        `[Perf] LLM responded in ${Date.now() - llmStart}ms (model: ${response.model || 'unknown'})`
+        `[Perf] LLM responded in ${Date.now() - llmStart}ms (model: ${response.model || 'unknown'}${usedVision ? ', vision' : ''})`
       );
 
       // === Phase 5: Reply immediately, then fire-and-forget post-LLM writes ===
@@ -505,31 +558,53 @@ async function main() {
 
       // Fire-and-forget: post-LLM writes don't block the user-facing response
       const actualTokens = response.usage?.completionTokens || response.usage?.totalTokens || 500;
-      Promise.all([
-        db.storeConversationMessage({
-          guildId: message.guildId,
-          channelId: message.channelId,
-          userId: message.author.id,
-          promptHash,
-          role: 'assistant',
-          content: response.content
-        }),
-        quotaMiddleware.recordUsage(
-          message.guildId,
-          message.author.id,
-          'text_tokens',
-          actualTokens
-        ),
-        quotaMiddleware.logAccuracy(
-          message.guildId,
-          message.author.id,
-          processedContent.length,
-          estimatedTokens,
-          actualTokens
-        )
-      ]).catch(err => {
-        logger.error('Failed to complete post-response writes:', err);
-      });
+      if (usedVision) {
+        Promise.all([
+          db.storeConversationMessage({
+            guildId: message.guildId,
+            channelId: message.channelId,
+            userId: message.author.id,
+            promptHash,
+            role: 'assistant',
+            content: response.content
+          }),
+          quotaMiddleware.recordUsage(
+            message.guildId,
+            message.author.id,
+            'vision_tokens',
+            actualTokens,
+            visionUserLimit
+          )
+        ]).catch(err => {
+          logger.error('Failed to complete post-response writes:', err);
+        });
+      } else {
+        Promise.all([
+          db.storeConversationMessage({
+            guildId: message.guildId,
+            channelId: message.channelId,
+            userId: message.author.id,
+            promptHash,
+            role: 'assistant',
+            content: response.content
+          }),
+          quotaMiddleware.recordUsage(
+            message.guildId,
+            message.author.id,
+            'text_tokens',
+            actualTokens
+          ),
+          quotaMiddleware.logAccuracy(
+            message.guildId,
+            message.author.id,
+            processedContent.length,
+            estimatedTokens,
+            actualTokens
+          )
+        ]).catch(err => {
+          logger.error('Failed to complete post-response writes:', err);
+        });
+      }
     } catch (error) {
       logger.error('Error handling message:', error);
       await message.reply('Sorry, I encountered an error processing your request.');
