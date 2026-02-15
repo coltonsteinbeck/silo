@@ -843,14 +843,13 @@ export class AdminAdapter {
       const defaults: Record<
         string,
         { textTokens: number; images: number; voiceMinutes: number; visionTokens: number }
-      > =
-        {
-          admin: { textTokens: 50000, images: 5, voiceMinutes: 15, visionTokens: 10000 },
-          moderator: { textTokens: 20000, images: 3, voiceMinutes: 10, visionTokens: 5000 },
-          trusted: { textTokens: 10000, images: 2, voiceMinutes: 5, visionTokens: 3000 },
-          member: { textTokens: 5000, images: 1, voiceMinutes: 0, visionTokens: 1000 },
-          restricted: { textTokens: 0, images: 0, voiceMinutes: 0, visionTokens: 0 }
-        };
+      > = {
+        admin: { textTokens: 50000, images: 5, voiceMinutes: 15, visionTokens: 10000 },
+        moderator: { textTokens: 20000, images: 3, voiceMinutes: 10, visionTokens: 5000 },
+        trusted: { textTokens: 10000, images: 2, voiceMinutes: 5, visionTokens: 3000 },
+        member: { textTokens: 5000, images: 1, voiceMinutes: 0, visionTokens: 1000 },
+        restricted: { textTokens: 0, images: 0, voiceMinutes: 0, visionTokens: 0 }
+      };
       const defaultMember = { textTokens: 5000, images: 1, voiceMinutes: 0, visionTokens: 1000 };
       return defaults[roleTier] ?? defaultMember;
     }

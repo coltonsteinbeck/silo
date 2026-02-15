@@ -16,8 +16,18 @@ describe('QuotaMiddleware', () => {
     mockAdminDb = {
       isGuildExempt: mock(async () => ({ quotaExempt: false, rateLimitExempt: false })),
       checkGuildQuota: mock(async () => ({ allowed: true, remaining: 10, max: 10 })),
-      getUserDailyUsage: mock(async () => ({ textTokens: 0, images: 0, voiceMinutes: 0, visionTokens: 0 })),
-      getRoleTierQuota: mock(async () => ({ textTokens: 5000, images: 1, voiceMinutes: 0, visionTokens: 1000 })),
+      getUserDailyUsage: mock(async () => ({
+        textTokens: 0,
+        images: 0,
+        voiceMinutes: 0,
+        visionTokens: 0
+      })),
+      getRoleTierQuota: mock(async () => ({
+        textTokens: 5000,
+        images: 1,
+        voiceMinutes: 0,
+        visionTokens: 1000
+      })),
       incrementUsage: mock(async () => true),
       atomicIncrementUsage: mock(async () => ({ success: true, newTotal: 100, remaining: 4900 })),
       logQuotaAccuracy: mock(async () => {}),

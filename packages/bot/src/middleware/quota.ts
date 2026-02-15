@@ -351,7 +351,12 @@ export class QuotaMiddleware {
       vision_tokens: { remaining: 0, max: 0 }
     };
 
-    for (const usageType of ['text_tokens', 'images', 'voice_minutes', 'vision_tokens'] as UsageType[]) {
+    for (const usageType of [
+      'text_tokens',
+      'images',
+      'voice_minutes',
+      'vision_tokens'
+    ] as UsageType[]) {
       const max = this.getQuotaByType(quotaLimits, usageType);
       const used = userUsage ? this.getUserUsageByType(userUsage, usageType) : 0;
       result[usageType] = {
