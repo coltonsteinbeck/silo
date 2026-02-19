@@ -446,8 +446,8 @@ export class PostgresAdapter implements DatabaseAdapter {
     limit = 50
   ): Promise<ServerMemory[]> {
     const query = contextType
-      ? 'SELECT * FROM server_memory WHERE server_id = $1 AND context_type = $2 ORDER BY created_at DESC LIMIT $3'
-      : 'SELECT * FROM server_memory WHERE server_id = $1 ORDER BY created_at DESC LIMIT $2';
+      ? 'SELECT * FROM server_memory WHERE server_id = $1 AND context_type = $2 AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY created_at DESC LIMIT $3'
+      : 'SELECT * FROM server_memory WHERE server_id = $1 AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY created_at DESC LIMIT $2';
 
     const params = contextType ? [serverId, contextType, limit] : [serverId, limit];
     const result = await this.pool.query<ServerMemoryRow>(query, params);
@@ -466,10 +466,111 @@ export class PostgresAdapter implements DatabaseAdapter {
     }));
   }
 
+  async searchServerMemories(
+    serverId: string,
+    query: string,
+    limit = 20
+  ): Promise<ServerMemory[]> {
+    const result = await this.pool.query<ServerMemoryRow>(
+      `SELECT * FROM server_memory
+       WHERE server_id = $1
+         AND memory_content ILIKE $2
+         AND (expires_at IS NULL OR expires_at > NOW())
+       ORDER BY created_at DESC
+       LIMIT $3`,
+      [serverId, `%${query}%`, limit]
+    );
+
+    return result.rows.map(row => ({
+      id: row.id,
+      serverId: row.server_id,
+      userId: row.user_id,
+      memoryContent: row.memory_content,
+      title: row.title,
+      contextType: row.context_type as ServerMemory['contextType'],
+      metadata: row.metadata,
+      expiresAt: row.expires_at ? new Date(row.expires_at) : undefined,
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(row.updated_at)
+    }));
+  }
+
+  async searchServerMemoriesByEmbedding(
+    serverId: string,
+    embedding: number[],
+    contextType?: string,
+    limit = 10
+  ): Promise<(ServerMemory & { similarity: number })[]> {
+    try {
+      const vectorStr = this.validateAndBuildVectorStr(embedding);
+      if (!vectorStr) {
+        logger.warn('Server memory embedding validation failed, returning empty results');
+        return [];
+      }
+
+      const query = contextType
+        ? `SELECT *, (1 - (embedding <=> $3::vector)) as similarity
+           FROM server_memory
+           WHERE server_id = $1
+             AND context_type = $2
+             AND embedding IS NOT NULL
+             AND (expires_at IS NULL OR expires_at > NOW())
+           ORDER BY embedding <=> $3::vector
+           LIMIT $4`
+        : `SELECT *, (1 - (embedding <=> $2::vector)) as similarity
+           FROM server_memory
+           WHERE server_id = $1
+             AND embedding IS NOT NULL
+             AND (expires_at IS NULL OR expires_at > NOW())
+           ORDER BY embedding <=> $2::vector
+           LIMIT $3`;
+
+      const params = contextType
+        ? [serverId, contextType, vectorStr, limit]
+        : [serverId, vectorStr, limit];
+
+      const result = await this.pool.query<ServerMemoryRow>(query, params);
+
+      return result.rows.map(row => ({
+        id: row.id,
+        serverId: row.server_id,
+        userId: row.user_id,
+        memoryContent: row.memory_content,
+        title: row.title,
+        contextType: row.context_type as ServerMemory['contextType'],
+        metadata: row.metadata,
+        similarity: row.similarity ?? 0,
+        expiresAt: row.expires_at ? new Date(row.expires_at) : undefined,
+        createdAt: new Date(row.created_at),
+        updatedAt: new Date(row.updated_at)
+      }));
+    } catch (error) {
+      logger.error('Failed to search server memories by embedding', error);
+      return [];
+    }
+  }
+
+  async getRelevantServerMemoriesForContext(
+    serverId: string,
+    embedding: number[],
+    contextType?: string,
+    limit = 5
+  ): Promise<ServerMemory[]> {
+    const relevant = await this.searchServerMemoriesByEmbedding(
+      serverId,
+      embedding,
+      contextType,
+      limit
+    );
+
+    return relevant.map(({ similarity: _unused, ...rest }) => rest);
+  }
+
   async storeServerMemory(
     memory: Omit<ServerMemory, 'id' | 'createdAt' | 'updatedAt'>,
     embedding?: number[]
   ): Promise<ServerMemory> {
+    const vectorStr = embedding ? this.validateAndBuildVectorStr(embedding) : null;
     const result = await this.pool.query(
       `INSERT INTO server_memory (server_id, user_id, memory_content, title, context_type, metadata, expires_at, embedding)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -482,7 +583,7 @@ export class PostgresAdapter implements DatabaseAdapter {
         memory.contextType,
         memory.metadata || {},
         memory.expiresAt,
-        embedding ? `[${embedding.join(',')}]` : null
+        vectorStr
       ]
     );
 
@@ -536,7 +637,7 @@ export class PostgresAdapter implements DatabaseAdapter {
     }
     if (embedding !== undefined) {
       fields.push(`embedding = $${paramIndex++}`);
-      values.push(`[${embedding.join(',')}]`);
+      values.push(embedding ? this.validateAndBuildVectorStr(embedding) : null);
     }
 
     values.push(id);

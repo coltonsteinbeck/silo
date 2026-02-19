@@ -30,9 +30,9 @@ export function createCommands(
   const commands = new Collection<string, Command>();
 
   // Memory commands
-  const viewMemory = new ViewMemoryCommand(db);
-  const setMemory = new SetMemoryCommand(db, registry);
-  const clearMemory = new ClearMemoryCommand(db);
+  const viewMemory = new ViewMemoryCommand(db, permissions);
+  const setMemory = new SetMemoryCommand(db, permissions, registry);
+  const clearMemory = new ClearMemoryCommand(db, permissions);
 
   commands.set(viewMemory.data.name, viewMemory);
   commands.set(setMemory.data.name, setMemory);

@@ -60,6 +60,18 @@ export const FeaturesConfigSchema = z.object({
   enableImages: z.boolean().default(true)
 });
 
+export const MemoryConfigSchema = z.object({
+  retrievalLimit: z.number().int().min(1).max(12).default(4),
+  fallbackLimit: z.number().int().min(1).max(3).default(1),
+  triggerThreshold: z.number().min(0).max(1).default(0.45),
+  semanticMinSimilarity: z.number().min(0).max(1).default(0.62),
+  keywordMentionThreshold: z.number().min(0).max(1).default(0.55),
+  keywordWeight: z.number().min(0).max(1).default(0.45),
+  semanticWeight: z.number().min(0).max(1).default(0.45),
+  cueWeight: z.number().min(0).max(1).default(0.05),
+  entityWeight: z.number().min(0).max(1).default(0.05)
+});
+
 export const MLServiceConfigSchema = z.object({
   url: z.string().url(),
   timeout: z.number().int().positive().default(30000),
@@ -83,6 +95,7 @@ export const ConfigSchema = z.object({
   redis: RedisConfigSchema,
   rateLimits: RateLimitConfigSchema,
   features: FeaturesConfigSchema,
+  memory: MemoryConfigSchema.default({}),
   mlService: MLServiceConfigSchema.optional(),
   security: SecurityConfigSchema
 });
@@ -91,3 +104,4 @@ export type Config = z.infer<typeof ConfigSchema>;
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
 export type DatabaseConfig = z.infer<typeof DatabaseConfigSchema>;
 export type RateLimitConfig = z.infer<typeof RateLimitConfigSchema>;
+export type MemoryConfig = z.infer<typeof MemoryConfigSchema>;

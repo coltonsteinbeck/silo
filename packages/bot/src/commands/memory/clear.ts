@@ -1,6 +1,7 @@
 import { ChatInputCommandInteraction, SlashCommandBuilder } from 'discord.js';
 import { Command } from '../types';
 import { DatabaseAdapter } from '@silo/core';
+import { PermissionManager } from '../../permissions/manager';
 
 export class ClearMemoryCommand implements Command {
   data = new SlashCommandBuilder()
@@ -21,19 +22,73 @@ export class ClearMemoryCommand implements Command {
           { name: 'Temporary', value: 'temporary' },
           { name: 'Mood', value: 'mood' }
         )
+    )
+    .addStringOption(option =>
+      option
+        .setName('scope')
+        .setDescription('Memory scope')
+        .setRequired(false)
+        .addChoices({ name: 'User', value: 'user' }, { name: 'Server', value: 'server' })
     );
 
-  constructor(private db: DatabaseAdapter) {}
+  constructor(
+    private db: DatabaseAdapter,
+    private permissions: PermissionManager
+  ) {}
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     await interaction.deferReply({ ephemeral: true });
 
     const memoryId = interaction.options.getString('id');
     const contextType = interaction.options.getString('type');
+    const scope = interaction.options.getString('scope') || 'user';
 
     if (!memoryId && !contextType) {
       await interaction.editReply('Please specify either a memory ID or type to clear.');
       return;
+    }
+
+    if (scope === 'server') {
+      if (!interaction.guildId || !interaction.guild) {
+        await interaction.editReply('Server-scoped memory can only be cleared in a server.');
+        return;
+      }
+
+      const member = await interaction.guild.members.fetch(interaction.user.id);
+      const canModerate = await this.permissions.canModerate(
+        interaction.guildId,
+        interaction.user.id,
+        member
+      );
+
+      if (!canModerate) {
+        await interaction.editReply(
+          'You need moderator permissions to clear server-scoped memories.'
+        );
+        return;
+      }
+
+      if (memoryId) {
+        const memories = await this.db.getServerMemories(interaction.guildId, undefined, 200);
+        const memory = memories.find(item => item.id.startsWith(memoryId));
+        if (!memory) {
+          await interaction.editReply(`No server memory found with ID starting with \`${memoryId}\`.`);
+          return;
+        }
+
+        await this.db.deleteServerMemory(memory.id);
+        await interaction.editReply(`Server memory \`${memory.id.slice(0, 8)}\` deleted successfully.`);
+        return;
+      }
+
+      if (contextType) {
+        const memories = await this.db.getServerMemories(interaction.guildId, contextType, 200);
+        for (const memory of memories) {
+          await this.db.deleteServerMemory(memory.id);
+        }
+        await interaction.editReply(`Deleted ${memories.length} server ${contextType} memories.`);
+        return;
+      }
     }
 
     if (memoryId) {

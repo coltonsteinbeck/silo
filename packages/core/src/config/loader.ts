@@ -1,5 +1,14 @@
 import { ConfigSchema, type Config } from './schema';
 
+function parseOptionalNumber(value: string | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 function buildDatabaseUrl(): string {
   // Honor explicit override first
   if (process.env.DATABASE_URL) {
@@ -99,6 +108,17 @@ export class ConfigLoader {
         enableLocalModels: process.env.ENABLE_LOCAL_MODELS === 'true',
         enableVoice: process.env.ENABLE_VOICE !== 'false',
         enableImages: process.env.ENABLE_IMAGES !== 'false'
+      },
+      memory: {
+        retrievalLimit: parseOptionalNumber(process.env.MEMORY_RETRIEVAL_LIMIT),
+        fallbackLimit: parseOptionalNumber(process.env.MEMORY_FALLBACK_LIMIT),
+        triggerThreshold: parseOptionalNumber(process.env.MEMORY_TRIGGER_THRESHOLD),
+        semanticMinSimilarity: parseOptionalNumber(process.env.MEMORY_SEMANTIC_MIN_SIMILARITY),
+        keywordMentionThreshold: parseOptionalNumber(process.env.MEMORY_KEYWORD_MENTION_THRESHOLD),
+        keywordWeight: parseOptionalNumber(process.env.MEMORY_KEYWORD_WEIGHT),
+        semanticWeight: parseOptionalNumber(process.env.MEMORY_SEMANTIC_WEIGHT),
+        cueWeight: parseOptionalNumber(process.env.MEMORY_CUE_WEIGHT),
+        entityWeight: parseOptionalNumber(process.env.MEMORY_ENTITY_WEIGHT)
       },
       mlService:
         process.env.ENABLE_ML_SERVICE === 'true'

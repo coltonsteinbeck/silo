@@ -13,7 +13,7 @@ describe('createCommands', () => {
     const mockDb = {
       getUserMemories: mock(async () => []),
       storeUserMemory: mock(async () => ({})),
-      deleteUserMemory: mock(async () => {})
+      deleteUserMemory: mock(async () => { })
     };
 
     const mockRegistry = {
@@ -29,7 +29,7 @@ describe('createCommands', () => {
     const mockAdminDb = {
       getServerConfig: mock(async () => null),
       setServerConfig: mock(async () => ({})),
-      logAudit: mock(async () => {})
+      logAudit: mock(async () => { })
     };
 
     const mockPermissions = {
@@ -52,7 +52,7 @@ describe('createCommands', () => {
     const mockDb = {
       getUserMemories: mock(async () => []),
       storeUserMemory: mock(async () => ({})),
-      deleteUserMemory: mock(async () => {})
+      deleteUserMemory: mock(async () => { })
     };
 
     const mockRegistry = {
@@ -65,7 +65,7 @@ describe('createCommands', () => {
     const mockAdminDb = {
       getServerConfig: mock(async () => null),
       setServerConfig: mock(async () => ({})),
-      logAudit: mock(async () => {})
+      logAudit: mock(async () => { })
     };
 
     const mockPermissions = {
@@ -106,7 +106,7 @@ describe('createCommands', () => {
     const mockDb = {
       getUserMemories: mock(async () => []),
       storeUserMemory: mock(async () => ({})),
-      deleteUserMemory: mock(async () => {})
+      deleteUserMemory: mock(async () => { })
     };
 
     const mockRegistry = {
@@ -118,7 +118,7 @@ describe('createCommands', () => {
     const mockAdminDb = {
       getServerConfig: mock(async () => null),
       setServerConfig: mock(async () => ({})),
-      logAudit: mock(async () => {})
+      logAudit: mock(async () => { })
     };
     const mockPermissions = {
       checkPermission: mock(async () => ({ allowed: true }))
