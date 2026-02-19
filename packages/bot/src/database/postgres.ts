@@ -466,11 +466,7 @@ export class PostgresAdapter implements DatabaseAdapter {
     }));
   }
 
-  async searchServerMemories(
-    serverId: string,
-    query: string,
-    limit = 20
-  ): Promise<ServerMemory[]> {
+  async searchServerMemories(serverId: string, query: string, limit = 20): Promise<ServerMemory[]> {
     const result = await this.pool.query<ServerMemoryRow>(
       `SELECT * FROM server_memory
        WHERE server_id = $1

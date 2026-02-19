@@ -190,8 +190,12 @@ export async function selectMemoryContext(params: {
     const keywordScore = clamp01(overlapCount / keywordDenominator);
 
     const semanticScore = semanticMap.get(memory.id) ?? 0;
-    const entityMatches = extractEntities(memory).filter(entity => content.toLowerCase().includes(entity));
-    const entityScore = clamp01(entityMatches.length > 0 ? Math.min(entityMatches.length / 3, 1) : 0);
+    const entityMatches = extractEntities(memory).filter(entity =>
+      content.toLowerCase().includes(entity)
+    );
+    const entityScore = clamp01(
+      entityMatches.length > 0 ? Math.min(entityMatches.length / 3, 1) : 0
+    );
     const cueScore = hasCue ? 1 : 0;
 
     const totalScore = clamp01(
@@ -211,7 +215,10 @@ export async function selectMemoryContext(params: {
     });
   }
 
-  scored.sort((a, b) => b.totalScore - a.totalScore || b.memory.createdAt.getTime() - a.memory.createdAt.getTime());
+  scored.sort(
+    (a, b) =>
+      b.totalScore - a.totalScore || b.memory.createdAt.getTime() - a.memory.createdAt.getTime()
+  );
 
   const strongMatches = scored.filter(
     candidate =>
@@ -232,7 +239,9 @@ export async function selectMemoryContext(params: {
     };
   }
 
-  const fallbackSelectedFromScores = scored.slice(0, memoryConfig.fallbackLimit).map(item => item.memory);
+  const fallbackSelectedFromScores = scored
+    .slice(0, memoryConfig.fallbackLimit)
+    .map(item => item.memory);
   if (fallbackSelectedFromScores.length > 0) {
     return {
       context: buildMemoryContext(fallbackSelectedFromScores),
@@ -243,7 +252,11 @@ export async function selectMemoryContext(params: {
     };
   }
 
-  const latestFallback = await db.getServerMemories(serverId, undefined, memoryConfig.fallbackLimit);
+  const latestFallback = await db.getServerMemories(
+    serverId,
+    undefined,
+    memoryConfig.fallbackLimit
+  );
   return {
     context: buildMemoryContext(latestFallback),
     selected: latestFallback,

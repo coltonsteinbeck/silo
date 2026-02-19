@@ -72,12 +72,16 @@ export class ClearMemoryCommand implements Command {
         const memories = await this.db.getServerMemories(interaction.guildId, undefined, 200);
         const memory = memories.find(item => item.id.startsWith(memoryId));
         if (!memory) {
-          await interaction.editReply(`No server memory found with ID starting with \`${memoryId}\`.`);
+          await interaction.editReply(
+            `No server memory found with ID starting with \`${memoryId}\`.`
+          );
           return;
         }
 
         await this.db.deleteServerMemory(memory.id);
-        await interaction.editReply(`Server memory \`${memory.id.slice(0, 8)}\` deleted successfully.`);
+        await interaction.editReply(
+          `Server memory \`${memory.id.slice(0, 8)}\` deleted successfully.`
+        );
         return;
       }
 
