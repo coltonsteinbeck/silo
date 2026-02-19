@@ -14,11 +14,16 @@ describe('ViewMemoryCommand', () => {
   let command: ViewMemoryCommand;
 
   let mockDb: any;
+  let mockPermissions: any;
 
   beforeEach(() => {
     mockDb = createMockDatabaseAdapter();
     mockDb.getUserMemories = mock(async () => []);
-    command = new ViewMemoryCommand(mockDb);
+    mockDb.getServerMemories = mock(async () => []);
+    mockPermissions = {
+      canModerate: mock(async () => true)
+    };
+    command = new ViewMemoryCommand(mockDb, mockPermissions);
   });
 
   describe('data', () => {
@@ -83,10 +88,28 @@ describe('ViewMemoryCommand', () => {
           type: 'preference'
         }
       });
-
       await command.execute(interaction as any);
 
       expect(mockDb.getUserMemories).toHaveBeenCalledWith('111222333', 'preference');
+    });
+
+    test('reads server memories when scope is server', async () => {
+      mockDb.getServerMemories = mock(async () => []);
+      const interaction = createMockInteraction({
+        options: {
+          scope: 'server'
+        }
+      });
+
+      (interaction as any).guild = {
+        members: {
+          fetch: mock(async () => interaction.member)
+        }
+      };
+
+      await command.execute(interaction as any);
+
+      expect(mockDb.getServerMemories).toHaveBeenCalledWith('123456789', undefined);
     });
 
     test('truncates long memory content', async () => {
@@ -117,6 +140,7 @@ describe('SetMemoryCommand', () => {
   let command: SetMemoryCommand;
 
   let mockDb: any;
+  let mockPermissions: any;
 
   beforeEach(() => {
     mockDb = createMockDatabaseAdapter();
@@ -127,7 +151,11 @@ describe('SetMemoryCommand', () => {
         createdAt: new Date()
       })
     );
-    command = new SetMemoryCommand(mockDb);
+    mockDb.storeServerMemory = mock(async () => ({ id: 'new-server-memory-id' }));
+    mockPermissions = {
+      canModerate: mock(async () => true)
+    };
+    command = new SetMemoryCommand(mockDb, mockPermissions);
   });
 
   describe('data', () => {
@@ -167,6 +195,27 @@ describe('SetMemoryCommand', () => {
       const reply = interaction._getReplies()[0] as string;
       expect(reply).toContain('expires');
     });
+
+    test('stores server memory when scope is server', async () => {
+      const interaction = createMockInteraction({
+        options: {
+          content: 'Shared lore',
+          type: 'summary',
+          scope: 'server'
+        }
+      });
+
+      (interaction as any).guild = {
+        members: {
+          fetch: mock(async () => interaction.member)
+        }
+      };
+
+      await command.execute(interaction as any);
+
+      expect(mockDb.storeServerMemory).toHaveBeenCalled();
+      expect(mockDb.storeUserMemory).not.toHaveBeenCalled();
+    });
   });
 });
 
@@ -174,18 +223,24 @@ describe('ClearMemoryCommand', () => {
   let command: ClearMemoryCommand;
 
   let mockDb: any;
+  let mockPermissions: any;
 
   beforeEach(() => {
     mockDb = createMockDatabaseAdapter();
-    mockDb.deleteUserMemory = mock(async () => {});
+    mockDb.deleteUserMemory = mock(async () => { });
     mockDb.getUserMemories = mock(async () => [{ id: 'mem1' }, { id: 'mem2' }]);
+    mockDb.getServerMemories = mock(async () => [{ id: 'server-mem1' }, { id: 'server-mem2' }]);
+    mockDb.deleteServerMemory = mock(async () => {});
     mockDb.findUserMemoryByIdPrefix = mock(async (userId: string, idPrefix: string) => ({
       id: `${idPrefix}-full-uuid`,
       userId,
       memoryContent: 'test memory',
       contextType: 'conversation'
     }));
-    command = new ClearMemoryCommand(mockDb);
+    mockPermissions = {
+      canModerate: mock(async () => true)
+    };
+    command = new ClearMemoryCommand(mockDb, mockPermissions);
   });
 
   describe('data', () => {
@@ -234,6 +289,26 @@ describe('ClearMemoryCommand', () => {
       expect(mockDb.deleteUserMemory).toHaveBeenCalledTimes(2);
       const reply = interaction._getReplies()[0];
       expect(reply).toContain('Deleted 2');
+    });
+
+    test('deletes server memories when scope is server', async () => {
+      const interaction = createMockInteraction({
+        options: {
+          type: 'temporary',
+          scope: 'server'
+        }
+      });
+
+      (interaction as any).guild = {
+        members: {
+          fetch: mock(async () => interaction.member)
+        }
+      };
+
+      await command.execute(interaction as any);
+
+      expect(mockDb.getServerMemories).toHaveBeenCalledWith('123456789', 'temporary', 200);
+      expect(mockDb.deleteServerMemory).toHaveBeenCalledTimes(2);
     });
   });
 });

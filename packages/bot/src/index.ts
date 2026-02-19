@@ -46,6 +46,7 @@ import {
 } from './security';
 import { QuotaMiddleware } from './middleware/quota';
 import { CostAggregator } from './services/cost-aggregator';
+import { selectMemoryContext } from './services/memory-selector';
 
 // Global error handlers to prevent silent crashes
 process.on('uncaughtException', error => {
@@ -439,37 +440,46 @@ async function main() {
 
       // === Phase 3: Data fetch (parallel — history, memory, store user msg) ===
       const dataStart = Date.now();
+      const guildId = message.guildId;
 
       // Build memory retrieval as a parallel task
-      // Load ALL memories (from any user) so the bot has full context
-      const memoryPromise = (async (): Promise<string> => {
+      const memoryPromise = (async () => {
         try {
-          // Fast DB check: are there any memories at all?
-          const memoryCount = await db.getAllMemoryCount();
-          if (memoryCount === 0) return '';
+          const selection = await selectMemoryContext({
+            db,
+            registry: providers,
+            config,
+            serverId: guildId,
+            content: processedContent
+          });
 
-          // Load all memories regardless of who created them
-          const allMemories = await db.getAllMemories(undefined, 30);
-
-          if (allMemories.length > 0) {
-            let ctx =
-              '\n\n**Stored Memories (IMPORTANT — always honor these facts in your response):**\n';
-            for (const memory of allMemories) {
-              ctx += `- [${memory.contextType}] ${memory.memoryContent}\n`;
+          if (selection.selected.length > 0) {
+            if (selection.usedFallback) {
+              logger.info(
+                `Retrieved ${selection.selected.length} fallback memories for user ${message.author.id}`
+              );
+            } else {
+              logger.info(
+                `Retrieved ${selection.selected.length} lore-triggered memories for user ${message.author.id} (mentionConfidence=${selection.mentionConfidence.toFixed(2)})`
+              );
             }
-            logger.info(
-              `Retrieved ${allMemories.length} total memories (requested by user ${message.author.id})`
-            );
-            return ctx;
           }
+
+          return selection;
         } catch (error) {
           logger.warn('Failed to retrieve memories:', error);
+          return {
+            context: '',
+            selected: [],
+            shouldMention: false,
+            mentionConfidence: 0,
+            usedFallback: false
+          };
         }
-        return '';
       })();
 
       // Run history fetch, memory retrieval, and user message store in parallel
-      const [history, memoryContext] = await Promise.all([
+      const [history, memorySelection] = await Promise.all([
         db.getConversationHistory(message.channelId, promptHash, 10),
         memoryPromise,
         db.storeConversationMessage({
@@ -486,6 +496,11 @@ async function main() {
         role: msg.role,
         content: msg.content
       }));
+
+      const memoryContext = memorySelection.context;
+      const memoryMentionInstruction = memorySelection.shouldMention
+        ? '\n\nMemory usage rule: If memory context strongly matches the user request, you may reference it briefly and naturally.'
+        : '\n\nMemory usage rule: Use memory context silently when helpful. Do not explicitly say you are recalling memory unless the user directly asks.';
 
       const memoryItemCount = (memoryContext.match(/\n- \[/g) || []).length;
       if (memoryItemCount > 0) {
@@ -511,7 +526,7 @@ async function main() {
               memoryContext.length > VISION_MEMORY_CONTEXT_MAX_CHARS
                 ? `${memoryContext.slice(0, VISION_MEMORY_CONTEXT_MAX_CHARS)}\n- [memory context truncated for token efficiency]`
                 : memoryContext;
-            const visionPrompt = `${systemPrompt}${limitedMemoryContext}\n\n${userVisionPrompt}`;
+            const visionPrompt = `${systemPrompt}${memoryMentionInstruction}${limitedMemoryContext}\n\n${userVisionPrompt}`;
             const visionResult = await visionProvider.analyzeImage!(
               imageUrls[0]!,
               imageUrls.length > 1
@@ -530,7 +545,7 @@ async function main() {
             [
               {
                 role: 'system',
-                content: systemPrompt + memoryContext
+                content: `${systemPrompt}${memoryMentionInstruction}${memoryContext}`
               },
               ...messages,
               {

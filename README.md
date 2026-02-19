@@ -178,6 +178,12 @@ docker-compose -f docker-compose.prod.yml up -d
 - `/memory-view [type]` - View stored memories
 - `/memory-set <content> <type>` - Store new memory
 - `/memory-clear [id|type]` - Clear memories
+- Optional `scope` on memory commands: `user` (default) or `server`
+
+Memory scope rules:
+
+- `scope: user` (default) stores/reads **user memory**.
+- `scope: server` stores/reads **guild shared memory** and requires moderator/admin access.
 
 #### Media Generation
 

@@ -70,10 +70,28 @@ export interface DatabaseAdapter {
     contextType?: string,
     limit?: number
   ): Promise<ServerMemory[]>;
+  searchServerMemories(serverId: string, query: string, limit?: number): Promise<ServerMemory[]>;
+  searchServerMemoriesByEmbedding(
+    serverId: string,
+    embedding: number[],
+    contextType?: string,
+    limit?: number
+  ): Promise<(ServerMemory & { similarity: number })[]>;
+  getRelevantServerMemoriesForContext(
+    serverId: string,
+    embedding: number[],
+    contextType?: string,
+    limit?: number
+  ): Promise<ServerMemory[]>;
   storeServerMemory(
-    memory: Omit<ServerMemory, 'id' | 'createdAt' | 'updatedAt'>
+    memory: Omit<ServerMemory, 'id' | 'createdAt' | 'updatedAt'>,
+    embedding?: number[]
   ): Promise<ServerMemory>;
-  updateServerMemory(id: string, updates: Partial<ServerMemory>): Promise<ServerMemory>;
+  updateServerMemory(
+    id: string,
+    updates: Partial<ServerMemory>,
+    embedding?: number[]
+  ): Promise<ServerMemory>;
   deleteServerMemory(id: string): Promise<void>;
 
   // User Preferences
