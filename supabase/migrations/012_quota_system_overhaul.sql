@@ -79,6 +79,10 @@ EXECUTE FUNCTION update_updated_at_column();
 -- FUNCTION: Get role tier quota (guild-specific or global fallback)
 -- ============================================================================
 
+-- Ensure idempotency when environments already contain a different return shape
+-- (e.g. vision-enabled variant from migration 013 or manual schema drift).
+DROP FUNCTION IF EXISTS get_role_tier_quota(TEXT, TEXT);
+
 CREATE OR REPLACE FUNCTION get_role_tier_quota(
   p_guild_id TEXT,
   p_role_tier TEXT
@@ -105,6 +109,9 @@ $fn_get_role_tier_quota$ LANGUAGE plpgsql STABLE;
 -- ============================================================================
 -- FUNCTION: Atomic increment usage (race-condition safe)
 -- ============================================================================
+
+-- Ensure idempotency when an alternate function body/signature already exists.
+DROP FUNCTION IF EXISTS increment_usage_atomic(TEXT, TEXT, TEXT, INTEGER, INTEGER);
 
 CREATE OR REPLACE FUNCTION increment_usage_atomic(
   p_guild_id TEXT,
@@ -182,6 +189,8 @@ $fn_increment_usage_atomic$ LANGUAGE sql;
 -- FUNCTION: Get 7-day accuracy stats for estimate tuning
 -- ============================================================================
 
+DROP FUNCTION IF EXISTS get_accuracy_stats(INTEGER);
+
 CREATE OR REPLACE FUNCTION get_accuracy_stats(p_days INTEGER DEFAULT 7)
 RETURNS TABLE(avg_ratio NUMERIC, sample_count BIGINT, std_dev NUMERIC) AS $fn_get_accuracy_stats$
   SELECT 
@@ -198,6 +207,8 @@ $fn_get_accuracy_stats$ LANGUAGE sql STABLE;
 -- FUNCTION: Cleanup old accuracy logs (>30 days)
 -- ============================================================================
 
+DROP FUNCTION IF EXISTS cleanup_old_accuracy_logs(INTEGER);
+
 CREATE OR REPLACE FUNCTION cleanup_old_accuracy_logs(p_days INTEGER DEFAULT 30)
 RETURNS INTEGER AS $fn_cleanup_old_accuracy_logs$
 DECLARE
@@ -212,6 +223,8 @@ $fn_cleanup_old_accuracy_logs$ LANGUAGE plpgsql;
 -- ============================================================================
 -- FUNCTION: Cleanup old usage data (>90 days)
 -- ============================================================================
+
+DROP FUNCTION IF EXISTS cleanup_old_usage(INTEGER);
 
 CREATE OR REPLACE FUNCTION cleanup_old_usage(p_days INTEGER DEFAULT 90)
 RETURNS TABLE(usage_deleted INTEGER, guild_usage_deleted INTEGER) AS $fn_cleanup_old_usage$
@@ -233,6 +246,8 @@ $fn_cleanup_old_usage$ LANGUAGE plpgsql;
 -- FUNCTION: Get users needing reset notification
 -- ============================================================================
 
+DROP FUNCTION IF EXISTS get_users_needing_reset_notification();
+
 CREATE OR REPLACE FUNCTION get_users_needing_reset_notification()
 RETURNS TABLE(
   guild_id TEXT,
@@ -249,6 +264,9 @@ $fn_get_users_needing_reset_notification$ LANGUAGE sql STABLE;
 -- ============================================================================
 -- FUNCTION: Get guild quota stats for admin view
 -- ============================================================================
+
+-- Ensure idempotency when environments have an older/newer OUT column shape.
+DROP FUNCTION IF EXISTS get_guild_quota_stats(TEXT);
 
 CREATE OR REPLACE FUNCTION get_guild_quota_stats(p_guild_id TEXT)
 RETURNS TABLE(

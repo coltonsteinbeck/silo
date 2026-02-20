@@ -19,6 +19,7 @@ describe('selectMemoryContext', () => {
   test('selects lore-triggered memory and enables mention on high keyword confidence', async () => {
     const db = {
       searchServerMemoriesByEmbedding: mock(async () => []),
+      searchUserMemoriesByEmbedding: mock(async () => []),
       searchServerMemories: mock(async () => [
         {
           id: 'mem-1',
@@ -33,7 +34,9 @@ describe('selectMemoryContext', () => {
           updatedAt: new Date('2026-01-01T00:00:00Z')
         }
       ]),
-      getServerMemories: mock(async () => [])
+      searchUserMemories: mock(async () => []),
+      getServerMemories: mock(async () => []),
+      getUserMemories: mock(async () => [])
     } as any;
 
     const registry = {
@@ -48,6 +51,7 @@ describe('selectMemoryContext', () => {
       registry,
       config: baseConfig,
       serverId: 'guild-1',
+      userId: 'user-1',
       content: 'Tell me lore about ChrisSharkface again'
     });
 
@@ -57,9 +61,10 @@ describe('selectMemoryContext', () => {
     expect(result.context).toContain('Relevant Memory Context');
   });
 
-  test('uses top-1 fallback when no strong trigger exists', async () => {
+  test('uses top-1 fallback when cue is present but no strong trigger exists', async () => {
     const db = {
       searchServerMemoriesByEmbedding: mock(async () => []),
+      searchUserMemoriesByEmbedding: mock(async () => []),
       searchServerMemories: mock(async () => [
         {
           id: 'mem-2',
@@ -84,7 +89,9 @@ describe('selectMemoryContext', () => {
           updatedAt: new Date('2026-01-01T00:00:00Z')
         }
       ]),
-      getServerMemories: mock(async () => [])
+      searchUserMemories: mock(async () => []),
+      getServerMemories: mock(async () => []),
+      getUserMemories: mock(async () => [])
     } as any;
 
     const registry = {
@@ -99,7 +106,8 @@ describe('selectMemoryContext', () => {
       registry,
       config: baseConfig,
       serverId: 'guild-1',
-      content: 'What should we do now?'
+      userId: 'user-1',
+      content: 'Remember what should we do now?'
     });
 
     expect(result.usedFallback).toBe(true);
@@ -110,8 +118,11 @@ describe('selectMemoryContext', () => {
   test('returns empty context when no memories exist', async () => {
     const db = {
       searchServerMemoriesByEmbedding: mock(async () => []),
+      searchUserMemoriesByEmbedding: mock(async () => []),
       searchServerMemories: mock(async () => []),
-      getServerMemories: mock(async () => [])
+      searchUserMemories: mock(async () => []),
+      getServerMemories: mock(async () => []),
+      getUserMemories: mock(async () => [])
     } as any;
 
     const registry = {
@@ -126,6 +137,7 @@ describe('selectMemoryContext', () => {
       registry,
       config: baseConfig,
       serverId: 'guild-1',
+      userId: 'user-1',
       content: 'Random message'
     });
 

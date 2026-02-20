@@ -66,10 +66,10 @@ export const MemoryConfigSchema = z.object({
   triggerThreshold: z.number().min(0).max(1).default(0.45),
   semanticMinSimilarity: z.number().min(0).max(1).default(0.62),
   keywordMentionThreshold: z.number().min(0).max(1).default(0.55),
-  keywordWeight: z.number().min(0).max(1).default(0.45),
-  semanticWeight: z.number().min(0).max(1).default(0.45),
-  cueWeight: z.number().min(0).max(1).default(0.05),
-  entityWeight: z.number().min(0).max(1).default(0.05)
+  keywordWeight: z.number().min(0).max(1).default(0.15),
+  semanticWeight: z.number().min(0).max(1).default(0.75),
+  cueWeight: z.number().min(0).max(1).default(0.07),
+  entityWeight: z.number().min(0).max(1).default(0.03)
 });
 
 export const MLServiceConfigSchema = z.object({

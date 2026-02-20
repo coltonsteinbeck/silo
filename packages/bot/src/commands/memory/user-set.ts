@@ -1,18 +1,17 @@
-import { ChatInputCommandInteraction, SlashCommandBuilder } from 'discord.js';
+import { ChatInputCommandInteraction, MessageFlags, SlashCommandBuilder } from 'discord.js';
 import { Command } from '../types';
 import { DatabaseAdapter, UserMemory, logger } from '@silo/core';
 import { ProviderRegistry } from '../../providers/registry';
-import { PermissionManager } from '../../permissions/manager';
 
 function extractLoreEntities(content: string): string[] {
   const matches = content.match(/\b[A-Z][A-Za-z0-9_-]{2,}\b/g) || [];
   return [...new Set(matches.map(entity => entity.toLowerCase()))].slice(0, 12);
 }
 
-export class SetMemoryCommand implements Command {
+export class UserMemorySetCommand implements Command {
   data = new SlashCommandBuilder()
-    .setName('memory-set')
-    .setDescription('Store a new memory')
+    .setName('user-memory-set')
+    .setDescription('Store a new memory for yourself')
     .addStringOption(option =>
       option.setName('content').setDescription('The memory content to store').setRequired(true)
     )
@@ -29,13 +28,6 @@ export class SetMemoryCommand implements Command {
           { name: 'Mood', value: 'mood' }
         )
     )
-    .addStringOption(option =>
-      option
-        .setName('scope')
-        .setDescription('Memory scope')
-        .setRequired(false)
-        .addChoices({ name: 'User', value: 'user' }, { name: 'Server', value: 'server' })
-    )
     .addIntegerOption(
       option =>
         option
@@ -48,16 +40,14 @@ export class SetMemoryCommand implements Command {
 
   constructor(
     private db: DatabaseAdapter,
-    private permissions: PermissionManager,
     private registry?: ProviderRegistry
   ) {}
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const content = interaction.options.getString('content', true);
     const contextType = interaction.options.getString('type', true) as UserMemory['contextType'];
-    const scope = interaction.options.getString('scope') || 'user';
     const expiresInHours = interaction.options.getInteger('expires-in-hours');
 
     let expiresAt: Date | undefined;
@@ -84,50 +74,6 @@ export class SetMemoryCommand implements Command {
       logger.debug('Embedding generation skipped for memory:', error);
     }
 
-    if (scope === 'server') {
-      if (!interaction.guildId || !interaction.guild) {
-        await interaction.editReply('Server-scoped memory can only be used in a server.');
-        return;
-      }
-
-      const member = await interaction.guild.members.fetch(interaction.user.id);
-      const canModerate = await this.permissions.canModerate(
-        interaction.guildId,
-        interaction.user.id,
-        member
-      );
-
-      if (!canModerate) {
-        await interaction.editReply(
-          'You need moderator permissions to store server-scoped memories.'
-        );
-        return;
-      }
-
-      const memory = await this.db.storeServerMemory(
-        {
-          serverId: interaction.guildId,
-          userId: interaction.user.id,
-          title: content.slice(0, 60),
-          memoryContent: content,
-          contextType,
-          metadata,
-          expiresAt
-        },
-        embedding
-      );
-
-      const expiresText = expiresAt
-        ? ` (expires <t:${Math.floor(expiresAt.getTime() / 1000)}:R>)`
-        : '';
-      const ragStatus = embedding ? ' 🔍' : '';
-
-      await interaction.editReply(
-        `Server memory stored successfully!${ragStatus}\n**Type:** ${contextType}\n**ID:** \`${memory.id}\`${expiresText}`
-      );
-      return;
-    }
-
     const memory = await this.db.storeUserMemory(
       {
         userId: interaction.user.id,
@@ -139,13 +85,17 @@ export class SetMemoryCommand implements Command {
       embedding
     );
 
+    logger.info(
+      `Memory created: scope=user, id=${memory.id}, actor=${interaction.user.id}, type=${contextType}, entities=${metadata.entities.length}, embedding=${embedding ? 'yes' : 'no'}`
+    );
+
     const expiresText = expiresAt
       ? ` (expires <t:${Math.floor(expiresAt.getTime() / 1000)}:R>)`
       : '';
     const ragStatus = embedding ? ' 🔍' : '';
 
     await interaction.editReply(
-      `Memory stored successfully!${ragStatus}\\n**Type:** ${contextType}\\n**ID:** \`${memory.id}\`${expiresText}`
+      `User memory stored successfully!${ragStatus}\n**Type:** ${contextType}\n**ID:** \`${memory.id}\`${expiresText}`
     );
   }
 }

@@ -21,20 +21,32 @@ CREATE INDEX IF NOT EXISTS idx_server_memory_embedding
 ON server_memory USING hnsw (embedding vector_cosine_ops)
 WITH (m = 16, ef_construction = 64);
 
--- Composite index for efficient filtering by context_type + embedding search
-CREATE INDEX IF NOT EXISTS idx_user_memory_context_embedding
-ON user_memory (context_type)
-INCLUDE (embedding);
+-- NOTE:
+-- Do NOT create btree indexes that INCLUDE vector columns.
+-- Postgres btree index rows cannot store large vector payloads (page size limit),
+-- which causes migration failures like:
+--   "index row size ... exceeds btree ... maximum ..."
+-- Keep vector search on HNSW indexes above and context filtering on plain btree.
+CREATE INDEX IF NOT EXISTS idx_user_memory_context_type
+ON user_memory (context_type);
 
-CREATE INDEX IF NOT EXISTS idx_server_memory_context_embedding
-ON server_memory (context_type)
-INCLUDE (embedding);
+CREATE INDEX IF NOT EXISTS idx_server_memory_context_type
+ON server_memory (context_type);
+
+-- Clean up previously-created function signatures so this migration is idempotent
+-- across environments that may have run earlier versions (UUID args) or partial runs.
+DROP FUNCTION IF EXISTS search_user_memories_by_embedding(UUID, vector(1536), TEXT, INT, FLOAT);
+DROP FUNCTION IF EXISTS search_user_memories_by_embedding(TEXT, vector(1536), TEXT, INT, FLOAT);
+DROP FUNCTION IF EXISTS search_server_memories_by_embedding(UUID, vector(1536), TEXT, INT, FLOAT);
+DROP FUNCTION IF EXISTS search_server_memories_by_embedding(TEXT, vector(1536), TEXT, INT, FLOAT);
+DROP FUNCTION IF EXISTS search_user_memories_hybrid(UUID, TEXT, vector(1536), TEXT, INT);
+DROP FUNCTION IF EXISTS search_user_memories_hybrid(TEXT, TEXT, vector(1536), TEXT, INT);
 
 -- Function to search user memories by semantic similarity
 -- Uses cosine distance (1 - cosine_similarity) for ranking
 -- Returns memories ordered by relevance with similarity scores
 CREATE OR REPLACE FUNCTION search_user_memories_by_embedding(
-  p_user_id UUID,
+  p_user_id TEXT,
   p_embedding vector(1536),
   p_context_type TEXT DEFAULT NULL,
   p_limit INT DEFAULT 10,
@@ -71,7 +83,7 @@ $$ LANGUAGE plpgsql;
 
 -- Function to search server memories by semantic similarity
 CREATE OR REPLACE FUNCTION search_server_memories_by_embedding(
-  p_server_id UUID,
+  p_server_id TEXT,
   p_embedding vector(1536),
   p_context_type TEXT DEFAULT NULL,
   p_limit INT DEFAULT 10,
@@ -110,7 +122,7 @@ $$ LANGUAGE plpgsql;
 -- Returns union of text-based ILIKE results and embedding-based results
 -- Useful for finding relevant memories even with partial text matches
 CREATE OR REPLACE FUNCTION search_user_memories_hybrid(
-  p_user_id UUID,
+  p_user_id TEXT,
   p_query TEXT,
   p_embedding vector(1536) DEFAULT NULL,
   p_context_type TEXT DEFAULT NULL,
@@ -176,6 +188,6 @@ $$ LANGUAGE plpgsql;
 -- Add comment documenting vector search configuration
 COMMENT ON INDEX idx_user_memory_embedding IS 'HNSW vector index for cosine similarity search on user memory embeddings. Cost-optimized with m=16, ef_construction=64.';
 COMMENT ON INDEX idx_server_memory_embedding IS 'HNSW vector index for cosine similarity search on server memory embeddings. Cost-optimized with m=16, ef_construction=64.';
-COMMENT ON FUNCTION search_user_memories_by_embedding IS 'Search user memories by semantic similarity using vector embeddings. Returns ranked results ordered by relevance.';
-COMMENT ON FUNCTION search_server_memories_by_embedding IS 'Search server memories by semantic similarity using vector embeddings. Returns ranked results ordered by relevance.';
-COMMENT ON FUNCTION search_user_memories_hybrid IS 'Hybrid search combining semantic and text-based search for user memories. Falls back to ILIKE when embedding not provided.';
+COMMENT ON FUNCTION search_user_memories_by_embedding(TEXT, vector(1536), TEXT, INT, FLOAT) IS 'Search user memories by semantic similarity using vector embeddings. Returns ranked results ordered by relevance.';
+COMMENT ON FUNCTION search_server_memories_by_embedding(TEXT, vector(1536), TEXT, INT, FLOAT) IS 'Search server memories by semantic similarity using vector embeddings. Returns ranked results ordered by relevance.';
+COMMENT ON FUNCTION search_user_memories_hybrid(TEXT, TEXT, vector(1536), TEXT, INT) IS 'Hybrid search combining semantic and text-based search for user memories. Falls back to ILIKE when embedding not provided.';

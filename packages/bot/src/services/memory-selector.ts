@@ -1,8 +1,16 @@
-import { type Config, type DatabaseAdapter, type ServerMemory, logger } from '@silo/core';
+import {
+  type Config,
+  type DatabaseAdapter,
+  type ServerMemory,
+  type UserMemory,
+  logger
+} from '@silo/core';
 import type { ProviderRegistry } from '../providers/registry';
 
+type MemoryType = ServerMemory | UserMemory;
+
 type CandidateScore = {
-  memory: ServerMemory;
+  memory: MemoryType;
   keywordScore: number;
   semanticScore: number;
   entityScore: number;
@@ -12,7 +20,7 @@ type CandidateScore = {
 
 export type MemorySelectionResult = {
   context: string;
-  selected: ServerMemory[];
+  selected: MemoryType[];
   shouldMention: boolean;
   mentionConfidence: number;
   usedFallback: boolean;
@@ -27,7 +35,11 @@ const CUE_PATTERNS = [
   /\byou\s+said\b/i,
   /\bwe\s+talked\s+about\b/i,
   /\bpreviously\b/i,
-  /\bbefore\b/i
+  /\bbefore\b/i,
+  /\bwho\s+are\s+you\b/i,
+  /\bwhat\s+are\s+you\b/i,
+  /\bare\s+you\s+(?:a|an|the)?\s*\w+\b/i,
+  /\byour\s+(?:role|identity|backstory)\b/i
 ];
 
 const STOPWORDS = new Set([
@@ -83,7 +95,24 @@ function unique<T>(values: T[]): T[] {
   return [...new Set(values)];
 }
 
-function extractEntities(memory: ServerMemory): string[] {
+function getMemoryScope(memory: MemoryType): 'server' | 'user' {
+  return 'serverId' in memory ? 'server' : 'user';
+}
+
+function summarizeMemory(memory: MemoryType): string {
+  return `${getMemoryScope(memory)}:${memory.id.slice(0, 8)}:${memory.contextType}`;
+}
+
+function summarizeCandidate(candidate: CandidateScore): string {
+  return `${summarizeMemory(candidate.memory)}(total=${candidate.totalScore.toFixed(2)},kw=${candidate.keywordScore.toFixed(2)},sem=${candidate.semanticScore.toFixed(2)},ent=${candidate.entityScore.toFixed(2)})`;
+}
+
+function isLoreOrPersona(memory: MemoryType): boolean {
+  const memoryType = memory.contextType.toLowerCase();
+  return memoryType === 'lore' || memoryType === 'persona';
+}
+
+function extractEntities(memory: MemoryType): string[] {
   const metadataEntities = Array.isArray(memory.metadata?.entities)
     ? memory.metadata?.entities.filter((item): item is string => typeof item === 'string')
     : [];
@@ -92,19 +121,20 @@ function extractEntities(memory: ServerMemory): string[] {
     return unique(metadataEntities.map(entity => entity.toLowerCase().trim()).filter(Boolean));
   }
 
-  const source = `${memory.title || ''} ${memory.memoryContent}`;
+  const title = 'title' in memory ? memory.title || '' : '';
+  const source = `${title} ${memory.memoryContent}`;
   const matches = source.match(/\b[A-Z][A-Za-z0-9_-]{2,}\b/g) || [];
   return unique(matches.map(entity => entity.toLowerCase()));
 }
 
-function buildMemoryContext(memories: ServerMemory[]): string {
+function buildMemoryContext(memories: MemoryType[]): string {
   if (memories.length === 0) {
     return '';
   }
 
   let context = '\n\n**Relevant Memory Context (use only if helpful):**\n';
   for (const memory of memories) {
-    context += `- [${memory.contextType}] ${memory.memoryContent}\n`;
+    context += `- [${memory.contextType}] (User ${memory.userId}): ${memory.memoryContent}\n`;
   }
 
   return context;
@@ -114,9 +144,10 @@ async function loadSemanticCandidates(
   db: DatabaseAdapter,
   registry: ProviderRegistry,
   serverId: string,
+  userId: string,
   query: string,
   limit: number
-): Promise<(ServerMemory & { similarity: number })[]> {
+): Promise<(MemoryType & { similarity: number })[]> {
   try {
     if (!registry.hasEmbeddingProvider()) {
       return [];
@@ -130,7 +161,12 @@ async function loadSemanticCandidates(
       return [];
     }
 
-    return await db.searchServerMemoriesByEmbedding(serverId, queryEmbedding, undefined, limit);
+    const [serverMemories, userMemories] = await Promise.all([
+      db.searchServerMemoriesByEmbedding(serverId, queryEmbedding, undefined, limit),
+      db.searchUserMemoriesByEmbedding(userId, queryEmbedding, undefined, limit)
+    ]);
+
+    return [...serverMemories, ...userMemories];
   } catch (error) {
     logger.warn('Semantic memory retrieval unavailable, continuing with lexical matching', error);
     return [];
@@ -142,9 +178,10 @@ export async function selectMemoryContext(params: {
   registry: ProviderRegistry;
   config: Config;
   serverId: string;
+  userId: string;
   content: string;
 }): Promise<MemorySelectionResult> {
-  const { db, registry, config, serverId, content } = params;
+  const { db, registry, config, serverId, userId, content } = params;
   const memoryConfig = config.memory;
 
   const retrievalLimit = memoryConfig.retrievalLimit;
@@ -152,18 +189,32 @@ export async function selectMemoryContext(params: {
   const queryTokens = unique(normalizeTokens(content));
   const queryTokenSet = new Set(queryTokens);
   const hasCue = CUE_PATTERNS.some(pattern => pattern.test(content));
+  const isIdentityQuery =
+    /\bwho\s+are\s+you\b/i.test(content) ||
+    /\bwhat\s+are\s+you\b/i.test(content) ||
+    /\bare\s+you\s+(?:a|an|the)?\s*\w+\b/i.test(content);
+  const allowFallback = hasCue || isIdentityQuery;
 
-  const [semanticCandidates, lexicalCandidates] = await Promise.all([
-    loadSemanticCandidates(db, registry, serverId, content, candidateLimit),
-    db.searchServerMemories(serverId, content, candidateLimit)
+  const [semanticCandidates, serverLexicalCandidates, userLexicalCandidates] = await Promise.all([
+    loadSemanticCandidates(db, registry, serverId, userId, content, candidateLimit),
+    db.searchServerMemories(serverId, content, candidateLimit),
+    db.searchUserMemories(userId, content, candidateLimit)
   ]);
+
+  const semanticServerCount = semanticCandidates.filter(item => 'serverId' in item).length;
+  const semanticUserCount = semanticCandidates.length - semanticServerCount;
+  logger.info(
+    `Memory retrieval: user=${userId}, serverLexical=${serverLexicalCandidates.length}, userLexical=${userLexicalCandidates.length}, serverSemantic=${semanticServerCount}, userSemantic=${semanticUserCount}, hasCue=${hasCue}, identityQuery=${isIdentityQuery}`
+  );
+
+  const lexicalCandidates = [...serverLexicalCandidates, ...userLexicalCandidates];
 
   const semanticMap = new Map<string, number>();
   for (const item of semanticCandidates) {
     semanticMap.set(item.id, clamp01(item.similarity));
   }
 
-  const candidateMap = new Map<string, ServerMemory>();
+  const candidateMap = new Map<string, MemoryType>();
   for (const memory of lexicalCandidates) {
     candidateMap.set(memory.id, memory);
   }
@@ -171,15 +222,30 @@ export async function selectMemoryContext(params: {
     candidateMap.set(memory.id, memory);
   }
 
-  if (candidateMap.size === 0 && hasCue) {
-    const recent = await db.getServerMemories(serverId, undefined, candidateLimit);
-    for (const memory of recent) {
+  if (candidateMap.size === 0 && allowFallback) {
+    const [recentServer, recentUser] = await Promise.all([
+      db.getServerMemories(serverId, undefined, candidateLimit),
+      db.getUserMemories(userId, undefined, candidateLimit)
+    ]);
+    for (const memory of [...recentServer, ...recentUser]) {
       candidateMap.set(memory.id, memory);
     }
+    logger.info(
+      `Memory cue fallback pool: user=${userId}, recentServer=${recentServer.length}, recentUser=${recentUser.length}`
+    );
   }
 
   const scored: CandidateScore[] = [];
   for (const memory of candidateMap.values()) {
+    if (isIdentityQuery) {
+      if (getMemoryScope(memory) !== 'server') {
+        continue;
+      }
+      if (!isLoreOrPersona(memory)) {
+        continue;
+      }
+    }
+
     const memoryTokens = unique(normalizeTokens(memory.memoryContent));
     const overlapCount = memoryTokens.reduce(
       (count, token) => (queryTokenSet.has(token) ? count + 1 : count),
@@ -222,45 +288,83 @@ export async function selectMemoryContext(params: {
 
   const strongMatches = scored.filter(
     candidate =>
-      candidate.totalScore >= memoryConfig.triggerThreshold ||
-      candidate.semanticScore >= memoryConfig.semanticMinSimilarity
+      candidate.semanticScore >= memoryConfig.semanticMinSimilarity ||
+      (candidate.totalScore >= memoryConfig.triggerThreshold &&
+        (candidate.semanticScore > 0 || hasCue))
   );
+
+  if (scored.length > 0) {
+    const topScored = scored
+      .slice(0, Math.min(3, scored.length))
+      .map(summarizeCandidate)
+      .join(', ');
+    logger.debug(`Memory scoring top candidates for user=${userId}: ${topScored}`);
+  }
 
   if (strongMatches.length > 0) {
     const selected = strongMatches.slice(0, retrievalLimit).map(item => item.memory);
     const top = strongMatches[0]!;
+    const selectedHasLore = selected.some(memory => memory.contextType === 'lore');
+    logger.info(
+      `Memory strong match selected for user=${userId}: ${selected.map(summarizeMemory).join(', ')}`
+    );
 
     return {
       context: buildMemoryContext(selected),
       selected,
-      shouldMention: top.keywordScore >= memoryConfig.keywordMentionThreshold,
+      shouldMention:
+        top.keywordScore >= memoryConfig.keywordMentionThreshold ||
+        (isIdentityQuery && selectedHasLore),
       mentionConfidence: top.keywordScore,
       usedFallback: false
     };
   }
 
-  const fallbackSelectedFromScores = scored
-    .slice(0, memoryConfig.fallbackLimit)
-    .map(item => item.memory);
+  const fallbackSelectedFromScores = allowFallback
+    ? scored.slice(0, memoryConfig.fallbackLimit).map(item => item.memory)
+    : [];
   if (fallbackSelectedFromScores.length > 0) {
+    const fallbackHasLore = fallbackSelectedFromScores.some(
+      memory => memory.contextType === 'lore'
+    );
+    logger.info(
+      `Memory score fallback selected for user=${userId}: ${fallbackSelectedFromScores.map(summarizeMemory).join(', ')}`
+    );
     return {
       context: buildMemoryContext(fallbackSelectedFromScores),
       selected: fallbackSelectedFromScores,
-      shouldMention: false,
+      shouldMention: isIdentityQuery && fallbackHasLore,
       mentionConfidence: 0,
       usedFallback: true
     };
   }
 
-  const latestFallback = await db.getServerMemories(
-    serverId,
-    undefined,
-    memoryConfig.fallbackLimit
-  );
+  if (!allowFallback) {
+    return {
+      context: '',
+      selected: [],
+      shouldMention: false,
+      mentionConfidence: 0,
+      usedFallback: false
+    };
+  }
+
+  const latestFallback = isIdentityQuery
+    ? [
+        ...(await db.getServerMemories(serverId, 'lore', memoryConfig.fallbackLimit)),
+        ...(await db.getServerMemories(serverId, 'persona', memoryConfig.fallbackLimit))
+      ].slice(0, memoryConfig.fallbackLimit)
+    : await db.getServerMemories(serverId, undefined, memoryConfig.fallbackLimit);
+  const latestFallbackHasLore = latestFallback.some(memory => memory.contextType === 'lore');
+  if (latestFallback.length > 0) {
+    logger.info(
+      `Memory latest fallback selected for user=${userId}: ${latestFallback.map(summarizeMemory).join(', ')}`
+    );
+  }
   return {
     context: buildMemoryContext(latestFallback),
     selected: latestFallback,
-    shouldMention: false,
+    shouldMention: isIdentityQuery && latestFallbackHasLore,
     mentionConfidence: 0,
     usedFallback: latestFallback.length > 0
   };

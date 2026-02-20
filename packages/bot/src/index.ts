@@ -423,6 +423,16 @@ async function main() {
         providerPrompts[textProvider.name] ||
         'You are a helpful Discord bot assistant. Be helpful, friendly, and conversational.';
       const systemPrompt = promptConfig.prompt || defaultPrompt;
+      const conciseResponseInstruction =
+        '\n\nResponse style rule: Keep responses concise and clear by default (2-4 sentences). Only provide longer responses when the user explicitly asks for detail.';
+      const userUsedEmoji = /\p{Extended_Pictographic}/u.test(processedContent);
+      const userRequestedRichFormatting =
+        /\b(markdown|format|formatted|bullet|bulleted|list|table|code\s*block|bold|italic|emoji|emojis|styled|style)\b/i.test(
+          processedContent
+        );
+      const plainStyleInstruction = userRequestedRichFormatting
+        ? ''
+        : '\n\nFormatting rule: Use plain text by default. Avoid markdown styling (bold/italics/lists) and avoid emojis unless the user explicitly asks for them.';
 
       // Compute prompt hash for conversation isolation
       // 'default' for provider defaults, SHA256 hash for custom prompts
@@ -450,6 +460,7 @@ async function main() {
             registry: providers,
             config,
             serverId: guildId,
+            userId: message.author.id,
             content: processedContent
           });
 
@@ -494,18 +505,29 @@ async function main() {
 
       const messages = history.map(msg => ({
         role: msg.role,
-        content: msg.content
+        content: msg.role === 'user' ? `[User: ${msg.userId}] ${msg.content}` : msg.content
       }));
 
       const memoryContext = memorySelection.context;
+      const hasLoreMemorySelected = memorySelection.selected.some(
+        memory => memory.contextType === 'lore'
+      );
       const memoryMentionInstruction = memorySelection.shouldMention
-        ? '\n\nMemory usage rule: If memory context strongly matches the user request, you may reference it briefly and naturally.'
+        ? hasLoreMemorySelected
+          ? '\n\nMemory usage rule: If lore memory context is relevant, prioritize it as canonical and answer consistently with it. Do not contradict the provided lore.'
+          : '\n\nMemory usage rule: If memory context strongly matches the user request, you may reference it briefly and naturally.'
         : '\n\nMemory usage rule: Use memory context silently when helpful. Do not explicitly say you are recalling memory unless the user directly asks.';
 
       const memoryItemCount = (memoryContext.match(/\n- \[/g) || []).length;
       if (memoryItemCount > 0) {
+        const selectedSummary = memorySelection.selected
+          .map(memory => {
+            const scope = 'serverId' in memory ? 'server' : 'user';
+            return `${scope}:${memory.id.slice(0, 8)}:${memory.contextType}`;
+          })
+          .join(', ');
         logger.info(
-          `Injected ${memoryItemCount} memories into prompt for user ${message.author.id} (${memoryContext.length} chars)`
+          `Injected ${memoryItemCount} memories into prompt for user ${message.author.id} (${memoryContext.length} chars): ${selectedSummary}`
         );
       }
 
@@ -514,8 +536,8 @@ async function main() {
       // === Phase 4: LLM call ===
       const llmStart = Date.now();
       let usedVision = false;
-      const MAX_TEXT_RESPONSE_TOKENS = 350;
-      const MAX_VISION_RESPONSE_TOKENS = 350;
+      const MAX_TEXT_RESPONSE_TOKENS = 180;
+      const MAX_VISION_RESPONSE_TOKENS = 260;
       const VISION_MEMORY_CONTEXT_MAX_CHARS = 1000;
 
       const response = useVision
@@ -526,7 +548,7 @@ async function main() {
               memoryContext.length > VISION_MEMORY_CONTEXT_MAX_CHARS
                 ? `${memoryContext.slice(0, VISION_MEMORY_CONTEXT_MAX_CHARS)}\n- [memory context truncated for token efficiency]`
                 : memoryContext;
-            const visionPrompt = `${systemPrompt}${memoryMentionInstruction}${limitedMemoryContext}\n\n${userVisionPrompt}`;
+            const visionPrompt = `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${memoryMentionInstruction}${limitedMemoryContext}\n\n${userVisionPrompt}`;
             const visionResult = await visionProvider.analyzeImage!(
               imageUrls[0]!,
               imageUrls.length > 1
@@ -545,7 +567,7 @@ async function main() {
             [
               {
                 role: 'system',
-                content: `${systemPrompt}${memoryMentionInstruction}${memoryContext}`
+                content: `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${memoryMentionInstruction}${memoryContext}`
               },
               ...messages,
               {
@@ -566,6 +588,18 @@ async function main() {
       // Discord has a 2000 character limit for messages
       const MAX_MESSAGE_LENGTH = 2000;
       let responseContent = response.content;
+
+      if (!userRequestedRichFormatting) {
+        responseContent = responseContent
+          .replace(/(\*\*|__|\*|_|~~|`)/g, '')
+          .replace(/^#{1,6}\s+/gm, '')
+          .replace(/^\s*[-*+]\s+/gm, '')
+          .replace(/\n{3,}/g, '\n\n');
+
+        if (!userUsedEmoji) {
+          responseContent = responseContent.replace(/\p{Extended_Pictographic}/gu, '');
+        }
+      }
 
       if (responseContent.length > MAX_MESSAGE_LENGTH) {
         // Truncate and add ellipsis
