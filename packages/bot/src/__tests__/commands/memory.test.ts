@@ -7,7 +7,8 @@
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
 import { createMockInteraction, createMockDatabaseAdapter } from '@silo/core/test-setup';
 import { ViewMemoryCommand } from '../../commands/memory/view';
-import { SetMemoryCommand } from '../../commands/memory/set';
+import { UserMemorySetCommand } from '../../commands/memory/user-set';
+import { ServerMemorySetCommand } from '../../commands/memory/server-set';
 import { ClearMemoryCommand } from '../../commands/memory/clear';
 
 describe('ViewMemoryCommand', () => {
@@ -44,7 +45,7 @@ describe('ViewMemoryCommand', () => {
 
       await command.execute(interaction as any);
 
-      expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+      expect(interaction.deferReply).toHaveBeenCalledWith({ flags: 64 });
     });
 
     test('shows no memories message when empty', async () => {
@@ -136,11 +137,10 @@ describe('ViewMemoryCommand', () => {
   });
 });
 
-describe('SetMemoryCommand', () => {
-  let command: SetMemoryCommand;
+describe('UserMemorySetCommand', () => {
+  let command: UserMemorySetCommand;
 
   let mockDb: any;
-  let mockPermissions: any;
 
   beforeEach(() => {
     mockDb = createMockDatabaseAdapter();
@@ -151,16 +151,12 @@ describe('SetMemoryCommand', () => {
         createdAt: new Date()
       })
     );
-    mockDb.storeServerMemory = mock(async () => ({ id: 'new-server-memory-id' }));
-    mockPermissions = {
-      canModerate: mock(async () => true)
-    };
-    command = new SetMemoryCommand(mockDb, mockPermissions);
+    command = new UserMemorySetCommand(mockDb);
   });
 
   describe('data', () => {
     test('has correct name', () => {
-      expect(command.data.name).toBe('memory-set');
+      expect(command.data.name).toBe('user-memory-set');
     });
   });
 
@@ -177,7 +173,7 @@ describe('SetMemoryCommand', () => {
 
       expect(mockDb.storeUserMemory).toHaveBeenCalled();
       const reply = interaction._getReplies()[0] as string;
-      expect(reply).toContain('Memory stored successfully');
+      expect(reply).toContain('User memory stored successfully');
     });
 
     test('stores memory with expiration', async () => {
@@ -195,13 +191,36 @@ describe('SetMemoryCommand', () => {
       const reply = interaction._getReplies()[0] as string;
       expect(reply).toContain('expires');
     });
+  });
+});
 
-    test('stores server memory when scope is server', async () => {
+describe('ServerMemorySetCommand', () => {
+  let command: ServerMemorySetCommand;
+
+  let mockDb: any;
+  let mockPermissions: any;
+
+  beforeEach(() => {
+    mockDb = createMockDatabaseAdapter();
+    mockDb.storeServerMemory = mock(async () => ({ id: 'new-server-memory-id' }));
+    mockPermissions = {
+      canModerate: mock(async () => true)
+    };
+    command = new ServerMemorySetCommand(mockDb, mockPermissions);
+  });
+
+  describe('data', () => {
+    test('has correct name', () => {
+      expect(command.data.name).toBe('server-memory-set');
+    });
+  });
+
+  describe('execute', () => {
+    test('stores server memory', async () => {
       const interaction = createMockInteraction({
         options: {
           content: 'Shared lore',
-          type: 'summary',
-          scope: 'server'
+          type: 'lore'
         }
       });
 
@@ -214,7 +233,6 @@ describe('SetMemoryCommand', () => {
       await command.execute(interaction as any);
 
       expect(mockDb.storeServerMemory).toHaveBeenCalled();
-      expect(mockDb.storeUserMemory).not.toHaveBeenCalled();
     });
   });
 });

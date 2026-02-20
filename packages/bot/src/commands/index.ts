@@ -1,7 +1,8 @@
 import { Collection } from 'discord.js';
 import { Command } from './types';
 import { ViewMemoryCommand } from './memory/view';
-import { SetMemoryCommand } from './memory/set';
+import { UserMemorySetCommand } from './memory/user-set';
+import { ServerMemorySetCommand } from './memory/server-set';
 import { ClearMemoryCommand } from './memory/clear';
 import { DrawCommand } from './draw';
 import { ThreadCommand } from './thread';
@@ -31,11 +32,13 @@ export function createCommands(
 
   // Memory commands
   const viewMemory = new ViewMemoryCommand(db, permissions);
-  const setMemory = new SetMemoryCommand(db, permissions, registry);
+  const userSetMemory = new UserMemorySetCommand(db, registry);
+  const serverSetMemory = new ServerMemorySetCommand(db, permissions, registry);
   const clearMemory = new ClearMemoryCommand(db, permissions);
 
   commands.set(viewMemory.data.name, viewMemory);
-  commands.set(setMemory.data.name, setMemory);
+  commands.set(userSetMemory.data.name, userSetMemory);
+  commands.set(serverSetMemory.data.name, serverSetMemory);
   commands.set(clearMemory.data.name, clearMemory);
 
   // Media generation

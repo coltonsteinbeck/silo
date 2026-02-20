@@ -1,4 +1,4 @@
-import { ChatInputCommandInteraction, SlashCommandBuilder } from 'discord.js';
+import { ChatInputCommandInteraction, MessageFlags, SlashCommandBuilder } from 'discord.js';
 import { Command } from '../types';
 import { DatabaseAdapter } from '@silo/core';
 import { PermissionManager } from '../../permissions/manager';
@@ -7,6 +7,13 @@ export class ClearMemoryCommand implements Command {
   data = new SlashCommandBuilder()
     .setName('memory-clear')
     .setDescription('Clear memories by ID or type')
+    .addStringOption(option =>
+      option
+        .setName('scope')
+        .setDescription('Memory scope')
+        .setRequired(true)
+        .addChoices({ name: 'User', value: 'user' }, { name: 'Server', value: 'server' })
+    )
     .addStringOption(option =>
       option.setName('id').setDescription('Specific memory ID to delete').setRequired(false)
     )
@@ -20,15 +27,13 @@ export class ClearMemoryCommand implements Command {
           { name: 'Preference', value: 'preference' },
           { name: 'Summary', value: 'summary' },
           { name: 'Temporary', value: 'temporary' },
-          { name: 'Mood', value: 'mood' }
+          { name: 'Mood', value: 'mood' },
+          { name: 'Lore', value: 'lore' },
+          { name: 'Rule', value: 'rule' },
+          { name: 'Fact', value: 'fact' },
+          { name: 'Persona', value: 'persona' },
+          { name: 'Other', value: 'other' }
         )
-    )
-    .addStringOption(option =>
-      option
-        .setName('scope')
-        .setDescription('Memory scope')
-        .setRequired(false)
-        .addChoices({ name: 'User', value: 'user' }, { name: 'Server', value: 'server' })
     );
 
   constructor(
@@ -37,7 +42,7 @@ export class ClearMemoryCommand implements Command {
   ) {}
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const memoryId = interaction.options.getString('id');
     const contextType = interaction.options.getString('type');
