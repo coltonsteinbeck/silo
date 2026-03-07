@@ -28,6 +28,14 @@ Please report security vulnerabilities responsibly using one of the following ch
 - Code under this repository, including infrastructure templates and workflows.
 - Do not test against production deployments without prior written permission.
 
+## Runtime Safety Controls
+
+- User input is sanitized and moderated before model invocation.
+- Assistant output is moderated before being sent; output moderation can fail closed.
+- An immutable safety policy is layered into all runtime system prompts.
+- Custom prompts can be restricted using hash allowlisting (`SAFETY_ALLOWED_PROMPT_HASHES`).
+- Memory conflicts are handled conservatively via clarification-first guidance.
+
 ## Preferences
 
 - Provide minimal PoCs; avoid automated scanners against live instances.

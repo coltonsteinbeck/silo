@@ -11,6 +11,13 @@ import type {
   ImageAnalysisResponse
 } from '@silo/core';
 
+function redactSecrets(value: string): string {
+  return value
+    .replace(/\bsk-[A-Za-z0-9_-]+\b/g, '[redacted-key]')
+    .replace(/\bxai-[A-Za-z0-9_-]+\b/g, '[redacted-key]')
+    .replace(/\bBearer\s+[A-Za-z0-9_.-]+\b/gi, 'Bearer [redacted-token]');
+}
+
 export class OpenAIProvider implements TextProvider, ImageProvider {
   name = 'openai';
   private client: OpenAI | null = null;
@@ -119,11 +126,9 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
         revisedPrompt: image.revised_prompt
       };
     } catch (error) {
-      console.error('[OpenAI] Image generation failed:', error);
-      if (error instanceof Error) {
-        throw new Error(`OpenAI image generation failed: ${error.message}`);
-      }
-      throw error;
+      const message = redactSecrets(error instanceof Error ? error.message : String(error));
+      console.error('[OpenAI] Image generation failed:', message);
+      throw new Error(`OpenAI image generation failed: ${message}`);
     }
   }
 

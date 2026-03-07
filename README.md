@@ -170,6 +170,7 @@ docker-compose -f docker-compose.prod.yml up -d
 - **Daily Quotas**: Per-user and per-guild usage limits with automatic daily reset
 - **Audit Logging**: Track all admin actions and moderation events
 - **Analytics**: Command usage, AI costs, response times, user feedback
+- **Safety Guardrails**: Immutable system safety layer, prompt-hash allowlisting option, input moderation, and output moderation fail-closed mode
 
 ### Commands
 

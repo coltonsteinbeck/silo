@@ -28,7 +28,6 @@ import {
   ButtonInteraction,
   ModalSubmitInteraction
 } from 'discord.js';
-import { createHash } from 'crypto';
 import dns from 'node:dns';
 import { ConfigLoader, logger } from '@silo/core';
 import { ProviderRegistry } from './providers/registry';
@@ -42,7 +41,9 @@ import {
   contentSanitizer,
   inactivityScheduler,
   deploymentDetector,
-  systemPromptManager
+  systemPromptManager,
+  composeSystemPromptWithSafety,
+  resolvePromptPolicy
 } from './security';
 import { QuotaMiddleware } from './middleware/quota';
 import { CostAggregator } from './services/cost-aggregator';
@@ -422,7 +423,12 @@ async function main() {
       const defaultPrompt =
         providerPrompts[textProvider.name] ||
         'You are a helpful Discord bot assistant. Be helpful, friendly, and conversational.';
-      const systemPrompt = promptConfig.prompt || defaultPrompt;
+      const promptPolicy = resolvePromptPolicy({
+        customPrompt: promptConfig.prompt,
+        defaultPrompt,
+        allowedPromptHashesRaw: process.env.SAFETY_ALLOWED_PROMPT_HASHES
+      });
+      const systemPrompt = composeSystemPromptWithSafety(promptPolicy.effectivePrompt);
       const conciseResponseInstruction =
         '\n\nResponse style rule: Keep responses concise and clear by default (2-4 sentences). Only provide longer responses when the user explicitly asks for detail.';
       const userUsedEmoji = /\p{Extended_Pictographic}/u.test(processedContent);
@@ -434,11 +440,13 @@ async function main() {
         ? ''
         : '\n\nFormatting rule: Use plain text by default. Avoid markdown styling (bold/italics/lists) and avoid emojis unless the user explicitly asks for them.';
 
-      // Compute prompt hash for conversation isolation
-      // 'default' for provider defaults, SHA256 hash for custom prompts
-      const promptHash = promptConfig.prompt
-        ? createHash('sha256').update(promptConfig.prompt).digest('hex').substring(0, 16)
-        : 'default';
+      const promptHash = promptPolicy.promptHash;
+
+      if (promptPolicy.rejectedCustomPrompt) {
+        logger.warn(
+          `Rejected custom prompt hash for guild ${message.guildId}: ${promptPolicy.customPromptHash}. Falling back to default prompt policy.`
+        );
+      }
 
       if (promptConfig.warnings.length > 0) {
         logger.warn(
@@ -517,6 +525,8 @@ async function main() {
           ? '\n\nMemory usage rule: If lore memory context is relevant, prioritize it as canonical and answer consistently with it. Do not contradict the provided lore.'
           : '\n\nMemory usage rule: If memory context strongly matches the user request, you may reference it briefly and naturally.'
         : '\n\nMemory usage rule: Use memory context silently when helpful. Do not explicitly say you are recalling memory unless the user directly asks.';
+      const memoryConflictInstruction =
+        "\n\nMemory conflict rule: If memories conflict with each other or with the user's latest message, state uncertainty and ask a clarifying question instead of guessing.";
 
       const memoryItemCount = (memoryContext.match(/\n- \[/g) || []).length;
       if (memoryItemCount > 0) {
@@ -548,7 +558,7 @@ async function main() {
               memoryContext.length > VISION_MEMORY_CONTEXT_MAX_CHARS
                 ? `${memoryContext.slice(0, VISION_MEMORY_CONTEXT_MAX_CHARS)}\n- [memory context truncated for token efficiency]`
                 : memoryContext;
-            const visionPrompt = `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${memoryMentionInstruction}${limitedMemoryContext}\n\n${userVisionPrompt}`;
+            const visionPrompt = `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${memoryMentionInstruction}${memoryConflictInstruction}${limitedMemoryContext}\n\n${userVisionPrompt}`;
             const visionResult = await visionProvider.analyzeImage!(
               imageUrls[0]!,
               imageUrls.length > 1
@@ -567,7 +577,7 @@ async function main() {
             [
               {
                 role: 'system',
-                content: `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${memoryMentionInstruction}${memoryContext}`
+                content: `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${memoryMentionInstruction}${memoryConflictInstruction}${memoryContext}`
               },
               ...messages,
               {
@@ -584,10 +594,30 @@ async function main() {
         `[Perf] LLM responded in ${Date.now() - llmStart}ms (model: ${response.model || 'unknown'}${usedVision ? ', vision' : ''})`
       );
 
-      // === Phase 5: Reply immediately, then fire-and-forget post-LLM writes ===
+      // === Phase 5: Moderate output, reply, then fire-and-forget post-LLM writes ===
       // Discord has a 2000 character limit for messages
       const MAX_MESSAGE_LENGTH = 2000;
       let responseContent = response.content;
+
+      const assistantModeration = await contentSanitizer.moderateContent(
+        response.content,
+        message.guildId,
+        message.author.id,
+        'message',
+        { failClosedOnError: true }
+      );
+
+      if (!assistantModeration.allowed) {
+        logger.warn(
+          `Assistant output blocked for guild ${message.guildId}, user ${message.author.id}: ${assistantModeration.flaggedCategories.join(', ')}`
+        );
+        responseContent =
+          'I can’t help with that request. Please rephrase and I can provide a safer alternative.';
+      } else if (assistantModeration.action === 'warned') {
+        logger.warn(
+          `Assistant output warning for guild ${message.guildId}, user ${message.author.id}: ${assistantModeration.flaggedCategories.join(', ')}`
+        );
+      }
 
       if (!userRequestedRichFormatting) {
         responseContent = responseContent
@@ -626,7 +656,7 @@ async function main() {
             userId: message.author.id,
             promptHash,
             role: 'assistant',
-            content: response.content
+            content: responseContent
           }),
           quotaMiddleware.recordUsage(
             message.guildId,
@@ -646,7 +676,7 @@ async function main() {
             userId: message.author.id,
             promptHash,
             role: 'assistant',
-            content: response.content
+            content: responseContent
           }),
           quotaMiddleware.recordUsage(
             message.guildId,
