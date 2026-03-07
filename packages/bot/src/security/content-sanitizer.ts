@@ -37,6 +37,11 @@ export interface ModerationOptions {
   failClosedOnError?: boolean;
 }
 
+export interface ModerationDecision {
+  action: ModerationAction;
+  allowed: boolean;
+}
+
 export function buildModerationApiFailureResult(
   contentHash: string,
   failClosedOnError: boolean
@@ -58,6 +63,34 @@ export function buildModerationApiFailureResult(
     scores: {},
     contentHash
   };
+}
+
+export function evaluateModerationDecision(
+  flaggedCategories: string[],
+  scores: Record<string, number>
+): ModerationDecision {
+  let action: ModerationAction = 'allowed';
+  let allowed = true;
+
+  const shouldBlock = flaggedCategories.some(
+    cat => BLOCK_CATEGORIES.includes(cat) && scores[cat] && scores[cat] >= SCORE_THRESHOLD
+  );
+
+  if (shouldBlock) {
+    action = 'blocked';
+    allowed = false;
+  } else if (flaggedCategories.length > 0) {
+    const shouldWarn = flaggedCategories.some(
+      cat => WARN_CATEGORIES.includes(cat) && scores[cat] && scores[cat] >= SCORE_THRESHOLD * 0.8
+    );
+
+    if (shouldWarn) {
+      action = 'warned';
+      allowed = true;
+    }
+  }
+
+  return { action, allowed };
 }
 
 export interface ModerationLogEntry {
@@ -158,30 +191,8 @@ class ContentSanitizer {
       }
 
       // Determine action based on flagged categories
-      let action: ModerationAction = 'allowed';
-      let allowed = true;
-
-      // Check for block-worthy categories - ONLY block for severe categories
-      // Regular violence, harassment etc should warn, not block (allows casual speech like "punch my friends")
-      const shouldBlock = flaggedCategories.some(
-        cat => BLOCK_CATEGORIES.includes(cat) && scores[cat] && scores[cat] >= SCORE_THRESHOLD
-      );
-
-      if (shouldBlock) {
-        action = 'blocked';
-        allowed = false;
-      } else if (flaggedCategories.length > 0) {
-        // Check for warning-worthy categories
-        const shouldWarn = flaggedCategories.some(
-          cat =>
-            WARN_CATEGORIES.includes(cat) && scores[cat] && scores[cat] >= SCORE_THRESHOLD * 0.8
-        );
-
-        if (shouldWarn) {
-          action = 'warned';
-          allowed = true; // Warnings still allow the content through
-        }
-      }
+      const decision = evaluateModerationDecision(flaggedCategories, scores);
+      const { action, allowed } = decision;
 
       // Log the moderation result (using hash, never raw content)
       await this.logModerationResult({

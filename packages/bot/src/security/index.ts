@@ -34,3 +34,10 @@ export type { SystemPromptConfig, SystemPromptValidationResult } from './system-
 
 export { composeSystemPromptWithSafety, IMMUTABLE_SAFETY_POLICY } from './safety-policy';
 export { resolvePromptPolicy } from './prompt-policy';
+export { safetyMonitor, SafetyMonitor, createSafetyMonitorFromEnv } from './safety-monitor';
+export type {
+  SafetyIncidentType,
+  SafetyIncidentRecord,
+  SafetyMonitorConfig,
+  SafetyMonitorDecision
+} from './safety-monitor';

@@ -43,7 +43,8 @@ import {
   deploymentDetector,
   systemPromptManager,
   composeSystemPromptWithSafety,
-  resolvePromptPolicy
+  resolvePromptPolicy,
+  safetyMonitor
 } from './security';
 import { QuotaMiddleware } from './middleware/quota';
 import { CostAggregator } from './services/cost-aggregator';
@@ -150,6 +151,13 @@ async function main() {
   });
   await db.connect();
 
+  const migrationSummary = db.getLastMigrationSummary();
+  if (migrationSummary) {
+    logger.info(
+      `Migration summary: applied=${migrationSummary.applied}, skipped=${migrationSummary.skipped}, baselineMarked=${migrationSummary.baselineMarked}, total=${migrationSummary.totalFiles}, succeeded=${migrationSummary.succeeded}`
+    );
+  }
+
   // Initialize admin database
   const adminDb = new AdminAdapter(db.pool);
   const permissions = new PermissionManager(adminDb);
@@ -184,6 +192,29 @@ async function main() {
   // Initialize health server
   const healthServer = new HealthServer(client, db);
   await healthServer.start();
+
+  const notifySafetyAlert = async (guildId: string, messageContent: string): Promise<void> => {
+    try {
+      const alertChannelId = await adminDb.getAlertsChannel(guildId);
+      if (!alertChannelId) {
+        return;
+      }
+
+      const guild = client.guilds.cache.get(guildId);
+      if (!guild) {
+        return;
+      }
+
+      const channel = await guild.channels.fetch(alertChannelId);
+      if (!channel || !channel.isTextBased()) {
+        return;
+      }
+
+      await channel.send({ content: messageContent });
+    } catch (error) {
+      logger.error(`Failed to send safety alert for guild ${guildId}:`, error);
+    }
+  };
 
   // Start periodic cost aggregation
   costAggregator.start();
@@ -300,6 +331,18 @@ async function main() {
     if (!message.mentions.has(client.user!.id)) return;
     if (!message.guildId) return;
 
+    if (safetyMonitor.isKillSwitchActive(message.guildId)) {
+      logger.warn(
+        `Safety kill switch active for guild ${message.guildId}; blocked request from user ${message.author.id}`
+      );
+      await message.reply({
+        content:
+          '⚠️ Safety mode is temporarily active due to repeated policy violations. Please try again in a few minutes.',
+        allowedMentions: { repliedUser: false }
+      });
+      return;
+    }
+
     // Update guild activity
     guildManager.updateActivity(message.guildId).catch(err => {
       logger.error('Failed to update guild activity:', err);
@@ -325,6 +368,23 @@ async function main() {
       const { processedContent, moderation } = moderationResult;
 
       if (!moderation.allowed) {
+        const decision = safetyMonitor.recordIncident({
+          guildId: message.guildId,
+          incidentType: 'input_blocked',
+          categories: moderation.flaggedCategories
+        });
+
+        if (decision.shouldAlert) {
+          const config = safetyMonitor.getConfig();
+          const killSwitchMessage = decision.killSwitchActivated
+            ? ` Kill switch activated until ${decision.killSwitchUntil?.toISOString()}.`
+            : '';
+          void notifySafetyAlert(
+            message.guildId,
+            `[SAFETY] Block-rate threshold reached (${decision.blockedCountInWindow}/${config.blockThreshold} within ${Math.floor(config.windowMs / 60000)}m).${killSwitchMessage}`
+          );
+        }
+
         await message.reply({
           content: '⚠️ Your message was blocked due to content policy violations.',
           allowedMentions: { repliedUser: false }
@@ -441,6 +501,10 @@ async function main() {
         : '\n\nFormatting rule: Use plain text by default. Avoid markdown styling (bold/italics/lists) and avoid emojis unless the user explicitly asks for them.';
 
       const promptHash = promptPolicy.promptHash;
+
+      logger.info(
+        `Prompt context for guild ${message.guildId}: promptHash=${promptHash}, source=${promptPolicy.usedCustomPrompt ? 'custom' : 'default'}, customPromptHash=${promptPolicy.customPromptHash || 'none'}`
+      );
 
       if (promptPolicy.rejectedCustomPrompt) {
         logger.warn(
@@ -608,12 +672,37 @@ async function main() {
       );
 
       if (!assistantModeration.allowed) {
+        const incidentType = assistantModeration.flaggedCategories.includes('api_error_fail_closed')
+          ? 'moderation_api_fail_closed'
+          : 'output_blocked';
+        const decision = safetyMonitor.recordIncident({
+          guildId: message.guildId,
+          incidentType,
+          categories: assistantModeration.flaggedCategories
+        });
+
+        if (decision.shouldAlert) {
+          const config = safetyMonitor.getConfig();
+          const killSwitchMessage = decision.killSwitchActivated
+            ? ` Kill switch activated until ${decision.killSwitchUntil?.toISOString()}.`
+            : '';
+          void notifySafetyAlert(
+            message.guildId,
+            `[SAFETY] Assistant output blocked (${decision.blockedCountInWindow}/${config.blockThreshold} within ${Math.floor(config.windowMs / 60000)}m).${killSwitchMessage}`
+          );
+        }
+
         logger.warn(
           `Assistant output blocked for guild ${message.guildId}, user ${message.author.id}: ${assistantModeration.flaggedCategories.join(', ')}`
         );
         responseContent =
           'I can’t help with that request. Please rephrase and I can provide a safer alternative.';
       } else if (assistantModeration.action === 'warned') {
+        safetyMonitor.recordIncident({
+          guildId: message.guildId,
+          incidentType: 'output_warned',
+          categories: assistantModeration.flaggedCategories
+        });
         logger.warn(
           `Assistant output warning for guild ${message.guildId}, user ${message.author.id}: ${assistantModeration.flaggedCategories.join(', ')}`
         );
@@ -643,6 +732,10 @@ async function main() {
         content: responseContent,
         allowedMentions: { repliedUser: false }
       });
+
+      logger.info(
+        `Response trace: guild=${message.guildId}, user=${message.author.id}, promptHash=${promptHash}, model=${response.model || 'unknown'}, usedVision=${usedVision}, memoryItems=${memorySelection.selected.length}, memoryMode=${memorySelection.usedFallback ? 'fallback' : 'strong_or_none'}, moderationAction=${assistantModeration.action}`
+      );
 
       logger.info(`[Perf] Total response time: ${Date.now() - requestStart}ms`);
 
