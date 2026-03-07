@@ -616,43 +616,43 @@ async function main() {
 
       const response = useVision
         ? await (async () => {
-            const imageUrls = imageAttachments.map(att => att.url);
-            const userVisionPrompt = processedContent || 'Describe this image.';
-            const limitedMemoryContext =
-              memoryContext.length > VISION_MEMORY_CONTEXT_MAX_CHARS
-                ? `${memoryContext.slice(0, VISION_MEMORY_CONTEXT_MAX_CHARS)}\n- [memory context truncated for token efficiency]`
-                : memoryContext;
-            const visionPrompt = `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${memoryMentionInstruction}${memoryConflictInstruction}${limitedMemoryContext}\n\n${userVisionPrompt}`;
-            const visionResult = await visionProvider.analyzeImage!(
-              imageUrls[0]!,
-              imageUrls.length > 1
-                ? `${visionPrompt}\n\nUser attached ${imageUrls.length} images; analyze the first image in detail.`
-                : visionPrompt,
-              { maxTokens: MAX_VISION_RESPONSE_TOKENS }
-            );
-            usedVision = true;
-            return {
-              content: visionResult.content,
-              usage: visionResult.usage,
-              model: `${visionProvider.name}-vision`
-            };
-          })()
-        : await textProvider.generateText(
-            [
-              {
-                role: 'system',
-                content: `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${memoryMentionInstruction}${memoryConflictInstruction}${memoryContext}`
-              },
-              ...messages,
-              {
-                role: 'user',
-                content: processedContent
-              }
-            ],
-            {
-              maxTokens: MAX_TEXT_RESPONSE_TOKENS
-            }
+          const imageUrls = imageAttachments.map(att => att.url);
+          const userVisionPrompt = processedContent || 'Describe this image.';
+          const limitedMemoryContext =
+            memoryContext.length > VISION_MEMORY_CONTEXT_MAX_CHARS
+              ? `${memoryContext.slice(0, VISION_MEMORY_CONTEXT_MAX_CHARS)}\n- [memory context truncated for token efficiency]`
+              : memoryContext;
+          const visionPrompt = `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${memoryMentionInstruction}${memoryConflictInstruction}${limitedMemoryContext}\n\n${userVisionPrompt}`;
+          const visionResult = await visionProvider.analyzeImage!(
+            imageUrls[0]!,
+            imageUrls.length > 1
+              ? `${visionPrompt}\n\nUser attached ${imageUrls.length} images; analyze the first image in detail.`
+              : visionPrompt,
+            { maxTokens: MAX_VISION_RESPONSE_TOKENS }
           );
+          usedVision = true;
+          return {
+            content: visionResult.content,
+            usage: visionResult.usage,
+            model: `${visionProvider.name}-vision`
+          };
+        })()
+        : await textProvider.generateText(
+          [
+            {
+              role: 'system',
+              content: `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${memoryMentionInstruction}${memoryConflictInstruction}${memoryContext}`
+            },
+            ...messages,
+            {
+              role: 'user',
+              content: processedContent
+            }
+          ],
+          {
+            maxTokens: MAX_TEXT_RESPONSE_TOKENS
+          }
+        );
 
       logger.info(
         `[Perf] LLM responded in ${Date.now() - llmStart}ms (model: ${response.model || 'unknown'}${usedVision ? ', vision' : ''})`
