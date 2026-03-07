@@ -126,6 +126,105 @@ const WARN_CATEGORIES = [
 // Threshold for category scores to trigger action (0.0 - 1.0)
 const SCORE_THRESHOLD = 0.7;
 
+const BLOCKED_SLUR_TOKENS = [
+  'faggot',
+  'nigger',
+  'kike',
+  'chink',
+  'spic',
+  'gook',
+  'wetback',
+  'tranny'
+];
+
+const LETTER_SEPARATED_SLUR_PATTERNS = [
+  /\bf[\W_]*a[\W_]*g[\W_]*g[\W_]*o[\W_]*t(?:s)?\b/i,
+  /\bn[\W_]*i[\W_]*g[\W_]*g[\W_]*e[\W_]*r(?:s)?\b/i,
+  /\bk[\W_]*i[\W_]*k[\W_]*e(?:s)?\b/i,
+  /\bc[\W_]*h[\W_]*i[\W_]*n[\W_]*k(?:s)?\b/i,
+  /\bs[\W_]*p[\W_]*i[\W_]*c(?:s)?\b/i,
+  /\bg[\W_]*o[\W_]*o[\W_]*k(?:s)?\b/i,
+  /\bw[\W_]*e[\W_]*t[\W_]*b[\W_]*a[\W_]*c[\W_]*k(?:s)?\b/i,
+  /\bt[\W_]*r[\W_]*a[\W_]*n[\W_]*n[\W_]*y(?:ies)?\b/i
+];
+
+const LEETSPEAK_CHAR_MAP: Record<string, string> = {
+  '0': 'o',
+  '1': 'i',
+  '2': 'z',
+  '3': 'e',
+  '4': 'a',
+  '5': 's',
+  '6': 'g',
+  '7': 't',
+  '8': 'b',
+  '9': 'g',
+  '@': 'a',
+  '$': 's',
+  '!': 'i',
+  '|': 'i',
+  '+': 't'
+};
+
+function normalizeTokenForEvasionDetection(content: string): string {
+  return content
+    .toLowerCase()
+    .split('')
+    .map(char => LEETSPEAK_CHAR_MAP[char] || char)
+    .join('')
+    .replace(/[^a-z]/g, '');
+}
+
+function extractNormalizedTokens(content: string): string[] {
+  return content
+    .split(/\s+/)
+    .map(token => normalizeTokenForEvasionDetection(token))
+    .filter(Boolean);
+}
+
+function buildInitialism(value: string): string {
+  return value
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(word => word[0]?.toLowerCase() || '')
+    .join('');
+}
+
+function extractQuotedSegments(content: string): string[] {
+  const matches = content.matchAll(/["“]([^"”]+)["”]/g);
+  return Array.from(matches, match => match[1]?.trim() || '').filter(Boolean);
+}
+
+function hasInitialismBypassIntent(content: string): boolean {
+  return /(abbreviation|acronym|first\s+letter|initials?)/i.test(content);
+}
+
+export function detectDeterministicHateEvasion(content: string): string[] {
+  const categories: string[] = [];
+  const normalizedTokens = extractNormalizedTokens(content);
+
+  const hasSeparatedSlur = LETTER_SEPARATED_SLUR_PATTERNS.some(pattern => pattern.test(content));
+  const hasNormalizedSlur = normalizedTokens.some(token => BLOCKED_SLUR_TOKENS.includes(token));
+
+  if (hasSeparatedSlur || hasNormalizedSlur) {
+    categories.push('hate/slur_evasion');
+  }
+
+  if (hasInitialismBypassIntent(content)) {
+    const quotedSegments = extractQuotedSegments(content);
+    const generatedAcronyms = quotedSegments
+      .map(segment => buildInitialism(segment))
+      .filter(Boolean);
+
+    const hasSlurAcronym = generatedAcronyms.some(acronym => BLOCKED_SLUR_TOKENS.includes(acronym));
+    if (hasSlurAcronym) {
+      categories.push('hate/slur_acronym_evasion');
+    }
+  }
+
+  return [...new Set(categories)];
+}
+
 class ContentSanitizer {
   private pool: Pool | null = null;
 
@@ -166,6 +265,32 @@ class ContentSanitizer {
   ): Promise<ModerationResult> {
     const contentHash = this.hashContent(content);
     const failClosedOnError = options.failClosedOnError ?? false;
+
+    const deterministicHateCategories = detectDeterministicHateEvasion(content);
+    if (deterministicHateCategories.length > 0) {
+      const deterministicScores = Object.fromEntries(
+        deterministicHateCategories.map(category => [category, 1])
+      );
+
+      await this.logModerationResult({
+        guildId,
+        userId,
+        contentType,
+        contentHash,
+        contentLength: content.length,
+        flaggedCategories: deterministicHateCategories,
+        moderationScores: deterministicScores,
+        actionTaken: 'blocked'
+      });
+
+      return {
+        allowed: false,
+        action: 'blocked',
+        flaggedCategories: deterministicHateCategories,
+        scores: deterministicScores,
+        contentHash
+      };
+    }
 
     try {
       // Call OpenAI moderation API
