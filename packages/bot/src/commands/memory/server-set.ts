@@ -71,7 +71,7 @@ export class ServerMemorySetCommand implements Command {
     private db: DatabaseAdapter,
     private permissions: PermissionManager,
     private registry?: ProviderRegistry
-  ) {}
+  ) { }
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });

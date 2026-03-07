@@ -64,7 +64,7 @@ export class UserMemorySetCommand implements Command {
   constructor(
     private db: DatabaseAdapter,
     private registry?: ProviderRegistry
-  ) {}
+  ) { }
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
