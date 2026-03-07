@@ -1,4 +1,4 @@
-import { Pool } from 'pg';
+import { Pool, PoolClient } from 'pg';
 import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import {
@@ -48,8 +48,53 @@ interface ConversationMessageRow {
   created_at: string;
 }
 
+type MigrationSummary = {
+  totalFiles: number;
+  applied: number;
+  skipped: number;
+  baselineMarked: number;
+  succeeded: boolean;
+};
+
 export class PostgresAdapter implements DatabaseAdapter {
   public readonly pool: Pool;
+
+  private static readonly MIGRATION_LOCK_ID = 830245913;
+  private lastMigrationSummary: MigrationSummary | null = null;
+
+  getLastMigrationSummary(): MigrationSummary | null {
+    return this.lastMigrationSummary;
+  }
+
+  private getBaselineVersion(): number {
+    const rawValue = process.env.MIGRATION_BASELINE_VERSION || '14';
+    const parsed = Number.parseInt(rawValue, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 14;
+  }
+
+  private parseMigrationVersion(fileName: string): number | null {
+    const match = fileName.match(/^(\d+)/);
+    if (!match || !match[1]) {
+      return null;
+    }
+
+    const parsed = Number.parseInt(match[1], 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  private async hasLegacySchema(client: PoolClient): Promise<boolean> {
+    const result = await client.query<{ user_memory: string | null; server_memory: string | null }>(
+      `SELECT to_regclass('public.user_memory')::text AS user_memory,
+              to_regclass('public.server_memory')::text AS server_memory`
+    );
+
+    const row = result.rows[0];
+    if (!row) {
+      return false;
+    }
+
+    return Boolean(row.user_memory && row.server_memory);
+  }
 
   /**
    * Validates and converts embedding array to a valid PostgreSQL vector string
@@ -120,6 +165,8 @@ export class PostgresAdapter implements DatabaseAdapter {
   }
 
   private async runMigrations(): Promise<void> {
+    let client: PoolClient | undefined;
+
     try {
       const migrationsDir = join(process.cwd(), 'supabase', 'migrations');
       const migrationFiles = readdirSync(migrationsDir)
@@ -128,31 +175,146 @@ export class PostgresAdapter implements DatabaseAdapter {
 
       logger.info(`Found ${migrationFiles.length} migration files`);
 
+      if (migrationFiles.length === 0) {
+        this.lastMigrationSummary = {
+          totalFiles: 0,
+          applied: 0,
+          skipped: 0,
+          baselineMarked: 0,
+          succeeded: true
+        };
+        logger.info('No migration files found, skipping migration step');
+        return;
+      }
+
+      client = await this.pool.connect();
+      await client.query('SELECT pg_advisory_lock($1)', [PostgresAdapter.MIGRATION_LOCK_ID]);
+
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+          filename TEXT PRIMARY KEY,
+          applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `);
+
+      const appliedResult = await client.query<{ filename: string }>(
+        'SELECT filename FROM schema_migrations'
+      );
+      const appliedMigrations = new Set(appliedResult.rows.map(row => row.filename));
+
+      let appliedCount = 0;
+      let skippedCount = 0;
+      let baselineMarkedCount = 0;
+
+      if (appliedMigrations.size === 0 && (await this.hasLegacySchema(client))) {
+        const baselineVersion = this.getBaselineVersion();
+        const filesToBaseline = migrationFiles.filter(file => {
+          const version = this.parseMigrationVersion(file);
+          return version !== null && version < baselineVersion;
+        });
+
+        for (const file of filesToBaseline) {
+          await client.query(
+            'INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING',
+            [file]
+          );
+          appliedMigrations.add(file);
+          baselineMarkedCount += 1;
+        }
+
+        if (baselineMarkedCount > 0) {
+          logger.info('Legacy database baseline applied for migration tracking', {
+            baselineVersion,
+            markedApplied: baselineMarkedCount
+          });
+        }
+      }
+
       for (const file of migrationFiles) {
+        if (appliedMigrations.has(file)) {
+          skippedCount += 1;
+          logger.info(`↷ Migration already tracked, skipping: ${file}`);
+          continue;
+        }
+
         const filePath = join(migrationsDir, file);
         const sql = readFileSync(filePath, 'utf-8');
 
         try {
-          await this.pool.query(sql);
-          logger.info(`✓ Migration applied: ${file}`);
+          await client.query(sql);
+          await client.query('INSERT INTO schema_migrations (filename) VALUES ($1)', [file]);
+          appliedMigrations.add(file);
+          appliedCount += 1;
+          logger.info(`✓ Migration applied and tracked: ${file}`);
         } catch (error: any) {
-          // Check if it's a "already exists" error (which is fine)
-          if (
-            error.message?.includes('already exists') ||
-            error.code === 'EEXIST' ||
-            error.message?.includes('does not exist')
-          ) {
-            logger.info(`⚠ Skipping migration ${file}: ${error.message}`);
+          if (this.isAlreadyAppliedMigrationError(error)) {
+            await client.query(
+              'INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING',
+              [file]
+            );
+            appliedMigrations.add(file);
+            skippedCount += 1;
+            logger.info(
+              `⚠ Migration appears already applied, marked as tracked and skipped: ${file}`,
+              { reason: error.message }
+            );
             continue;
           }
+
           throw error;
         }
       }
-      logger.info('All migrations completed successfully');
+
+      logger.info('Migration step completed', {
+        totalFiles: migrationFiles.length,
+        applied: appliedCount,
+        skipped: skippedCount,
+        baselineMarked: baselineMarkedCount
+      });
+
+      this.lastMigrationSummary = {
+        totalFiles: migrationFiles.length,
+        applied: appliedCount,
+        skipped: skippedCount,
+        baselineMarked: baselineMarkedCount,
+        succeeded: true
+      };
     } catch (error) {
       logger.error('Failed to run migrations:', error);
+      this.lastMigrationSummary = {
+        totalFiles: 0,
+        applied: 0,
+        skipped: 0,
+        baselineMarked: 0,
+        succeeded: false
+      };
       // Don't throw - continue with app startup
+    } finally {
+      if (client) {
+        try {
+          await client.query('SELECT pg_advisory_unlock($1)', [PostgresAdapter.MIGRATION_LOCK_ID]);
+        } catch (unlockError) {
+          logger.warn('Failed to release migration advisory lock', unlockError);
+        }
+
+        client.release();
+      }
     }
+  }
+
+  private isAlreadyAppliedMigrationError(error: unknown): boolean {
+    if (!error || typeof error !== 'object') {
+      return false;
+    }
+
+    const maybePgError = error as { message?: string; code?: string };
+    const message = (maybePgError.message || '').toLowerCase();
+
+    return (
+      message.includes('already exists') ||
+      message.includes('does not exist') ||
+      maybePgError.code === 'EEXIST'
+    );
   }
 
   async disconnect(): Promise<void> {

@@ -145,4 +145,136 @@ describe('selectMemoryContext', () => {
     expect(result.selected).toHaveLength(0);
     expect(result.usedFallback).toBe(false);
   });
+
+  test('resolves conflicting memories by trust and source priority deterministically', async () => {
+    const serverMemory = {
+      id: 'srv-1',
+      serverId: 'guild-1',
+      userId: 'mod-1',
+      title: 'identity',
+      memoryContent: 'The bot identity is Grok by xAI.',
+      contextType: 'lore',
+      metadata: {
+        conflictKey: 'bot_identity',
+        trustScore: 0.95,
+        sourcePriority: 95,
+        verified: true,
+        entities: ['bot_identity']
+      },
+      createdAt: new Date('2026-01-02T00:00:00Z'),
+      updatedAt: new Date('2026-01-02T00:00:00Z')
+    };
+
+    const userMemory = {
+      id: 'usr-1',
+      userId: 'user-1',
+      memoryContent: 'The bot identity is ChatGPT.',
+      contextType: 'conversation',
+      metadata: {
+        conflictKey: 'bot_identity',
+        trustScore: 0.35,
+        sourcePriority: 40,
+        entities: ['bot_identity']
+      },
+      createdAt: new Date('2026-01-03T00:00:00Z'),
+      updatedAt: new Date('2026-01-03T00:00:00Z')
+    };
+
+    const db = {
+      searchServerMemoriesByEmbedding: mock(async () => [{ ...serverMemory, similarity: 0.9 }]),
+      searchUserMemoriesByEmbedding: mock(async () => [{ ...userMemory, similarity: 0.83 }]),
+      searchServerMemories: mock(async () => [serverMemory]),
+      searchUserMemories: mock(async () => [userMemory]),
+      getServerMemories: mock(async () => []),
+      getUserMemories: mock(async () => [])
+    } as any;
+
+    const registry = {
+      hasEmbeddingProvider: () => true,
+      getEmbeddingProvider: () => {
+        return {
+          generateEmbeddings: async () => [[0.1, 0.2, 0.3]]
+        };
+      }
+    } as any;
+
+    const result = await selectMemoryContext({
+      db,
+      registry,
+      config: baseConfig,
+      serverId: 'guild-1',
+      userId: 'user-1',
+      content: 'Remember the bot identity from before'
+    });
+
+    expect(result.usedFallback).toBe(false);
+    expect(result.selected.length).toBe(1);
+    expect(result.selected[0]?.id).toBe('srv-1');
+    expect(result.context).toContain('Grok by xAI');
+    expect(result.context).not.toContain('ChatGPT');
+  });
+
+  test('uses metadata conflict key to collapse contradictory candidates in fallback path', async () => {
+    const db = {
+      searchServerMemoriesByEmbedding: mock(async () => []),
+      searchUserMemoriesByEmbedding: mock(async () => []),
+      searchServerMemories: mock(async () => [
+        {
+          id: 'srv-2',
+          serverId: 'guild-1',
+          userId: 'mod-1',
+          title: 'policy',
+          memoryContent: 'Server policy says concise responses are preferred.',
+          contextType: 'rule',
+          metadata: {
+            conflictKey: 'response_style',
+            trustScore: 0.93,
+            sourcePriority: 96,
+            verified: true
+          },
+          createdAt: new Date('2026-01-01T00:00:00Z'),
+          updatedAt: new Date('2026-01-01T00:00:00Z')
+        },
+        {
+          id: 'srv-3',
+          serverId: 'guild-1',
+          userId: 'mod-2',
+          title: 'policy old',
+          memoryContent: 'Server policy says verbose responses are mandatory.',
+          contextType: 'rule',
+          metadata: {
+            conflictKey: 'response_style',
+            trustScore: 0.5,
+            sourcePriority: 70
+          },
+          createdAt: new Date('2026-01-04T00:00:00Z'),
+          updatedAt: new Date('2026-01-04T00:00:00Z')
+        }
+      ]),
+      searchUserMemories: mock(async () => []),
+      getServerMemories: mock(async () => []),
+      getUserMemories: mock(async () => [])
+    } as any;
+
+    const registry = {
+      hasEmbeddingProvider: () => false,
+      getEmbeddingProvider: () => {
+        throw new Error('unused');
+      }
+    } as any;
+
+    const result = await selectMemoryContext({
+      db,
+      registry,
+      config: baseConfig,
+      serverId: 'guild-1',
+      userId: 'user-1',
+      content: 'Remember what style rules we have'
+    });
+
+    expect(result.selected.length).toBe(1);
+    expect(result.selected[0]?.id).toBe('srv-2');
+    expect(result.context).toContain('concise responses');
+    expect(result.context).not.toContain('verbose responses are mandatory');
+  });
 });

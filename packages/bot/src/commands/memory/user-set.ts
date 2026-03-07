@@ -8,6 +8,29 @@ function extractLoreEntities(content: string): string[] {
   return [...new Set(matches.map(entity => entity.toLowerCase()))].slice(0, 12);
 }
 
+const USER_CONTEXT_TRUST: Record<UserMemory['contextType'], number> = {
+  conversation: 0.58,
+  preference: 0.82,
+  summary: 0.68,
+  temporary: 0.45,
+  mood: 0.78
+};
+
+function resolveUserConflictKey(
+  contextType: UserMemory['contextType'],
+  entities: string[]
+): string | null {
+  if (entities.length > 0 && entities[0]) {
+    return entities[0];
+  }
+
+  if (contextType === 'preference' || contextType === 'mood') {
+    return `user_${contextType}`;
+  }
+
+  return null;
+}
+
 export class UserMemorySetCommand implements Command {
   data = new SlashCommandBuilder()
     .setName('user-memory-set')
@@ -55,8 +78,13 @@ export class UserMemorySetCommand implements Command {
       expiresAt = new Date(Date.now() + expiresInHours * 60 * 60 * 1000);
     }
 
+    const entities = extractLoreEntities(content);
     const metadata = {
-      entities: extractLoreEntities(content)
+      entities,
+      source: 'user_command',
+      sourcePriority: 62,
+      trustScore: USER_CONTEXT_TRUST[contextType],
+      conflictKey: resolveUserConflictKey(contextType, entities)
     };
 
     // Generate embedding for semantic search if RAG is enabled

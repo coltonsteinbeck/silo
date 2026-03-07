@@ -9,6 +9,34 @@ function extractLoreEntities(content: string): string[] {
   return [...new Set(matches.map(entity => entity.toLowerCase()))].slice(0, 12);
 }
 
+const SERVER_CONTEXT_TRUST: Record<string, number> = {
+  lore: 0.92,
+  rule: 0.94,
+  fact: 0.86,
+  persona: 0.9,
+  other: 0.74
+};
+
+const SERVER_CONTEXT_PRIORITY: Record<string, number> = {
+  lore: 94,
+  rule: 96,
+  fact: 88,
+  persona: 90,
+  other: 80
+};
+
+function resolveServerConflictKey(contextType: string, entities: string[]): string | null {
+  if (entities.length > 0 && entities[0]) {
+    return entities[0];
+  }
+
+  if (contextType === 'persona' || contextType === 'lore') {
+    return 'server_identity';
+  }
+
+  return null;
+}
+
 export class ServerMemorySetCommand implements Command {
   data = new SlashCommandBuilder()
     .setName('server-memory-set')
@@ -76,8 +104,15 @@ export class ServerMemorySetCommand implements Command {
       expiresAt = new Date(Date.now() + expiresInHours * 60 * 60 * 1000);
     }
 
+    const entities = extractLoreEntities(content);
+    const normalizedContextType = contextType.toLowerCase();
     const metadata = {
-      entities: extractLoreEntities(content)
+      entities,
+      source: 'server_moderator_command',
+      sourcePriority: SERVER_CONTEXT_PRIORITY[normalizedContextType] ?? 80,
+      trustScore: SERVER_CONTEXT_TRUST[normalizedContextType] ?? 0.74,
+      verified: true,
+      conflictKey: resolveServerConflictKey(normalizedContextType, entities)
     };
 
     // Generate embedding for semantic search if RAG is enabled

@@ -16,6 +16,10 @@ type CandidateScore = {
   entityScore: number;
   cueScore: number;
   totalScore: number;
+  trustScore: number;
+  sourcePriority: number;
+  arbitratedScore: number;
+  conflictKey: string | null;
 };
 
 export type MemorySelectionResult = {
@@ -104,7 +108,7 @@ function summarizeMemory(memory: MemoryType): string {
 }
 
 function summarizeCandidate(candidate: CandidateScore): string {
-  return `${summarizeMemory(candidate.memory)}(total=${candidate.totalScore.toFixed(2)},kw=${candidate.keywordScore.toFixed(2)},sem=${candidate.semanticScore.toFixed(2)},ent=${candidate.entityScore.toFixed(2)})`;
+  return `${summarizeMemory(candidate.memory)}(arb=${candidate.arbitratedScore.toFixed(2)},total=${candidate.totalScore.toFixed(2)},trust=${candidate.trustScore.toFixed(2)},src=${candidate.sourcePriority},kw=${candidate.keywordScore.toFixed(2)},sem=${candidate.semanticScore.toFixed(2)},ent=${candidate.entityScore.toFixed(2)})`;
 }
 
 function isLoreOrPersona(memory: MemoryType): boolean {
@@ -125,6 +129,181 @@ function extractEntities(memory: MemoryType): string[] {
   const source = `${title} ${memory.memoryContent}`;
   const matches = source.match(/\b[A-Z][A-Za-z0-9_-]{2,}\b/g) || [];
   return unique(matches.map(entity => entity.toLowerCase()));
+}
+
+function normalizeConflictKey(value: string): string {
+  return value.toLowerCase().trim().replace(/\s+/g, '_');
+}
+
+function getMetadataNumber(
+  metadata: Record<string, unknown> | undefined,
+  key: string
+): number | null {
+  const raw = metadata?.[key];
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    return raw;
+  }
+
+  if (typeof raw === 'string') {
+    const parsed = Number.parseFloat(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+}
+
+function getMetadataString(
+  metadata: Record<string, unknown> | undefined,
+  key: string
+): string | null {
+  const raw = metadata?.[key];
+  if (typeof raw !== 'string') {
+    return null;
+  }
+
+  const normalized = raw.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function getMetadataBoolean(metadata: Record<string, unknown> | undefined, key: string): boolean {
+  const raw = metadata?.[key];
+  return raw === true || raw === 'true';
+}
+
+function inferDefaultSourcePriority(memory: MemoryType): number {
+  const scope = getMemoryScope(memory);
+  if (scope === 'server') {
+    const contextType = memory.contextType.toLowerCase();
+    if (contextType === 'rule' || contextType === 'lore' || contextType === 'persona') {
+      return 92;
+    }
+    if (contextType === 'fact') {
+      return 88;
+    }
+    return 80;
+  }
+
+  const contextType = memory.contextType.toLowerCase();
+  if (contextType === 'preference' || contextType === 'mood') {
+    return 70;
+  }
+  if (contextType === 'summary') {
+    return 62;
+  }
+  if (contextType === 'temporary') {
+    return 38;
+  }
+  return 56;
+}
+
+function inferDefaultTrustScore(memory: MemoryType): number {
+  const scope = getMemoryScope(memory);
+  if (scope === 'server') {
+    const contextType = memory.contextType.toLowerCase();
+    if (contextType === 'rule' || contextType === 'lore' || contextType === 'persona') {
+      return 0.9;
+    }
+    if (contextType === 'fact') {
+      return 0.84;
+    }
+    return 0.74;
+  }
+
+  const contextType = memory.contextType.toLowerCase();
+  if (contextType === 'preference' || contextType === 'mood') {
+    return 0.8;
+  }
+  if (contextType === 'summary') {
+    return 0.66;
+  }
+  if (contextType === 'temporary') {
+    return 0.44;
+  }
+  return 0.58;
+}
+
+function resolveSourcePriority(memory: MemoryType): number {
+  const fromMetadata = getMetadataNumber(memory.metadata, 'sourcePriority');
+  if (fromMetadata !== null) {
+    return Math.round(Math.min(100, Math.max(0, fromMetadata)));
+  }
+
+  return inferDefaultSourcePriority(memory);
+}
+
+function resolveTrustScore(memory: MemoryType): number {
+  const explicitTrust =
+    getMetadataNumber(memory.metadata, 'trustScore') ??
+    getMetadataNumber(memory.metadata, 'confidence') ??
+    inferDefaultTrustScore(memory);
+
+  const verifiedBoost = getMetadataBoolean(memory.metadata, 'verified') ? 0.08 : 0;
+  return clamp01(explicitTrust + verifiedBoost);
+}
+
+function resolveConflictKey(memory: MemoryType): string | null {
+  const metadataKey =
+    getMetadataString(memory.metadata, 'conflictKey') ??
+    getMetadataString(memory.metadata, 'factKey');
+  if (metadataKey) {
+    return normalizeConflictKey(metadataKey);
+  }
+
+  const entities = extractEntities(memory);
+  if (entities.length > 0 && entities[0]) {
+    return normalizeConflictKey(entities[0]);
+  }
+
+  if ('title' in memory && memory.title && memory.title.trim().length > 0) {
+    return normalizeConflictKey(memory.title);
+  }
+
+  return null;
+}
+
+function calculateRecencyScore(memory: MemoryType, nowMs: number): number {
+  const ageDays = Math.max(0, (nowMs - memory.createdAt.getTime()) / (24 * 60 * 60 * 1000));
+  return clamp01(Math.exp(-ageDays / 60));
+}
+
+function compareCandidates(a: CandidateScore, b: CandidateScore): number {
+  return (
+    b.arbitratedScore - a.arbitratedScore ||
+    b.totalScore - a.totalScore ||
+    b.memory.createdAt.getTime() - a.memory.createdAt.getTime()
+  );
+}
+
+function arbitrateConflicts(candidates: CandidateScore[]): {
+  selected: CandidateScore[];
+  conflictsResolved: number;
+} {
+  const keyed = new Map<string, CandidateScore>();
+  const unkeyed: CandidateScore[] = [];
+  let conflictsResolved = 0;
+
+  for (const candidate of candidates) {
+    if (!candidate.conflictKey) {
+      unkeyed.push(candidate);
+      continue;
+    }
+
+    const existing = keyed.get(candidate.conflictKey);
+    if (!existing) {
+      keyed.set(candidate.conflictKey, candidate);
+      continue;
+    }
+
+    conflictsResolved += 1;
+    if (compareCandidates(candidate, existing) > 0) {
+      continue;
+    }
+
+    keyed.set(candidate.conflictKey, candidate);
+  }
+
+  const selected = [...keyed.values(), ...unkeyed].sort(compareCandidates);
+  return { selected, conflictsResolved };
 }
 
 function buildMemoryContext(memories: MemoryType[]): string {
@@ -204,7 +383,7 @@ export async function selectMemoryContext(params: {
   const semanticServerCount = semanticCandidates.filter(item => 'serverId' in item).length;
   const semanticUserCount = semanticCandidates.length - semanticServerCount;
   logger.info(
-    `Memory retrieval: user=${userId}, serverLexical=${serverLexicalCandidates.length}, userLexical=${userLexicalCandidates.length}, serverSemantic=${semanticServerCount}, userSemantic=${semanticUserCount}, hasCue=${hasCue}, identityQuery=${isIdentityQuery}`
+    `Memory retrieval: guild=${serverId}, user=${userId}, serverLexical=${serverLexicalCandidates.length}, userLexical=${userLexicalCandidates.length}, serverSemantic=${semanticServerCount}, userSemantic=${semanticUserCount}, hasCue=${hasCue}, identityQuery=${isIdentityQuery}`
   );
 
   const lexicalCandidates = [...serverLexicalCandidates, ...userLexicalCandidates];
@@ -231,11 +410,12 @@ export async function selectMemoryContext(params: {
       candidateMap.set(memory.id, memory);
     }
     logger.info(
-      `Memory cue fallback pool: user=${userId}, recentServer=${recentServer.length}, recentUser=${recentUser.length}`
+      `Memory cue fallback pool: guild=${serverId}, user=${userId}, recentServer=${recentServer.length}, recentUser=${recentUser.length}`
     );
   }
 
   const scored: CandidateScore[] = [];
+  const nowMs = Date.now();
   for (const memory of candidateMap.values()) {
     if (isIdentityQuery) {
       if (getMemoryScope(memory) !== 'server') {
@@ -263,6 +443,10 @@ export async function selectMemoryContext(params: {
       entityMatches.length > 0 ? Math.min(entityMatches.length / 3, 1) : 0
     );
     const cueScore = hasCue ? 1 : 0;
+    const trustScore = resolveTrustScore(memory);
+    const sourcePriority = resolveSourcePriority(memory);
+    const sourcePriorityScore = clamp01(sourcePriority / 100);
+    const recencyScore = calculateRecencyScore(memory, nowMs);
 
     const totalScore = clamp01(
       keywordScore * memoryConfig.keywordWeight +
@@ -271,20 +455,25 @@ export async function selectMemoryContext(params: {
         entityScore * memoryConfig.entityWeight
     );
 
+    const arbitratedScore = clamp01(
+      totalScore * 0.68 + trustScore * 0.2 + sourcePriorityScore * 0.08 + recencyScore * 0.04
+    );
+
     scored.push({
       memory,
       keywordScore,
       semanticScore,
       entityScore,
       cueScore,
-      totalScore
+      totalScore,
+      trustScore,
+      sourcePriority,
+      arbitratedScore,
+      conflictKey: resolveConflictKey(memory)
     });
   }
 
-  scored.sort(
-    (a, b) =>
-      b.totalScore - a.totalScore || b.memory.createdAt.getTime() - a.memory.createdAt.getTime()
-  );
+  scored.sort(compareCandidates);
 
   const strongMatches = scored.filter(
     candidate =>
@@ -302,11 +491,12 @@ export async function selectMemoryContext(params: {
   }
 
   if (strongMatches.length > 0) {
-    const selected = strongMatches.slice(0, retrievalLimit).map(item => item.memory);
-    const top = strongMatches[0]!;
+    const arbitrated = arbitrateConflicts(strongMatches);
+    const selected = arbitrated.selected.slice(0, retrievalLimit).map(item => item.memory);
+    const top = arbitrated.selected[0]!;
     const selectedHasLore = selected.some(memory => memory.contextType === 'lore');
     logger.info(
-      `Memory strong match selected for user=${userId}: ${selected.map(summarizeMemory).join(', ')}`
+      `Memory strong match selected for guild=${serverId}, user=${userId}: ${selected.map(summarizeMemory).join(', ')} (conflictsResolved=${arbitrated.conflictsResolved})`
     );
 
     return {
@@ -321,14 +511,16 @@ export async function selectMemoryContext(params: {
   }
 
   const fallbackSelectedFromScores = allowFallback
-    ? scored.slice(0, memoryConfig.fallbackLimit).map(item => item.memory)
+    ? arbitrateConflicts(scored)
+        .selected.slice(0, memoryConfig.fallbackLimit)
+        .map(item => item.memory)
     : [];
   if (fallbackSelectedFromScores.length > 0) {
     const fallbackHasLore = fallbackSelectedFromScores.some(
       memory => memory.contextType === 'lore'
     );
     logger.info(
-      `Memory score fallback selected for user=${userId}: ${fallbackSelectedFromScores.map(summarizeMemory).join(', ')}`
+      `Memory score fallback selected for guild=${serverId}, user=${userId}: ${fallbackSelectedFromScores.map(summarizeMemory).join(', ')}`
     );
     return {
       context: buildMemoryContext(fallbackSelectedFromScores),
@@ -358,7 +550,7 @@ export async function selectMemoryContext(params: {
   const latestFallbackHasLore = latestFallback.some(memory => memory.contextType === 'lore');
   if (latestFallback.length > 0) {
     logger.info(
-      `Memory latest fallback selected for user=${userId}: ${latestFallback.map(summarizeMemory).join(', ')}`
+      `Memory latest fallback selected for guild=${serverId}, user=${userId}: ${latestFallback.map(summarizeMemory).join(', ')}`
     );
   }
   return {
