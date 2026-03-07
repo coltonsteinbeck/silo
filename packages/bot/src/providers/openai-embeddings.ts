@@ -5,6 +5,20 @@ const EMBEDDING_MODEL = 'text-embedding-3-small';
 const EMBEDDING_DIMENSION = 1536;
 const MAX_BATCH_SIZE = 100;
 
+function redactSecrets(value: string): string {
+  return value
+    .replace(/\bsk-[A-Za-z0-9_-]+\b/g, '[redacted-key]')
+    .replace(/\bxai-[A-Za-z0-9_-]+\b/g, '[redacted-key]')
+    .replace(/\bBearer\s+[A-Za-z0-9_.-]+\b/gi, 'Bearer [redacted-token]');
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return redactSecrets(error.message);
+  }
+  return redactSecrets(String(error));
+}
+
 /**
  * Content sanitization to prevent prompt injection attacks
  * Detects suspicious patterns in memory content before embedding
@@ -122,11 +136,9 @@ export class OpenAIEmbeddingsProvider implements EmbeddingProvider {
 
       return embedding.embedding;
     } catch (error) {
-      console.error('[OpenAI Embeddings] Generation failed:', error);
-      if (error instanceof Error) {
-        throw new Error(`OpenAI embedding generation failed: ${error.message}`);
-      }
-      throw error;
+      const message = errorMessage(error);
+      console.error('[OpenAI Embeddings] Generation failed:', message);
+      throw new Error(`OpenAI embedding generation failed: ${message}`);
     }
   }
 
@@ -187,11 +199,9 @@ export class OpenAIEmbeddingsProvider implements EmbeddingProvider {
           allEmbeddings.push(item.embedding);
         }
       } catch (error) {
-        console.error('[OpenAI Embeddings] Batch generation failed:', error);
-        if (error instanceof Error) {
-          throw new Error(`OpenAI batch embedding generation failed: ${error.message}`);
-        }
-        throw error;
+        const message = errorMessage(error);
+        console.error('[OpenAI Embeddings] Batch generation failed:', message);
+        throw new Error(`OpenAI batch embedding generation failed: ${message}`);
       }
     }
 

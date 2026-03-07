@@ -33,6 +33,33 @@ export interface ModerationResult {
   contentHash: string;
 }
 
+export interface ModerationOptions {
+  failClosedOnError?: boolean;
+}
+
+export function buildModerationApiFailureResult(
+  contentHash: string,
+  failClosedOnError: boolean
+): ModerationResult {
+  if (failClosedOnError) {
+    return {
+      allowed: false,
+      action: 'blocked',
+      flaggedCategories: ['api_error_fail_closed'],
+      scores: {},
+      contentHash
+    };
+  }
+
+  return {
+    allowed: true,
+    action: 'allowed',
+    flaggedCategories: ['api_error'],
+    scores: {},
+    contentHash
+  };
+}
+
 export interface ModerationLogEntry {
   guildId: string;
   userId: string;
@@ -101,9 +128,11 @@ class ContentSanitizer {
     content: string,
     guildId: string,
     userId: string,
-    contentType: ContentType
+    contentType: ContentType,
+    options: ModerationOptions = {}
   ): Promise<ModerationResult> {
     const contentHash = this.hashContent(content);
+    const failClosedOnError = options.failClosedOnError ?? false;
 
     try {
       // Call OpenAI moderation API
@@ -176,25 +205,20 @@ class ContentSanitizer {
     } catch (error) {
       logger.error('Content moderation failed:', error);
 
-      // On API failure, allow content but log the failure
+      const failureResult = buildModerationApiFailureResult(contentHash, failClosedOnError);
+
       await this.logModerationResult({
         guildId,
         userId,
         contentType,
         contentHash,
         contentLength: content.length,
-        flaggedCategories: ['api_error'],
+        flaggedCategories: failureResult.flaggedCategories,
         moderationScores: {},
-        actionTaken: 'allowed'
+        actionTaken: failureResult.action
       });
 
-      return {
-        allowed: true,
-        action: 'allowed',
-        flaggedCategories: [],
-        scores: {},
-        contentHash
-      };
+      return failureResult;
     }
   }
 
@@ -400,7 +424,8 @@ class ContentSanitizer {
     content: string,
     guildId: string,
     userId: string,
-    contentType: ContentType
+    contentType: ContentType,
+    options: ModerationOptions = {}
   ): Promise<{
     processedContent: string;
     moderation: ModerationResult;
@@ -424,7 +449,7 @@ class ContentSanitizer {
     }
 
     // Full moderation check
-    const moderation = await this.moderateContent(sanitized, guildId, userId, contentType);
+    const moderation = await this.moderateContent(sanitized, guildId, userId, contentType, options);
 
     return {
       processedContent: moderation.allowed ? sanitized : '',
