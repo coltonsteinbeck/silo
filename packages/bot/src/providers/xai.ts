@@ -65,10 +65,10 @@ export class XAIProvider implements TextProvider, ImageProvider {
       content: choice.message.content,
       usage: response.usage
         ? {
-          promptTokens: response.usage.prompt_tokens,
-          completionTokens: response.usage.completion_tokens,
-          totalTokens: response.usage.total_tokens
-        }
+            promptTokens: response.usage.prompt_tokens,
+            completionTokens: response.usage.completion_tokens,
+            totalTokens: response.usage.total_tokens
+          }
         : undefined,
       model: response.model
     };
@@ -123,10 +123,10 @@ export class XAIProvider implements TextProvider, ImageProvider {
       content: choice.message.content,
       usage: response.usage
         ? {
-          promptTokens: response.usage.prompt_tokens,
-          completionTokens: response.usage.completion_tokens,
-          totalTokens: response.usage.total_tokens
-        }
+            promptTokens: response.usage.prompt_tokens,
+            completionTokens: response.usage.completion_tokens,
+            totalTokens: response.usage.total_tokens
+          }
         : undefined
     };
   }

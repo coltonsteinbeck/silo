@@ -160,7 +160,7 @@ const LEETSPEAK_CHAR_MAP: Record<string, string> = {
   '8': 'b',
   '9': 'g',
   '@': 'a',
-  '$': 's',
+  $: 's',
   '!': 'i',
   '|': 'i',
   '+': 't'
