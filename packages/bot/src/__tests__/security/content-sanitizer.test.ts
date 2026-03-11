@@ -36,11 +36,19 @@ class MockContentSanitizer {
     scores: Record<string, number>
   ): { action: ModerationAction; allowed: boolean } {
     const BLOCK_CATEGORIES = [
+      'sexual',
       'sexual/minors',
+      'hate',
       'hate/threatening',
+      'illicit',
+      'illicit/violent',
       'violence/graphic',
       'self-harm/intent',
-      'self-harm/instructions'
+      'self-harm/instructions',
+      'sexual/explicit_generation',
+      'illicit/drugs_instructional',
+      'hate/slur_evasion',
+      'hate/slur_acronym_evasion'
     ];
 
     const WARN_CATEGORIES = [
@@ -56,7 +64,7 @@ class MockContentSanitizer {
 
     // Check for block-worthy categories
     const shouldBlock = flaggedCategories.some(
-      cat => BLOCK_CATEGORIES.includes(cat) || (scores[cat] && scores[cat] >= SCORE_THRESHOLD)
+      cat => BLOCK_CATEGORIES.includes(cat) && scores[cat] && scores[cat] >= SCORE_THRESHOLD
     );
 
     if (shouldBlock) {
@@ -182,11 +190,27 @@ describe('ContentSanitizer', () => {
       expect(result.allowed).toBe(false);
     });
 
-    test('blocks content with high score in any category', () => {
-      const result = sanitizer.determineAction(['harassment'], { harassment: 0.9 });
+    test('blocks content with sexual category at threshold', () => {
+      const result = sanitizer.determineAction(['sexual'], { sexual: 0.9 });
 
       expect(result.action).toBe('blocked');
       expect(result.allowed).toBe(false);
+    });
+
+    test('blocks content with illicit/drugs_instructional category', () => {
+      const result = sanitizer.determineAction(['illicit/drugs_instructional'], {
+        'illicit/drugs_instructional': 1
+      });
+
+      expect(result.action).toBe('blocked');
+      expect(result.allowed).toBe(false);
+    });
+
+    test('does not block non-block category even with high score', () => {
+      const result = sanitizer.determineAction(['harassment'], { harassment: 0.9 });
+
+      expect(result.action).toBe('warned');
+      expect(result.allowed).toBe(true);
     });
 
     test('warns for warn-category with moderate score', () => {

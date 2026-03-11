@@ -15,6 +15,14 @@ describe('safety-policy', () => {
     expect(composed).toContain('instruction hierarchy');
   });
 
+  test('immutable policy explicitly forbids explicit sex, slurs, and illicit drug help', () => {
+    const composed = composeSystemPromptWithSafety('You are a safe assistant.');
+
+    expect(composed).toContain('pornographic or explicit sexual content');
+    expect(composed).toContain('hateful slurs');
+    expect(composed).toContain('illicit drug use/procurement/manufacturing');
+  });
+
   test('returns policy when base prompt is empty', () => {
     const composed = composeSystemPromptWithSafety('   ');
 

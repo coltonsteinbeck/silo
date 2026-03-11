@@ -106,11 +106,19 @@ export interface ModerationLogEntry {
 
 // Categories that should result in blocking
 const BLOCK_CATEGORIES = [
+  'sexual',
   'sexual/minors',
+  'hate',
   'hate/threatening',
+  'illicit',
+  'illicit/violent',
   'violence/graphic',
   'self-harm/intent',
-  'self-harm/instructions'
+  'self-harm/instructions',
+  'sexual/explicit_generation',
+  'illicit/drugs_instructional',
+  'hate/slur_evasion',
+  'hate/slur_acronym_evasion'
 ];
 
 // Categories that should result in warnings (not blocking)
@@ -165,6 +173,21 @@ const LEETSPEAK_CHAR_MAP: Record<string, string> = {
   '|': 'i',
   '+': 't'
 };
+
+const EXPLICIT_SEX_TOPIC_PATTERN =
+  /\b(porn|pornography|nsfw|xxx|sext(?:ing)?|sexual\s+roleplay|erp|fetish|blowjob|handjob|deepthroat|cum(?:ming)?|anal)\b/i;
+
+const EXPLICIT_SEX_INTENT_PATTERN =
+  /\b(talk\s+to\s+me\s+about|describe|write|roleplay|act\s+like|tell\s+me|fantas(?:y|ize)|dirty\s+talk|moan)\b/i;
+
+const ILLICIT_DRUG_TOPIC_PATTERN =
+  /\b(cocaine|meth(?:amphetamine)?|heroin|fentanyl|mdma|ecstasy|lsd|acid|crack|opioids?|molly)\b/i;
+
+const ILLICIT_DRUG_INTENT_PATTERN =
+  /\b(how\s+to|where\s+can\s+i|buy|get|score|cook|make|synthesi[sz]e|dose|snort|inject|smoke|sell|dealer)\b/i;
+
+const ILLICIT_DRUG_HOWTO_PATTERN =
+  /\b(how\s+to|steps?|instructions?)\b.{0,80}\b(make|cook|synthesi[sz]e|buy|get|sell)\b.{0,80}\b(cocaine|meth(?:amphetamine)?|heroin|fentanyl|mdma|ecstasy|lsd|acid|crack|molly)\b/i;
 
 function normalizeTokenForEvasionDetection(content: string): string {
   return content
@@ -225,6 +248,39 @@ export function detectDeterministicHateEvasion(content: string): string[] {
   return [...new Set(categories)];
 }
 
+function detectDeterministicExplicitSex(content: string): string[] {
+  const hasTopic = EXPLICIT_SEX_TOPIC_PATTERN.test(content);
+  const hasIntent = EXPLICIT_SEX_INTENT_PATTERN.test(content);
+
+  if (hasTopic && hasIntent) {
+    return ['sexual/explicit_generation'];
+  }
+
+  return [];
+}
+
+function detectDeterministicDrugIntent(content: string): string[] {
+  const hasTopic = ILLICIT_DRUG_TOPIC_PATTERN.test(content);
+  const hasIntent = ILLICIT_DRUG_INTENT_PATTERN.test(content);
+  const hasHowToPattern = ILLICIT_DRUG_HOWTO_PATTERN.test(content);
+
+  if ((hasTopic && hasIntent) || hasHowToPattern) {
+    return ['illicit/drugs_instructional'];
+  }
+
+  return [];
+}
+
+export function detectDeterministicIllicitContent(content: string): string[] {
+  return [
+    ...new Set([
+      ...detectDeterministicHateEvasion(content),
+      ...detectDeterministicExplicitSex(content),
+      ...detectDeterministicDrugIntent(content)
+    ])
+  ];
+}
+
 class ContentSanitizer {
   private pool: Pool | null = null;
 
@@ -266,10 +322,10 @@ class ContentSanitizer {
     const contentHash = this.hashContent(content);
     const failClosedOnError = options.failClosedOnError ?? false;
 
-    const deterministicHateCategories = detectDeterministicHateEvasion(content);
-    if (deterministicHateCategories.length > 0) {
+    const deterministicCategories = detectDeterministicIllicitContent(content);
+    if (deterministicCategories.length > 0) {
       const deterministicScores = Object.fromEntries(
-        deterministicHateCategories.map(category => [category, 1])
+        deterministicCategories.map(category => [category, 1])
       );
 
       await this.logModerationResult({
@@ -278,7 +334,7 @@ class ContentSanitizer {
         contentType,
         contentHash,
         contentLength: content.length,
-        flaggedCategories: deterministicHateCategories,
+        flaggedCategories: deterministicCategories,
         moderationScores: deterministicScores,
         actionTaken: 'blocked'
       });
@@ -286,7 +342,7 @@ class ContentSanitizer {
       return {
         allowed: false,
         action: 'blocked',
-        flaggedCategories: deterministicHateCategories,
+        flaggedCategories: deterministicCategories,
         scores: deterministicScores,
         contentHash
       };
