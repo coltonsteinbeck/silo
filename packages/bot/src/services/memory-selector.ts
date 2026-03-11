@@ -450,9 +450,9 @@ export async function selectMemoryContext(params: {
 
     const totalScore = clamp01(
       keywordScore * memoryConfig.keywordWeight +
-      semanticScore * memoryConfig.semanticWeight +
-      cueScore * memoryConfig.cueWeight +
-      entityScore * memoryConfig.entityWeight
+        semanticScore * memoryConfig.semanticWeight +
+        cueScore * memoryConfig.cueWeight +
+        entityScore * memoryConfig.entityWeight
     );
 
     const arbitratedScore = clamp01(
@@ -512,8 +512,8 @@ export async function selectMemoryContext(params: {
 
   const fallbackSelectedFromScores = allowFallback
     ? arbitrateConflicts(scored)
-      .selected.slice(0, memoryConfig.fallbackLimit)
-      .map(item => item.memory)
+        .selected.slice(0, memoryConfig.fallbackLimit)
+        .map(item => item.memory)
     : [];
   if (fallbackSelectedFromScores.length > 0) {
     const fallbackHasLore = fallbackSelectedFromScores.some(
@@ -543,9 +543,9 @@ export async function selectMemoryContext(params: {
 
   const latestFallback = isIdentityQuery
     ? [
-      ...(await db.getServerMemories(serverId, 'lore', memoryConfig.fallbackLimit)),
-      ...(await db.getServerMemories(serverId, 'persona', memoryConfig.fallbackLimit))
-    ].slice(0, memoryConfig.fallbackLimit)
+        ...(await db.getServerMemories(serverId, 'lore', memoryConfig.fallbackLimit)),
+        ...(await db.getServerMemories(serverId, 'persona', memoryConfig.fallbackLimit))
+      ].slice(0, memoryConfig.fallbackLimit)
     : await db.getServerMemories(serverId, undefined, memoryConfig.fallbackLimit);
   const latestFallbackHasLore = latestFallback.some(memory => memory.contextType === 'lore');
   if (latestFallback.length > 0) {

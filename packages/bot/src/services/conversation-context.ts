@@ -1,69 +1,69 @@
 import type { ResolvedReplyContext } from './reply-context';
 
 export interface VisionTarget {
-    url: string;
-    source: 'current' | 'reply';
-    replyDepth: number | null;
+  url: string;
+  source: 'current' | 'reply';
+  replyDepth: number | null;
 }
 
 export interface AssembledConversationContext {
-    mergedUserContent: string;
-    referencedContent: string;
-    visionTargets: VisionTarget[];
-    directReplyMessageId: string | null;
-    directReplyUserId: string | null;
+  mergedUserContent: string;
+  referencedContent: string;
+  visionTargets: VisionTarget[];
+  directReplyMessageId: string | null;
+  directReplyUserId: string | null;
 }
 
 interface AssembleConversationContextArgs {
-    processedContent: string;
-    currentImageUrls: string[];
-    replyContext: ResolvedReplyContext;
-    maxVisionTargets?: number;
+  processedContent: string;
+  currentImageUrls: string[];
+  replyContext: ResolvedReplyContext;
+  maxVisionTargets?: number;
 }
 
 export function assembleConversationContext({
-    processedContent,
-    currentImageUrls,
-    replyContext,
-    maxVisionTargets = 2
+  processedContent,
+  currentImageUrls,
+  replyContext,
+  maxVisionTargets = 2
 }: AssembleConversationContextArgs): AssembledConversationContext {
-    const referencedContent = replyContext.textContext;
-    const mergedUserContent = referencedContent
-        ? `${processedContent}\n\nReferenced context:\n${referencedContent}`
-        : processedContent;
+  const referencedContent = replyContext.textContext;
+  const mergedUserContent = referencedContent
+    ? `${processedContent}\n\nReferenced context:\n${referencedContent}`
+    : processedContent;
 
-    const currentTargets: VisionTarget[] = currentImageUrls.map(url => ({
-        url,
-        source: 'current',
-        replyDepth: null
-    }));
+  const currentTargets: VisionTarget[] = currentImageUrls.map(url => ({
+    url,
+    source: 'current',
+    replyDepth: null
+  }));
 
-    const replyTargets: VisionTarget[] = replyContext.chain.flatMap((entry, index) =>
-        entry.imageUrls.map(url => ({
-            url,
-            source: 'reply' as const,
-            replyDepth: index + 1
-        }))
-    );
+  const replyTargets: VisionTarget[] = replyContext.chain.flatMap((entry, index) =>
+    entry.imageUrls.map(url => ({
+      url,
+      source: 'reply' as const,
+      replyDepth: index + 1
+    }))
+  );
 
-    const visionTargets = [...currentTargets, ...replyTargets].slice(0, maxVisionTargets);
+  const visionTargets = [...currentTargets, ...replyTargets].slice(0, maxVisionTargets);
 
-    return {
-        mergedUserContent,
-        referencedContent,
-        visionTargets,
-        directReplyMessageId: replyContext.directReplyMessageId,
-        directReplyUserId: replyContext.directReplyUserId
-    };
+  return {
+    mergedUserContent,
+    referencedContent,
+    visionTargets,
+    directReplyMessageId: replyContext.directReplyMessageId,
+    directReplyUserId: replyContext.directReplyUserId
+  };
 }
 
 export function buildImageSummaryBlock(summaries: string[]): string {
-    if (summaries.length === 0) {
-        return '';
-    }
+  if (summaries.length === 0) {
+    return '';
+  }
 
-    return [
-        'Image context summary:',
-        ...summaries.map((summary, index) => `- Image ${index + 1}: ${summary}`)
-    ].join('\n');
+  return [
+    'Image context summary:',
+    ...summaries.map((summary, index) => `- Image ${index + 1}: ${summary}`)
+  ].join('\n');
 }
