@@ -83,7 +83,8 @@ describe('createCommands', () => {
     // Check for expected command names
     const expectedCommands = [
       'memory-view',
-      'memory-set',
+      'user-memory-set',
+      'server-memory-set',
       'memory-clear',
       'draw',
       'thread',

@@ -6,19 +6,26 @@
 
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
 import { createMockInteraction, createMockDatabaseAdapter } from '@silo/core/test-setup';
+import { logger } from '@silo/core';
 import { ViewMemoryCommand } from '../../commands/memory/view';
-import { SetMemoryCommand } from '../../commands/memory/set';
+import { UserMemorySetCommand } from '../../commands/memory/user-set';
+import { ServerMemorySetCommand, serverMemorySetInternals } from '../../commands/memory/server-set';
 import { ClearMemoryCommand } from '../../commands/memory/clear';
 
 describe('ViewMemoryCommand', () => {
   let command: ViewMemoryCommand;
 
   let mockDb: any;
+  let mockPermissions: any;
 
   beforeEach(() => {
     mockDb = createMockDatabaseAdapter();
     mockDb.getUserMemories = mock(async () => []);
-    command = new ViewMemoryCommand(mockDb);
+    mockDb.getServerMemories = mock(async () => []);
+    mockPermissions = {
+      canModerate: mock(async () => true)
+    };
+    command = new ViewMemoryCommand(mockDb, mockPermissions);
   });
 
   describe('data', () => {
@@ -39,7 +46,7 @@ describe('ViewMemoryCommand', () => {
 
       await command.execute(interaction as any);
 
-      expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+      expect(interaction.deferReply).toHaveBeenCalledWith({ flags: 64 });
     });
 
     test('shows no memories message when empty', async () => {
@@ -83,10 +90,28 @@ describe('ViewMemoryCommand', () => {
           type: 'preference'
         }
       });
-
       await command.execute(interaction as any);
 
       expect(mockDb.getUserMemories).toHaveBeenCalledWith('111222333', 'preference');
+    });
+
+    test('reads server memories when scope is server', async () => {
+      mockDb.getServerMemories = mock(async () => []);
+      const interaction = createMockInteraction({
+        options: {
+          scope: 'server'
+        }
+      });
+
+      (interaction as any).guild = {
+        members: {
+          fetch: mock(async () => interaction.member)
+        }
+      };
+
+      await command.execute(interaction as any);
+
+      expect(mockDb.getServerMemories).toHaveBeenCalledWith('123456789', undefined);
     });
 
     test('truncates long memory content', async () => {
@@ -113,10 +138,11 @@ describe('ViewMemoryCommand', () => {
   });
 });
 
-describe('SetMemoryCommand', () => {
-  let command: SetMemoryCommand;
+describe('UserMemorySetCommand', () => {
+  let command: UserMemorySetCommand;
 
   let mockDb: any;
+  let mockRegistry: any;
 
   beforeEach(() => {
     mockDb = createMockDatabaseAdapter();
@@ -127,12 +153,17 @@ describe('SetMemoryCommand', () => {
         createdAt: new Date()
       })
     );
-    command = new SetMemoryCommand(mockDb);
+    mockRegistry = {
+      getEmbeddingProvider: mock(() => ({
+        generateEmbeddings: mock(async () => [[0.1, 0.2, 0.3]])
+      }))
+    };
+    command = new UserMemorySetCommand(mockDb, mockRegistry);
   });
 
   describe('data', () => {
     test('has correct name', () => {
-      expect(command.data.name).toBe('memory-set');
+      expect(command.data.name).toBe('user-memory-set');
     });
   });
 
@@ -148,8 +179,61 @@ describe('SetMemoryCommand', () => {
       await command.execute(interaction as any);
 
       expect(mockDb.storeUserMemory).toHaveBeenCalled();
+      expect(mockDb.storeUserMemory.mock.calls[0]?.[1]).toEqual([0.1, 0.2, 0.3]);
       const reply = interaction._getReplies()[0] as string;
-      expect(reply).toContain('Memory stored successfully');
+      expect(reply).toContain('🔍');
+      expect(reply).toContain('User memory stored successfully');
+    });
+
+    test('continues without RAG indicator when embedding generation throws', async () => {
+      const debugSpy = mock(() => {});
+      const originalDebug = logger.debug;
+      logger.debug = debugSpy as any;
+
+      mockRegistry.getEmbeddingProvider = mock(() => ({
+        generateEmbeddings: mock(async () => {
+          throw new Error('embedding unavailable');
+        })
+      }));
+
+      command = new UserMemorySetCommand(mockDb, mockRegistry);
+
+      const interaction = createMockInteraction({
+        options: {
+          content: 'I like concise answers',
+          type: 'preference'
+        }
+      });
+
+      await command.execute(interaction as any);
+
+      expect(debugSpy).toHaveBeenCalled();
+      expect(mockDb.storeUserMemory.mock.calls[0]?.[1]).toBeUndefined();
+      const reply = interaction._getReplies()[0] as string;
+      expect(reply).not.toContain('🔍');
+
+      logger.debug = originalDebug;
+    });
+
+    test.each([
+      ['conversation', 0.58],
+      ['preference', 0.82],
+      ['summary', 0.68],
+      ['temporary', 0.45],
+      ['mood', 0.78]
+    ])('uses trust score mapping for context type %s', async (contextType, trustScore) => {
+      const interaction = createMockInteraction({
+        options: {
+          content: 'Profile memory content',
+          type: contextType
+        }
+      });
+
+      await command.execute(interaction as any);
+
+      const payload = mockDb.storeUserMemory.mock.calls[0]?.[0];
+      expect(payload.metadata.trustScore).toBe(trustScore);
+      expect(payload.contextType).toBe(contextType);
     });
 
     test('stores memory with expiration', async () => {
@@ -170,22 +254,297 @@ describe('SetMemoryCommand', () => {
   });
 });
 
+describe('ServerMemorySetCommand', () => {
+  let command: ServerMemorySetCommand;
+
+  let mockDb: any;
+  let mockPermissions: any;
+  let mockRegistry: any;
+
+  beforeEach(() => {
+    mockDb = createMockDatabaseAdapter();
+    mockDb.storeServerMemory = mock(async () => ({ id: 'new-server-memory-id' }));
+    mockPermissions = {
+      canModerate: mock(async () => true)
+    };
+    mockRegistry = {
+      getEmbeddingProvider: mock(() => ({
+        generateEmbeddings: mock(async () => [[0.3, 0.2, 0.1]])
+      }))
+    };
+    command = new ServerMemorySetCommand(mockDb, mockPermissions, mockRegistry);
+  });
+
+  describe('data', () => {
+    test('has correct name', () => {
+      expect(command.data.name).toBe('server-memory-set');
+    });
+  });
+
+  describe('execute', () => {
+    test('rejects non-guild usage', async () => {
+      const interaction = createMockInteraction({
+        guildId: undefined,
+        options: {
+          content: 'Shared lore',
+          type: 'lore'
+        }
+      });
+
+      (interaction as any).guild = null;
+
+      await command.execute(interaction as any);
+
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        'Server-scoped memory can only be used in a server.'
+      );
+      expect(mockDb.storeServerMemory).not.toHaveBeenCalled();
+    });
+
+    test('rejects users without moderator permissions', async () => {
+      mockPermissions.canModerate = mock(async () => false);
+      command = new ServerMemorySetCommand(mockDb, mockPermissions, mockRegistry);
+
+      const interaction = createMockInteraction({
+        options: {
+          content: 'Shared lore',
+          type: 'lore'
+        }
+      });
+
+      (interaction as any).guild = {
+        members: {
+          fetch: mock(async () => interaction.member)
+        }
+      };
+
+      await command.execute(interaction as any);
+
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        'You need moderator permissions to store server-scoped memories.'
+      );
+      expect(mockDb.storeServerMemory).not.toHaveBeenCalled();
+    });
+
+    test('stores expiration timestamp and includes relative expiration token', async () => {
+      const interaction = createMockInteraction({
+        options: {
+          content: 'Shared lore',
+          type: 'lore',
+          'expires-in-hours': 24
+        }
+      });
+
+      (interaction as any).guild = {
+        members: {
+          fetch: mock(async () => interaction.member)
+        }
+      };
+
+      const start = Date.now();
+      await command.execute(interaction as any);
+      const end = Date.now();
+
+      const payload = mockDb.storeServerMemory.mock.calls[0]?.[0];
+      const expiresAt = payload?.expiresAt as Date;
+      expect(expiresAt).toBeDefined();
+      const minExpected = start + 24 * 60 * 60 * 1000;
+      const maxExpected = end + 24 * 60 * 60 * 1000;
+      expect(expiresAt.getTime()).toBeGreaterThanOrEqual(minExpected);
+      expect(expiresAt.getTime()).toBeLessThanOrEqual(maxExpected);
+
+      const reply = interaction._getReplies()[0] as string;
+      expect(reply).toContain('(expires <t:');
+      expect(reply).toContain(':R>)');
+    });
+
+    test('stores embedding and replies with RAG indicator when embedding succeeds', async () => {
+      const interaction = createMockInteraction({
+        options: {
+          content: 'Shared lore',
+          type: 'lore'
+        }
+      });
+
+      (interaction as any).guild = {
+        members: {
+          fetch: mock(async () => interaction.member)
+        }
+      };
+
+      await command.execute(interaction as any);
+
+      expect(mockRegistry.getEmbeddingProvider).toHaveBeenCalled();
+      expect(mockDb.storeServerMemory).toHaveBeenCalled();
+      expect(mockDb.storeServerMemory.mock.calls[0]?.[1]).toEqual([0.3, 0.2, 0.1]);
+
+      const reply = interaction._getReplies()[0] as string;
+      expect(reply).toContain('🔍');
+    });
+
+    test('continues without embedding when embedding generation throws', async () => {
+      const debugSpy = mock(() => {});
+      const originalDebug = logger.debug;
+      logger.debug = debugSpy as any;
+
+      mockRegistry.getEmbeddingProvider = mock(() => ({
+        generateEmbeddings: mock(async () => {
+          throw new Error('embedding unavailable');
+        })
+      }));
+      command = new ServerMemorySetCommand(mockDb, mockPermissions, mockRegistry);
+
+      const interaction = createMockInteraction({
+        options: {
+          content: 'Shared lore',
+          type: 'lore'
+        }
+      });
+
+      (interaction as any).guild = {
+        members: {
+          fetch: mock(async () => interaction.member)
+        }
+      };
+
+      await command.execute(interaction as any);
+
+      expect(debugSpy).toHaveBeenCalled();
+      expect(mockDb.storeServerMemory.mock.calls[0]?.[1]).toBeUndefined();
+      const reply = interaction._getReplies()[0] as string;
+      expect(reply).not.toContain('🔍');
+
+      logger.debug = originalDebug;
+    });
+
+    test('builds metadata using entities, trust/priority lookup, and conflict resolver', async () => {
+      const originalExtract = serverMemorySetInternals.extractLoreEntities;
+      const originalResolve = serverMemorySetInternals.resolveServerConflictKey;
+      const originalPriorityLore = serverMemorySetInternals.SERVER_CONTEXT_PRIORITY.lore ?? 94;
+      const originalTrustLore = serverMemorySetInternals.SERVER_CONTEXT_TRUST.lore ?? 0.92;
+
+      serverMemorySetInternals.extractLoreEntities = mock(() => ['dragon', 'citadel']) as any;
+      serverMemorySetInternals.resolveServerConflictKey = mock(() => 'dragon') as any;
+      serverMemorySetInternals.SERVER_CONTEXT_PRIORITY.lore = 777;
+      serverMemorySetInternals.SERVER_CONTEXT_TRUST.lore = 0.55;
+
+      const interaction = createMockInteraction({
+        options: {
+          content: 'Dragon lore',
+          type: 'lore'
+        }
+      });
+
+      (interaction as any).guild = {
+        members: {
+          fetch: mock(async () => interaction.member)
+        }
+      };
+
+      await command.execute(interaction as any);
+
+      const payload = mockDb.storeServerMemory.mock.calls[0]?.[0];
+      expect(payload.metadata).toEqual({
+        entities: ['dragon', 'citadel'],
+        source: 'server_moderator_command',
+        sourcePriority: 777,
+        trustScore: 0.55,
+        verified: true,
+        conflictKey: 'dragon'
+      });
+      expect(serverMemorySetInternals.extractLoreEntities).toHaveBeenCalledWith('Dragon lore');
+      expect(serverMemorySetInternals.resolveServerConflictKey).toHaveBeenCalledWith('lore', [
+        'dragon',
+        'citadel'
+      ]);
+
+      serverMemorySetInternals.extractLoreEntities = originalExtract;
+      serverMemorySetInternals.resolveServerConflictKey = originalResolve;
+      serverMemorySetInternals.SERVER_CONTEXT_PRIORITY.lore = originalPriorityLore;
+      serverMemorySetInternals.SERVER_CONTEXT_TRUST.lore = originalTrustLore;
+    });
+
+    test('extracts command input values from interaction options', async () => {
+      const interaction = createMockInteraction({
+        options: {
+          content: 'Guild canon',
+          type: 'fact',
+          'expires-in-hours': 12
+        }
+      });
+
+      (interaction as any).guild = {
+        members: {
+          fetch: mock(async () => interaction.member)
+        }
+      };
+
+      await command.execute(interaction as any);
+
+      expect(interaction.options.getString).toHaveBeenCalledWith('content', true);
+      expect(interaction.options.getString).toHaveBeenCalledWith('type', true);
+      expect(interaction.options.getInteger).toHaveBeenCalledWith('expires-in-hours');
+
+      const payload = mockDb.storeServerMemory.mock.calls[0]?.[0];
+      expect(payload.memoryContent).toBe('Guild canon');
+      expect(payload.contextType).toBe('fact');
+      expect(payload.expiresAt).toBeDefined();
+    });
+
+    test('logs memory creation details including id, guild, actor, and embedding usage', async () => {
+      const infoSpy = mock(() => {});
+      const originalInfo = logger.info;
+      logger.info = infoSpy as any;
+
+      const interaction = createMockInteraction({
+        options: {
+          content: 'Shared lore',
+          type: 'lore'
+        }
+      });
+
+      (interaction as any).guild = {
+        members: {
+          fetch: mock(async () => interaction.member)
+        }
+      };
+
+      await command.execute(interaction as any);
+
+      const calls = infoSpy.mock.calls as Array<unknown[]>;
+      const logLine = String(calls[0]?.[0] ?? '');
+      expect(logLine).toContain('id=new-server-memory-id');
+      expect(logLine).toContain('guild=123456789');
+      expect(logLine).toContain('actor=111222333');
+      expect(logLine).toContain('embedding=yes');
+
+      logger.info = originalInfo;
+    });
+  });
+});
+
 describe('ClearMemoryCommand', () => {
   let command: ClearMemoryCommand;
 
   let mockDb: any;
+  let mockPermissions: any;
 
   beforeEach(() => {
     mockDb = createMockDatabaseAdapter();
     mockDb.deleteUserMemory = mock(async () => {});
     mockDb.getUserMemories = mock(async () => [{ id: 'mem1' }, { id: 'mem2' }]);
+    mockDb.getServerMemories = mock(async () => [{ id: 'server-mem1' }, { id: 'server-mem2' }]);
+    mockDb.deleteServerMemory = mock(async () => {});
     mockDb.findUserMemoryByIdPrefix = mock(async (userId: string, idPrefix: string) => ({
       id: `${idPrefix}-full-uuid`,
       userId,
       memoryContent: 'test memory',
       contextType: 'conversation'
     }));
-    command = new ClearMemoryCommand(mockDb);
+    mockPermissions = {
+      canModerate: mock(async () => true)
+    };
+    command = new ClearMemoryCommand(mockDb, mockPermissions);
   });
 
   describe('data', () => {
@@ -234,6 +593,26 @@ describe('ClearMemoryCommand', () => {
       expect(mockDb.deleteUserMemory).toHaveBeenCalledTimes(2);
       const reply = interaction._getReplies()[0];
       expect(reply).toContain('Deleted 2');
+    });
+
+    test('deletes server memories when scope is server', async () => {
+      const interaction = createMockInteraction({
+        options: {
+          type: 'temporary',
+          scope: 'server'
+        }
+      });
+
+      (interaction as any).guild = {
+        members: {
+          fetch: mock(async () => interaction.member)
+        }
+      };
+
+      await command.execute(interaction as any);
+
+      expect(mockDb.getServerMemories).toHaveBeenCalledWith('123456789', 'temporary', 200);
+      expect(mockDb.deleteServerMemory).toHaveBeenCalledTimes(2);
     });
   });
 });

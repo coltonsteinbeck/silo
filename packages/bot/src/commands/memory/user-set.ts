@@ -1,12 +1,40 @@
-import { ChatInputCommandInteraction, SlashCommandBuilder } from 'discord.js';
+import { ChatInputCommandInteraction, MessageFlags, SlashCommandBuilder } from 'discord.js';
 import { Command } from '../types';
 import { DatabaseAdapter, UserMemory, logger } from '@silo/core';
 import { ProviderRegistry } from '../../providers/registry';
 
-export class SetMemoryCommand implements Command {
+function extractLoreEntities(content: string): string[] {
+  const matches = content.match(/\b[A-Z][A-Za-z0-9_-]{2,}\b/g) || [];
+  return [...new Set(matches.map(entity => entity.toLowerCase()))].slice(0, 12);
+}
+
+const USER_CONTEXT_TRUST: Record<UserMemory['contextType'], number> = {
+  conversation: 0.58,
+  preference: 0.82,
+  summary: 0.68,
+  temporary: 0.45,
+  mood: 0.78
+};
+
+function resolveUserConflictKey(
+  contextType: UserMemory['contextType'],
+  entities: string[]
+): string | null {
+  if (entities.length > 0 && entities[0]) {
+    return entities[0];
+  }
+
+  if (contextType === 'preference' || contextType === 'mood') {
+    return `user_${contextType}`;
+  }
+
+  return null;
+}
+
+export class UserMemorySetCommand implements Command {
   data = new SlashCommandBuilder()
-    .setName('memory-set')
-    .setDescription('Store a new memory')
+    .setName('user-memory-set')
+    .setDescription('Store a new memory for yourself')
     .addStringOption(option =>
       option.setName('content').setDescription('The memory content to store').setRequired(true)
     )
@@ -39,7 +67,7 @@ export class SetMemoryCommand implements Command {
   ) {}
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const content = interaction.options.getString('content', true);
     const contextType = interaction.options.getString('type', true) as UserMemory['contextType'];
@@ -49,6 +77,15 @@ export class SetMemoryCommand implements Command {
     if (expiresInHours) {
       expiresAt = new Date(Date.now() + expiresInHours * 60 * 60 * 1000);
     }
+
+    const entities = extractLoreEntities(content);
+    const metadata = {
+      entities,
+      source: 'user_command',
+      sourcePriority: 62,
+      trustScore: USER_CONTEXT_TRUST[contextType],
+      conflictKey: resolveUserConflictKey(contextType, entities)
+    };
 
     // Generate embedding for semantic search if RAG is enabled
     let embedding: number[] | undefined;
@@ -70,9 +107,14 @@ export class SetMemoryCommand implements Command {
         userId: interaction.user.id,
         memoryContent: content,
         contextType,
+        metadata,
         expiresAt
       },
       embedding
+    );
+
+    logger.info(
+      `Memory created: scope=user, id=${memory.id}, actor=${interaction.user.id}, type=${contextType}, entities=${metadata.entities.length}, embedding=${embedding ? 'yes' : 'no'}`
     );
 
     const expiresText = expiresAt
@@ -81,7 +123,7 @@ export class SetMemoryCommand implements Command {
     const ragStatus = embedding ? ' 🔍' : '';
 
     await interaction.editReply(
-      `Memory stored successfully!${ragStatus}\\n**Type:** ${contextType}\\n**ID:** \`${memory.id}\`${expiresText}`
+      `User memory stored successfully!${ragStatus}\n**Type:** ${contextType}\n**ID:** \`${memory.id}\`${expiresText}`
     );
   }
 }
