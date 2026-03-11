@@ -28,7 +28,6 @@ import {
   ButtonInteraction,
   ModalSubmitInteraction
 } from 'discord.js';
-import { createHash } from 'crypto';
 import dns from 'node:dns';
 import { ConfigLoader, logger } from '@silo/core';
 import { ProviderRegistry } from './providers/registry';
@@ -42,10 +41,20 @@ import {
   contentSanitizer,
   inactivityScheduler,
   deploymentDetector,
-  systemPromptManager
+  systemPromptManager,
+  composeSystemPromptWithSafety,
+  resolvePromptPolicy,
+  safetyMonitor
 } from './security';
 import { QuotaMiddleware } from './middleware/quota';
 import { CostAggregator } from './services/cost-aggregator';
+import { selectMemoryContext } from './services/memory-selector';
+import {
+  assembleConversationContext,
+  buildImageSummaryBlock
+} from './services/conversation-context';
+import { resolveReplyContext } from './services/reply-context';
+import { decideVisionRouting, enforceVisionRoutingPrecheck } from './services/vision-routing';
 
 // Global error handlers to prevent silent crashes
 process.on('uncaughtException', error => {
@@ -148,6 +157,13 @@ async function main() {
   });
   await db.connect();
 
+  const migrationSummary = db.getLastMigrationSummary();
+  if (migrationSummary) {
+    logger.info(
+      `Migration summary: applied=${migrationSummary.applied}, skipped=${migrationSummary.skipped}, baselineMarked=${migrationSummary.baselineMarked}, total=${migrationSummary.totalFiles}, succeeded=${migrationSummary.succeeded}`
+    );
+  }
+
   // Initialize admin database
   const adminDb = new AdminAdapter(db.pool);
   const permissions = new PermissionManager(adminDb);
@@ -182,6 +198,29 @@ async function main() {
   // Initialize health server
   const healthServer = new HealthServer(client, db);
   await healthServer.start();
+
+  const notifySafetyAlert = async (guildId: string, messageContent: string): Promise<void> => {
+    try {
+      const alertChannelId = await adminDb.getAlertsChannel(guildId);
+      if (!alertChannelId) {
+        return;
+      }
+
+      const guild = client.guilds.cache.get(guildId);
+      if (!guild) {
+        return;
+      }
+
+      const channel = await guild.channels.fetch(alertChannelId);
+      if (!channel || !channel.isTextBased()) {
+        return;
+      }
+
+      await channel.send({ content: messageContent });
+    } catch (error) {
+      logger.error(`Failed to send safety alert for guild ${guildId}:`, error);
+    }
+  };
 
   // Start periodic cost aggregation
   costAggregator.start();
@@ -298,6 +337,18 @@ async function main() {
     if (!message.mentions.has(client.user!.id)) return;
     if (!message.guildId) return;
 
+    if (safetyMonitor.isKillSwitchActive(message.guildId)) {
+      logger.warn(
+        `Safety kill switch active for guild ${message.guildId}; blocked request from user ${message.author.id}`
+      );
+      await message.reply({
+        content:
+          '⚠️ Safety mode is temporarily active due to repeated policy violations. Please try again in a few minutes.',
+        allowedMentions: { repliedUser: false }
+      });
+      return;
+    }
+
     // Update guild activity
     guildManager.updateActivity(message.guildId).catch(err => {
       logger.error('Failed to update guild activity:', err);
@@ -311,7 +362,8 @@ async function main() {
       const imageAttachments = message.attachments.filter(
         att => att.contentType?.startsWith('image/') && att.size <= 20 * 1024 * 1024
       );
-      const hasImages = imageAttachments.size > 0;
+      const currentImageUrls = imageAttachments.map(att => att.url);
+      const replyContext = await resolveReplyContext(message, 2);
 
       // === Phase 1: Gates (moderation + quota — can early-exit) ===
       // Run content moderation and member fetch in parallel (independent operations)
@@ -323,6 +375,23 @@ async function main() {
       const { processedContent, moderation } = moderationResult;
 
       if (!moderation.allowed) {
+        const decision = safetyMonitor.recordIncident({
+          guildId: message.guildId,
+          incidentType: 'input_blocked',
+          categories: moderation.flaggedCategories
+        });
+
+        if (decision.shouldAlert) {
+          const config = safetyMonitor.getConfig();
+          const killSwitchMessage = decision.killSwitchActivated
+            ? ` Kill switch activated until ${decision.killSwitchUntil?.toISOString()}.`
+            : '';
+          void notifySafetyAlert(
+            message.guildId,
+            `[SAFETY] Block-rate threshold reached (${decision.blockedCountInWindow}/${config.blockThreshold} within ${Math.floor(config.windowMs / 60000)}m).${killSwitchMessage}`
+          );
+        }
+
         await message.reply({
           content: '⚠️ Your message was blocked due to content policy violations.',
           allowedMentions: { repliedUser: false }
@@ -336,6 +405,13 @@ async function main() {
         );
       }
 
+      const conversationContext = assembleConversationContext({
+        processedContent,
+        currentImageUrls,
+        replyContext,
+        maxVisionTargets: 2
+      });
+
       logger.info(`[Perf] Gates completed in ${Date.now() - requestStart}ms`);
 
       // === Phase 2: Config lookups (parallel — both are independent DB reads) ===
@@ -348,13 +424,19 @@ async function main() {
       const preferredProvider = serverConfig?.defaultProvider;
       const textProvider = providers.getTextProvider(preferredProvider || undefined);
       const visionProvider = providers.getVisionProvider(preferredProvider || undefined);
-      const useVision = hasImages && !!visionProvider;
+      const visionRouting = decideVisionRouting(conversationContext, visionProvider);
+      const useVision = visionRouting.useVision;
+
+      const blockedByVisionPrecheck = await enforceVisionRoutingPrecheck(message, visionRouting);
+      if (blockedByVisionPrecheck) {
+        return;
+      }
 
       let estimatedTokens = 0;
       let visionUserLimit: number | undefined;
 
       if (useVision) {
-        const estimatedVisionTokens = imageAttachments.size * 1000;
+        const estimatedVisionTokens = visionRouting.estimatedVisionTokens;
         const visionQuotaCheck = await quotaMiddleware.checkQuota(
           message.guildId,
           message.author.id,
@@ -421,13 +503,34 @@ async function main() {
       const defaultPrompt =
         providerPrompts[textProvider.name] ||
         'You are a helpful Discord bot assistant. Be helpful, friendly, and conversational.';
-      const systemPrompt = promptConfig.prompt || defaultPrompt;
+      const promptPolicy = resolvePromptPolicy({
+        customPrompt: promptConfig.prompt,
+        defaultPrompt,
+        allowedPromptHashesRaw: process.env.SAFETY_ALLOWED_PROMPT_HASHES
+      });
+      const systemPrompt = composeSystemPromptWithSafety(promptPolicy.effectivePrompt);
+      const conciseResponseInstruction =
+        '\n\nResponse style rule: Keep responses concise and clear by default (2-4 sentences). Only provide longer responses when the user explicitly asks for detail.';
+      const userUsedEmoji = /\p{Extended_Pictographic}/u.test(processedContent);
+      const userRequestedRichFormatting =
+        /\b(markdown|format|formatted|bullet|bulleted|list|table|code\s*block|bold|italic|emoji|emojis|styled|style)\b/i.test(
+          processedContent
+        );
+      const plainStyleInstruction = userRequestedRichFormatting
+        ? ''
+        : '\n\nFormatting rule: Use plain text by default. Avoid markdown styling (bold/italics/lists) and avoid emojis unless the user explicitly asks for them.';
 
-      // Compute prompt hash for conversation isolation
-      // 'default' for provider defaults, SHA256 hash for custom prompts
-      const promptHash = promptConfig.prompt
-        ? createHash('sha256').update(promptConfig.prompt).digest('hex').substring(0, 16)
-        : 'default';
+      const promptHash = promptPolicy.promptHash;
+
+      logger.info(
+        `Prompt context for guild ${message.guildId}: promptHash=${promptHash}, source=${promptPolicy.usedCustomPrompt ? 'custom' : 'default'}, customPromptHash=${promptPolicy.customPromptHash || 'none'}`
+      );
+
+      if (promptPolicy.rejectedCustomPrompt) {
+        logger.warn(
+          `Rejected custom prompt hash for guild ${message.guildId}: ${promptPolicy.customPromptHash}. Falling back to default prompt policy.`
+        );
+      }
 
       if (promptConfig.warnings.length > 0) {
         logger.warn(
@@ -439,120 +542,213 @@ async function main() {
 
       // === Phase 3: Data fetch (parallel — history, memory, store user msg) ===
       const dataStart = Date.now();
+      const guildId = message.guildId;
 
       // Build memory retrieval as a parallel task
-      // Skip the expensive OpenAI Embeddings API call if user has no memories
-      const memoryPromise = (async (): Promise<string> => {
+      const memoryPromise = (async () => {
         try {
-          if (providers && providers.getEmbeddingProvider()) {
-            // Fast DB check: does this user have any memories at all?
-            const memoryCount = await db.getUserMemoryCount(message.author.id);
-            if (memoryCount === 0) return '';
+          const selection = await selectMemoryContext({
+            db,
+            registry: providers,
+            config,
+            serverId: guildId,
+            userId: message.author.id,
+            content: conversationContext.mergedUserContent
+          });
 
-            const embeddingProvider = providers.getEmbeddingProvider();
-            const embedding = await embeddingProvider.generateEmbeddings([processedContent]);
-            if (embedding && embedding.length > 0 && embedding[0]) {
-              const relevantMemories = await db.getRelevantUserMemoriesForContext(
-                message.author.id,
-                embedding[0],
-                undefined,
-                5
+          if (selection.selected.length > 0) {
+            if (selection.usedFallback) {
+              logger.info(
+                `Retrieved ${selection.selected.length} fallback memories for user ${message.author.id}`
               );
-
-              if (relevantMemories.length > 0) {
-                let ctx = '\n\n**User Memories:**\n';
-                for (const memory of relevantMemories) {
-                  ctx += `- [${memory.contextType}] ${memory.memoryContent}\n`;
-                }
-                logger.info(
-                  `Retrieved ${relevantMemories.length} relevant memories for user ${message.author.id}`
-                );
-                return ctx;
-              }
+            } else {
+              logger.info(
+                `Retrieved ${selection.selected.length} lore-triggered memories for user ${message.author.id} (mentionConfidence=${selection.mentionConfidence.toFixed(2)})`
+              );
             }
           }
+
+          return selection;
         } catch (error) {
-          logger.warn('Failed to retrieve user memories:', error);
+          logger.warn('Failed to retrieve memories:', error);
+          return {
+            context: '',
+            selected: [],
+            shouldMention: false,
+            mentionConfidence: 0,
+            usedFallback: false
+          };
         }
-        return '';
       })();
 
-      // Run history fetch, memory retrieval, and user message store in parallel
-      const [history, memoryContext] = await Promise.all([
+      // Run history fetch and memory retrieval in parallel
+      const [history, memorySelection] = await Promise.all([
         db.getConversationHistory(message.channelId, promptHash, 10),
-        memoryPromise,
-        db.storeConversationMessage({
-          guildId: message.guildId,
-          channelId: message.channelId,
-          userId: message.author.id,
-          promptHash,
-          role: 'user',
-          content: processedContent
-        })
+        memoryPromise
       ]);
 
       const messages = history.map(msg => ({
         role: msg.role,
-        content: msg.content
+        content: [
+          msg.role === 'user' ? `[User: ${msg.userId}] ${msg.content}` : msg.content,
+          msg.referencedContent ? `[Referenced context]\n${msg.referencedContent}` : '',
+          msg.imageSummary ? `[Image context]\n${msg.imageSummary}` : ''
+        ]
+          .filter(Boolean)
+          .join('\n\n')
       }));
+
+      const memoryContext = memorySelection.context;
+      const hasLoreMemorySelected = memorySelection.selected.some(
+        memory => memory.contextType === 'lore'
+      );
+      const memoryMentionInstruction = memorySelection.shouldMention
+        ? hasLoreMemorySelected
+          ? '\n\nMemory usage rule: If lore memory context is relevant, prioritize it as canonical and answer consistently with it. Do not contradict the provided lore.'
+          : '\n\nMemory usage rule: If memory context strongly matches the user request, you may reference it briefly and naturally.'
+        : '\n\nMemory usage rule: Use memory context silently when helpful. Do not explicitly say you are recalling memory unless the user directly asks.';
+      const memoryConflictInstruction =
+        "\n\nMemory conflict rule: If memories conflict with each other or with the user's latest message, state uncertainty and ask a clarifying question instead of guessing.";
+
+      const memoryItemCount = (memoryContext.match(/\n- \[/g) || []).length;
+      if (memoryItemCount > 0) {
+        const selectedSummary = memorySelection.selected
+          .map(memory => {
+            const scope = 'serverId' in memory ? 'server' : 'user';
+            return `${scope}:${memory.id.slice(0, 8)}:${memory.contextType}`;
+          })
+          .join(', ');
+        logger.info(
+          `Injected ${memoryItemCount} memories into prompt for user ${message.author.id} (${memoryContext.length} chars): ${selectedSummary}`
+        );
+      }
 
       logger.info(`[Perf] Data fetched in ${Date.now() - dataStart}ms`);
 
       // === Phase 4: LLM call ===
       const llmStart = Date.now();
       let usedVision = false;
-      const MAX_TEXT_RESPONSE_TOKENS = 350;
-      const MAX_VISION_RESPONSE_TOKENS = 350;
-      const VISION_MEMORY_CONTEXT_MAX_CHARS = 1000;
+      let visionTokensUsed = 0;
+      const MAX_TEXT_RESPONSE_TOKENS = 180;
+      const imageSummaries: string[] = [];
 
-      const response = useVision
-        ? await (async () => {
-            const imageUrls = imageAttachments.map(att => att.url);
-            const userVisionPrompt = processedContent || 'Describe this image.';
-            const limitedMemoryContext =
-              memoryContext.length > VISION_MEMORY_CONTEXT_MAX_CHARS
-                ? `${memoryContext.slice(0, VISION_MEMORY_CONTEXT_MAX_CHARS)}\n- [memory context truncated for token efficiency]`
-                : memoryContext;
-            const visionPrompt = `${systemPrompt}${limitedMemoryContext}\n\n${userVisionPrompt}`;
-            const visionResult = await visionProvider.analyzeImage!(
-              imageUrls[0]!,
-              imageUrls.length > 1
-                ? `${visionPrompt}\n\nUser attached ${imageUrls.length} images; analyze the first image in detail.`
-                : visionPrompt,
-              { maxTokens: MAX_VISION_RESPONSE_TOKENS }
-            );
-            usedVision = true;
-            return {
-              content: visionResult.content,
-              usage: visionResult.usage,
-              model: `${visionProvider.name}-vision`
-            };
-          })()
-        : await textProvider.generateText(
-            [
-              {
-                role: 'system',
-                content: systemPrompt + memoryContext
-              },
-              ...messages,
-              {
-                role: 'user',
-                content: processedContent
-              }
-            ],
-            {
-              maxTokens: MAX_TEXT_RESPONSE_TOKENS
-            }
-          );
+      if (useVision && visionProvider?.analyzeImage) {
+        for (const [index, target] of conversationContext.visionTargets.entries()) {
+          const sourceLabel =
+            target.source === 'reply' && target.replyDepth
+              ? `reply_level_${target.replyDepth}`
+              : 'current_message';
+          const visionPrompt = [
+            'Summarize this image for downstream conversation grounding.',
+            'Keep output factual, concise, and neutral (max 3 sentences).',
+            'Include visible text if present.',
+            `Source: ${sourceLabel}.`,
+            `User request: ${conversationContext.mergedUserContent || 'Describe image context.'}`
+          ].join('\n');
+
+          const visionResult = await visionProvider.analyzeImage(target.url, visionPrompt, {
+            maxTokens: 140
+          });
+
+          const normalizedSummary = visionResult.content.replace(/\s+/g, ' ').trim();
+          imageSummaries.push(`[${index + 1}|${sourceLabel}] ${normalizedSummary}`);
+          visionTokensUsed +=
+            visionResult.usage?.totalTokens ||
+            visionResult.usage?.completionTokens ||
+            visionResult.usage?.promptTokens ||
+            120;
+        }
+
+        usedVision = imageSummaries.length > 0;
+      }
+
+      const imageSummaryBlock = buildImageSummaryBlock(imageSummaries);
+      const mergedUserPrompt = [conversationContext.mergedUserContent, imageSummaryBlock]
+        .filter(Boolean)
+        .join('\n\n');
+
+      const response = await textProvider.generateText(
+        [
+          {
+            role: 'system',
+            content: `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${memoryMentionInstruction}${memoryConflictInstruction}${memoryContext}`
+          },
+          ...messages,
+          {
+            role: 'user',
+            content: mergedUserPrompt || processedContent
+          }
+        ],
+        {
+          maxTokens: MAX_TEXT_RESPONSE_TOKENS
+        }
+      );
 
       logger.info(
         `[Perf] LLM responded in ${Date.now() - llmStart}ms (model: ${response.model || 'unknown'}${usedVision ? ', vision' : ''})`
       );
 
-      // === Phase 5: Reply immediately, then fire-and-forget post-LLM writes ===
+      // === Phase 5: Moderate output, reply, then fire-and-forget post-LLM writes ===
       // Discord has a 2000 character limit for messages
       const MAX_MESSAGE_LENGTH = 2000;
       let responseContent = response.content;
+
+      const assistantModeration = await contentSanitizer.moderateContent(
+        response.content,
+        message.guildId,
+        message.author.id,
+        'message',
+        { failClosedOnError: true }
+      );
+
+      if (!assistantModeration.allowed) {
+        const incidentType = assistantModeration.flaggedCategories.includes('api_error_fail_closed')
+          ? 'moderation_api_fail_closed'
+          : 'output_blocked';
+        const decision = safetyMonitor.recordIncident({
+          guildId: message.guildId,
+          incidentType,
+          categories: assistantModeration.flaggedCategories
+        });
+
+        if (decision.shouldAlert) {
+          const config = safetyMonitor.getConfig();
+          const killSwitchMessage = decision.killSwitchActivated
+            ? ` Kill switch activated until ${decision.killSwitchUntil?.toISOString()}.`
+            : '';
+          void notifySafetyAlert(
+            message.guildId,
+            `[SAFETY] Assistant output blocked (${decision.blockedCountInWindow}/${config.blockThreshold} within ${Math.floor(config.windowMs / 60000)}m).${killSwitchMessage}`
+          );
+        }
+
+        logger.warn(
+          `Assistant output blocked for guild ${message.guildId}, user ${message.author.id}: ${assistantModeration.flaggedCategories.join(', ')}`
+        );
+        responseContent =
+          'I can’t help with that request. Please rephrase and I can provide a safer alternative.';
+      } else if (assistantModeration.action === 'warned') {
+        safetyMonitor.recordIncident({
+          guildId: message.guildId,
+          incidentType: 'output_warned',
+          categories: assistantModeration.flaggedCategories
+        });
+        logger.warn(
+          `Assistant output warning for guild ${message.guildId}, user ${message.author.id}: ${assistantModeration.flaggedCategories.join(', ')}`
+        );
+      }
+
+      if (!userRequestedRichFormatting) {
+        responseContent = responseContent
+          .replace(/(\*\*|__|\*|_|~~|`)/g, '')
+          .replace(/^#{1,6}\s+/gm, '')
+          .replace(/^\s*[-*+]\s+/gm, '')
+          .replace(/\n{3,}/g, '\n\n');
+
+        if (!userUsedEmoji) {
+          responseContent = responseContent.replace(/\p{Extended_Pictographic}/gu, '');
+        }
+      }
 
       if (responseContent.length > MAX_MESSAGE_LENGTH) {
         // Truncate and add ellipsis
@@ -567,25 +763,50 @@ async function main() {
         allowedMentions: { repliedUser: false }
       });
 
+      logger.info(
+        `Response trace: guild=${message.guildId}, user=${message.author.id}, promptHash=${promptHash}, model=${response.model || 'unknown'}, usedVision=${usedVision}, memoryItems=${memorySelection.selected.length}, memoryMode=${memorySelection.usedFallback ? 'fallback' : 'strong_or_none'}, moderationAction=${assistantModeration.action}`
+      );
+
       logger.info(`[Perf] Total response time: ${Date.now() - requestStart}ms`);
 
       // Fire-and-forget: post-LLM writes don't block the user-facing response
-      const actualTokens = response.usage?.completionTokens || response.usage?.totalTokens || 500;
+      const actualTokens = response.usage?.totalTokens || response.usage?.completionTokens || 500;
+      const conversationWrites = [
+        db.storeConversationMessage({
+          guildId: message.guildId,
+          channelId: message.channelId,
+          userId: message.author.id,
+          discordMessageId: message.id,
+          promptHash,
+          role: 'user',
+          content: processedContent,
+          replyToMessageId: conversationContext.directReplyMessageId,
+          replyToUserId: conversationContext.directReplyUserId,
+          referencedContent: conversationContext.referencedContent || null,
+          imageSummary: imageSummaryBlock || null
+        }),
+        db.storeConversationMessage({
+          guildId: message.guildId,
+          channelId: message.channelId,
+          userId: message.author.id,
+          promptHash,
+          role: 'assistant',
+          content: responseContent,
+          replyToMessageId: conversationContext.directReplyMessageId,
+          replyToUserId: conversationContext.directReplyUserId,
+          referencedContent: conversationContext.referencedContent || null,
+          imageSummary: imageSummaryBlock || null
+        })
+      ];
+
       if (usedVision) {
         Promise.all([
-          db.storeConversationMessage({
-            guildId: message.guildId,
-            channelId: message.channelId,
-            userId: message.author.id,
-            promptHash,
-            role: 'assistant',
-            content: response.content
-          }),
+          ...conversationWrites,
           quotaMiddleware.recordUsage(
             message.guildId,
             message.author.id,
             'vision_tokens',
-            actualTokens,
+            Math.max(visionTokensUsed, actualTokens),
             visionUserLimit
           )
         ]).catch(err => {
@@ -593,14 +814,7 @@ async function main() {
         });
       } else {
         Promise.all([
-          db.storeConversationMessage({
-            guildId: message.guildId,
-            channelId: message.channelId,
-            userId: message.author.id,
-            promptHash,
-            role: 'assistant',
-            content: response.content
-          }),
+          ...conversationWrites,
           quotaMiddleware.recordUsage(
             message.guildId,
             message.author.id,

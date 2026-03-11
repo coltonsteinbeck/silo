@@ -18,6 +18,7 @@ import type {
  */
 export class XAIProvider implements TextProvider, ImageProvider {
   name = 'xai';
+  capabilities = { vision: true, maxImagesPerRequest: 1 };
   private client: OpenAI | null = null;
   private defaultModel: string;
 
