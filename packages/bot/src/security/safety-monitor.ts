@@ -83,7 +83,7 @@ function getRuntimeEnv(): Record<string, string | undefined> {
 export class SafetyMonitor {
   private readonly state = new Map<string, GuildSafetyState>();
 
-  constructor(private readonly config: SafetyMonitorConfig = DEFAULT_CONFIG) { }
+  constructor(private readonly config: SafetyMonitorConfig = DEFAULT_CONFIG) {}
 
   getConfig(): SafetyMonitorConfig {
     return { ...this.config };

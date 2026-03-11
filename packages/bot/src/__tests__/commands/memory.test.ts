@@ -186,7 +186,7 @@ describe('UserMemorySetCommand', () => {
     });
 
     test('continues without RAG indicator when embedding generation throws', async () => {
-      const debugSpy = mock(() => { });
+      const debugSpy = mock(() => {});
       const originalDebug = logger.debug;
       logger.debug = debugSpy as any;
 
@@ -383,7 +383,7 @@ describe('ServerMemorySetCommand', () => {
     });
 
     test('continues without embedding when embedding generation throws', async () => {
-      const debugSpy = mock(() => { });
+      const debugSpy = mock(() => {});
       const originalDebug = logger.debug;
       logger.debug = debugSpy as any;
 
@@ -492,7 +492,7 @@ describe('ServerMemorySetCommand', () => {
     });
 
     test('logs memory creation details including id, guild, actor, and embedding usage', async () => {
-      const infoSpy = mock(() => { });
+      const infoSpy = mock(() => {});
       const originalInfo = logger.info;
       logger.info = infoSpy as any;
 
@@ -530,10 +530,10 @@ describe('ClearMemoryCommand', () => {
 
   beforeEach(() => {
     mockDb = createMockDatabaseAdapter();
-    mockDb.deleteUserMemory = mock(async () => { });
+    mockDb.deleteUserMemory = mock(async () => {});
     mockDb.getUserMemories = mock(async () => [{ id: 'mem1' }, { id: 'mem2' }]);
     mockDb.getServerMemories = mock(async () => [{ id: 'server-mem1' }, { id: 'server-mem2' }]);
-    mockDb.deleteServerMemory = mock(async () => { });
+    mockDb.deleteServerMemory = mock(async () => {});
     mockDb.findUserMemoryByIdPrefix = mock(async (userId: string, idPrefix: string) => ({
       id: `${idPrefix}-full-uuid`,
       userId,

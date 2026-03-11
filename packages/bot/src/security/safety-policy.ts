@@ -14,13 +14,10 @@ export function composeSystemPromptWithSafety(basePrompt: string): string {
   const hasFullPolicy = normalizedBase.includes(immutablePolicy);
   const markerPattern = new RegExp(`\\[${IMMUTABLE_SAFETY_POLICY_MARKER}\\]`, 'g');
 
-  const cleanedNormalizedBase = (hasMarker || hasFullPolicy
-    ? normalizedBase
-      .split(immutablePolicy)
-      .join('')
-      .replace(markerPattern, '')
-      .trim()
-    : normalizedBase
+  const cleanedNormalizedBase = (
+    hasMarker || hasFullPolicy
+      ? normalizedBase.split(immutablePolicy).join('').replace(markerPattern, '').trim()
+      : normalizedBase
   ).trim();
 
   if (!cleanedNormalizedBase) {
