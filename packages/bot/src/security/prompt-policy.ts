@@ -8,11 +8,11 @@ export interface PromptPolicyResolution {
   customPromptHash: string | null;
 }
 
-function hashPrompt(prompt: string): string {
+export function hashPrompt(prompt: string): string {
   return createHash('sha256').update(prompt).digest('hex').substring(0, 16);
 }
 
-function parseAllowedPromptHashes(raw: string | undefined): Set<string> {
+export function parseAllowedPromptHashes(raw: string | undefined): Set<string> {
   if (!raw) {
     return new Set();
   }
@@ -21,7 +21,7 @@ function parseAllowedPromptHashes(raw: string | undefined): Set<string> {
     raw
       .split(',')
       .map(item => item.trim())
-      .filter(Boolean)
+      .filter(item => /^[a-f0-9]{16}$/i.test(item))
   );
 }
 

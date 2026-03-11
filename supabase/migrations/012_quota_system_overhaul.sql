@@ -133,7 +133,9 @@ BEGIN
       AND user_id = p_user_id 
       AND usage_date = CURRENT_DATE
       AND text_tokens_used + p_amount <= p_user_limit
-    RETURNING TRUE, text_tokens_used, p_user_limit - text_tokens_used
+    RETURNING TRUE AS success,
+              text_tokens_used AS new_total,
+              (p_user_limit - text_tokens_used) AS remaining
     INTO v_result;
     
   ELSIF p_resource = 'images' THEN
@@ -145,7 +147,9 @@ BEGIN
       AND user_id = p_user_id 
       AND usage_date = CURRENT_DATE
       AND images_used + p_amount <= p_user_limit
-    RETURNING TRUE, images_used, p_user_limit - images_used
+    RETURNING TRUE AS success,
+              images_used AS new_total,
+              (p_user_limit - images_used) AS remaining
     INTO v_result;
     
   ELSIF p_resource = 'voice_minutes' THEN
@@ -157,7 +161,9 @@ BEGIN
       AND user_id = p_user_id 
       AND usage_date = CURRENT_DATE
       AND voice_minutes_used + p_amount <= p_user_limit
-    RETURNING TRUE, voice_minutes_used, p_user_limit - voice_minutes_used
+    RETURNING TRUE AS success,
+              voice_minutes_used AS new_total,
+              (p_user_limit - voice_minutes_used) AS remaining
     INTO v_result;
   END IF;
 

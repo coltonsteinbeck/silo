@@ -1,6 +1,7 @@
 import { describe, test, expect } from 'bun:test';
 import {
   IMMUTABLE_SAFETY_POLICY,
+  IMMUTABLE_SAFETY_POLICY_MARKER,
   composeSystemPromptWithSafety
 } from '../../security/safety-policy';
 
@@ -26,5 +27,12 @@ describe('safety-policy', () => {
 
     expect(composed).toBe(existing);
     expect(composed.match(/SAFETY_POLICY_V1/g)?.length).toBe(1);
+  });
+
+  test('appends full policy when only marker is provided', () => {
+    const composed = composeSystemPromptWithSafety(`  ${IMMUTABLE_SAFETY_POLICY_MARKER}  `);
+
+    expect(composed).toContain(IMMUTABLE_SAFETY_POLICY_MARKER);
+    expect(composed).toContain('System safety rules (immutable):');
   });
 });
