@@ -186,7 +186,7 @@ describe('UserMemorySetCommand', () => {
     });
 
     test('continues without RAG indicator when embedding generation throws', async () => {
-      const debugSpy = mock(() => {});
+      const debugSpy = mock(() => { });
       const originalDebug = logger.debug;
       logger.debug = debugSpy as any;
 
@@ -383,7 +383,7 @@ describe('ServerMemorySetCommand', () => {
     });
 
     test('continues without embedding when embedding generation throws', async () => {
-      const debugSpy = mock(() => {});
+      const debugSpy = mock(() => { });
       const originalDebug = logger.debug;
       logger.debug = debugSpy as any;
 
@@ -420,8 +420,8 @@ describe('ServerMemorySetCommand', () => {
     test('builds metadata using entities, trust/priority lookup, and conflict resolver', async () => {
       const originalExtract = serverMemorySetInternals.extractLoreEntities;
       const originalResolve = serverMemorySetInternals.resolveServerConflictKey;
-      const originalPriorityLore = serverMemorySetInternals.SERVER_CONTEXT_PRIORITY.lore;
-      const originalTrustLore = serverMemorySetInternals.SERVER_CONTEXT_TRUST.lore;
+      const originalPriorityLore = serverMemorySetInternals.SERVER_CONTEXT_PRIORITY.lore ?? 94;
+      const originalTrustLore = serverMemorySetInternals.SERVER_CONTEXT_TRUST.lore ?? 0.92;
 
       serverMemorySetInternals.extractLoreEntities = mock(() => ['dragon', 'citadel']) as any;
       serverMemorySetInternals.resolveServerConflictKey = mock(() => 'dragon') as any;
@@ -492,7 +492,7 @@ describe('ServerMemorySetCommand', () => {
     });
 
     test('logs memory creation details including id, guild, actor, and embedding usage', async () => {
-      const infoSpy = mock(() => {});
+      const infoSpy = mock(() => { });
       const originalInfo = logger.info;
       logger.info = infoSpy as any;
 
@@ -511,7 +511,8 @@ describe('ServerMemorySetCommand', () => {
 
       await command.execute(interaction as any);
 
-      const logLine = String(infoSpy.mock.calls[0]?.[0] || '');
+      const calls = infoSpy.mock.calls as Array<unknown[]>;
+      const logLine = String(calls[0]?.[0] ?? '');
       expect(logLine).toContain('id=new-server-memory-id');
       expect(logLine).toContain('guild=123456789');
       expect(logLine).toContain('actor=111222333');
@@ -530,10 +531,10 @@ describe('ClearMemoryCommand', () => {
 
   beforeEach(() => {
     mockDb = createMockDatabaseAdapter();
-    mockDb.deleteUserMemory = mock(async () => {});
+    mockDb.deleteUserMemory = mock(async () => { });
     mockDb.getUserMemories = mock(async () => [{ id: 'mem1' }, { id: 'mem2' }]);
     mockDb.getServerMemories = mock(async () => [{ id: 'server-mem1' }, { id: 'server-mem2' }]);
-    mockDb.deleteServerMemory = mock(async () => {});
+    mockDb.deleteServerMemory = mock(async () => { });
     mockDb.findUserMemoryByIdPrefix = mock(async (userId: string, idPrefix: string) => ({
       id: `${idPrefix}-full-uuid`,
       userId,
