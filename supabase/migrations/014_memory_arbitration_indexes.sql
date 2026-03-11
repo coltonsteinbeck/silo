@@ -41,3 +41,13 @@ COMMENT ON INDEX idx_user_memory_trust_score IS 'Expression index for metadata.t
 COMMENT ON INDEX idx_server_memory_trust_score IS 'Expression index for metadata.trustScore used by memory trust-based ranking.';
 COMMENT ON INDEX idx_user_memory_source_priority IS 'Expression index for metadata.sourcePriority used by source-priority arbitration.';
 COMMENT ON INDEX idx_server_memory_source_priority IS 'Expression index for metadata.sourcePriority used by source-priority arbitration.';
+
+-- Rollback (manual down):
+-- DROP INDEX IF EXISTS idx_user_memory_metadata_gin;
+-- DROP INDEX IF EXISTS idx_server_memory_metadata_gin;
+-- DROP INDEX IF EXISTS idx_user_memory_conflict_key;
+-- DROP INDEX IF EXISTS idx_server_memory_conflict_key;
+-- DROP INDEX IF EXISTS idx_user_memory_trust_score;
+-- DROP INDEX IF EXISTS idx_server_memory_trust_score;
+-- DROP INDEX IF EXISTS idx_user_memory_source_priority;
+-- DROP INDEX IF EXISTS idx_server_memory_source_priority;

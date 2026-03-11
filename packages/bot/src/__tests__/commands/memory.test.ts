@@ -6,6 +6,7 @@
 
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
 import { createMockInteraction, createMockDatabaseAdapter } from '@silo/core/test-setup';
+import { logger } from '@silo/core';
 import { ViewMemoryCommand } from '../../commands/memory/view';
 import { UserMemorySetCommand } from '../../commands/memory/user-set';
 import { ServerMemorySetCommand } from '../../commands/memory/server-set';
@@ -141,6 +142,7 @@ describe('UserMemorySetCommand', () => {
   let command: UserMemorySetCommand;
 
   let mockDb: any;
+  let mockRegistry: any;
 
   beforeEach(() => {
     mockDb = createMockDatabaseAdapter();
@@ -151,7 +153,12 @@ describe('UserMemorySetCommand', () => {
         createdAt: new Date()
       })
     );
-    command = new UserMemorySetCommand(mockDb);
+    mockRegistry = {
+      getEmbeddingProvider: mock(() => ({
+        generateEmbeddings: mock(async () => [[0.1, 0.2, 0.3]])
+      }))
+    };
+    command = new UserMemorySetCommand(mockDb, mockRegistry);
   });
 
   describe('data', () => {
@@ -172,8 +179,61 @@ describe('UserMemorySetCommand', () => {
       await command.execute(interaction as any);
 
       expect(mockDb.storeUserMemory).toHaveBeenCalled();
+      expect(mockDb.storeUserMemory.mock.calls[0]?.[1]).toEqual([0.1, 0.2, 0.3]);
       const reply = interaction._getReplies()[0] as string;
+      expect(reply).toContain('🔍');
       expect(reply).toContain('User memory stored successfully');
+    });
+
+    test('continues without RAG indicator when embedding generation throws', async () => {
+      const debugSpy = mock(() => { });
+      const originalDebug = logger.debug;
+      logger.debug = debugSpy as any;
+
+      mockRegistry.getEmbeddingProvider = mock(() => ({
+        generateEmbeddings: mock(async () => {
+          throw new Error('embedding unavailable');
+        })
+      }));
+
+      command = new UserMemorySetCommand(mockDb, mockRegistry);
+
+      const interaction = createMockInteraction({
+        options: {
+          content: 'I like concise answers',
+          type: 'preference'
+        }
+      });
+
+      await command.execute(interaction as any);
+
+      expect(debugSpy).toHaveBeenCalled();
+      expect(mockDb.storeUserMemory.mock.calls[0]?.[1]).toBeUndefined();
+      const reply = interaction._getReplies()[0] as string;
+      expect(reply).not.toContain('🔍');
+
+      logger.debug = originalDebug;
+    });
+
+    test.each([
+      ['conversation', 0.58],
+      ['preference', 0.82],
+      ['summary', 0.68],
+      ['temporary', 0.45],
+      ['mood', 0.78]
+    ])('uses trust score mapping for context type %s', async (contextType, trustScore) => {
+      const interaction = createMockInteraction({
+        options: {
+          content: 'Profile memory content',
+          type: contextType
+        }
+      });
+
+      await command.execute(interaction as any);
+
+      const payload = mockDb.storeUserMemory.mock.calls[0]?.[0];
+      expect(payload.metadata.trustScore).toBe(trustScore);
+      expect(payload.contextType).toBe(contextType);
     });
 
     test('stores memory with expiration', async () => {
@@ -199,6 +259,7 @@ describe('ServerMemorySetCommand', () => {
 
   let mockDb: any;
   let mockPermissions: any;
+  let mockRegistry: any;
 
   beforeEach(() => {
     mockDb = createMockDatabaseAdapter();
@@ -206,7 +267,12 @@ describe('ServerMemorySetCommand', () => {
     mockPermissions = {
       canModerate: mock(async () => true)
     };
-    command = new ServerMemorySetCommand(mockDb, mockPermissions);
+    mockRegistry = {
+      getEmbeddingProvider: mock(() => ({
+        generateEmbeddings: mock(async () => [[0.3, 0.2, 0.1]])
+      }))
+    };
+    command = new ServerMemorySetCommand(mockDb, mockPermissions, mockRegistry);
   });
 
   describe('data', () => {
@@ -245,10 +311,10 @@ describe('ClearMemoryCommand', () => {
 
   beforeEach(() => {
     mockDb = createMockDatabaseAdapter();
-    mockDb.deleteUserMemory = mock(async () => {});
+    mockDb.deleteUserMemory = mock(async () => { });
     mockDb.getUserMemories = mock(async () => [{ id: 'mem1' }, { id: 'mem2' }]);
     mockDb.getServerMemories = mock(async () => [{ id: 'server-mem1' }, { id: 'server-mem2' }]);
-    mockDb.deleteServerMemory = mock(async () => {});
+    mockDb.deleteServerMemory = mock(async () => { });
     mockDb.findUserMemoryByIdPrefix = mock(async (userId: string, idPrefix: string) => ({
       id: `${idPrefix}-full-uuid`,
       userId,
