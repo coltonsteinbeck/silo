@@ -21,11 +21,12 @@ describe('safety-policy', () => {
     expect(composed).toBe(IMMUTABLE_SAFETY_POLICY.trim());
   });
 
-  test('does not duplicate policy marker when already present', () => {
+  test('strips existing policy copy and appends canonical immutable policy once', () => {
     const existing = `Custom\n\n${IMMUTABLE_SAFETY_POLICY.trim()}`;
     const composed = composeSystemPromptWithSafety(existing);
 
-    expect(composed).toBe(existing);
+    expect(composed).toContain('Custom');
+    expect(composed).toContain(IMMUTABLE_SAFETY_POLICY.trim());
     expect(composed.match(/SAFETY_POLICY_V1/g)?.length).toBe(1);
   });
 

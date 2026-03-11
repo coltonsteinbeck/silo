@@ -23,7 +23,7 @@ function getOpenAIClient(): OpenAI {
 }
 
 export type ContentType = 'prompt' | 'memory' | 'feedback' | 'message';
-export type ModerationAction = 'allowed' | 'blocked' | 'warned';
+export type ModerationAction = 'allowed' | 'blocked' | 'warned' | 'api_error_fail_closed';
 
 export interface ModerationResult {
   allowed: boolean;
@@ -49,7 +49,7 @@ export function buildModerationApiFailureResult(
   if (failClosedOnError) {
     return {
       allowed: false,
-      action: 'blocked',
+      action: 'api_error_fail_closed',
       flaggedCategories: ['api_error_fail_closed'],
       scores: {},
       contentHash
@@ -412,6 +412,10 @@ class ContentSanitizer {
              ORDER BY created_at DESC LIMIT 1`,
       [hash]
     );
+
+    if (result[0]?.action_taken === 'api_error_fail_closed') {
+      return { skip: false, hash, previousAction: result[0].action_taken };
+    }
 
     if (result[0]?.action_taken === 'blocked') {
       return { skip: true, hash, previousAction: 'blocked' };

@@ -315,11 +315,7 @@ export class PostgresAdapter implements DatabaseAdapter {
     const maybePgError = error as { message?: string; code?: string };
     const message = (maybePgError.message || '').toLowerCase();
 
-    return (
-      message.includes('already exists') ||
-      message.includes('does not exist') ||
-      maybePgError.code === 'EEXIST'
-    );
+    return message.includes('already exists') || maybePgError.code === 'EEXIST';
   }
 
   async disconnect(): Promise<void> {

@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from 'bun:test';
-import { resolvePromptPolicy } from '../../security/prompt-policy';
+import { hashPrompt, resolvePromptPolicy } from '../../security/prompt-policy';
 import {
   composeSystemPromptWithSafety,
   IMMUTABLE_SAFETY_POLICY
@@ -25,7 +25,7 @@ describe('safety-regression integration', () => {
     const composed = composeSystemPromptWithSafety(policy.effectivePrompt);
 
     expect(policy.rejectedCustomPrompt).toBe(true);
-    expect(policy.promptHash).toBe('default');
+    expect(policy.promptHash).toBe(hashPrompt('You are a safe assistant.'));
     expect(composed).toContain('You are a safe assistant.');
     expect(composed).toContain(IMMUTABLE_SAFETY_POLICY.split('\n')[1] || 'SAFETY_POLICY_V1');
   });
@@ -122,7 +122,7 @@ describe('safety-regression integration', () => {
     const result = buildModerationApiFailureResult('hash-safe-1', true);
 
     expect(result.allowed).toBe(false);
-    expect(result.action).toBe('blocked');
+    expect(result.action).toBe('api_error_fail_closed');
     expect(result.flaggedCategories).toEqual(['api_error_fail_closed']);
   });
 

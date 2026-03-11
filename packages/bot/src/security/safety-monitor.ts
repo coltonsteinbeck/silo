@@ -83,7 +83,7 @@ function getRuntimeEnv(): Record<string, string | undefined> {
 export class SafetyMonitor {
   private readonly state = new Map<string, GuildSafetyState>();
 
-  constructor(private readonly config: SafetyMonitorConfig = DEFAULT_CONFIG) {}
+  constructor(private readonly config: SafetyMonitorConfig = DEFAULT_CONFIG) { }
 
   getConfig(): SafetyMonitorConfig {
     return { ...this.config };
@@ -93,6 +93,8 @@ export class SafetyMonitor {
     if (!this.config.enabled || !this.config.killSwitchEnabled) {
       return false;
     }
+
+    this.pruneStaleGuildStates(now);
 
     const guildState = this.state.get(guildId);
     if (!guildState?.killSwitchUntil) {
@@ -114,12 +116,14 @@ export class SafetyMonitor {
       };
     }
 
+    this.pruneStaleGuildStates(now);
+
     const guildState = this.getOrCreateGuildState(record.guildId);
-    this.pruneWindow(guildState, now);
+    this.pruneWindow(record.guildId, guildState, now, false);
 
     if (this.isBlockedIncident(record.incidentType)) {
       guildState.blockedTimestamps.push(now);
-      this.pruneWindow(guildState, now);
+      this.pruneWindow(record.guildId, guildState, now, false);
     }
 
     const blockedCountInWindow = guildState.blockedTimestamps.length;
@@ -148,6 +152,8 @@ export class SafetyMonitor {
       guildState.lastAlertAt = now;
     }
 
+    this.pruneWindow(record.guildId, guildState, now);
+
     return {
       blockedCountInWindow,
       thresholdExceeded,
@@ -173,9 +179,29 @@ export class SafetyMonitor {
     return created;
   }
 
-  private pruneWindow(guildState: GuildSafetyState, now: number): void {
+  private pruneWindow(
+    guildId: string,
+    guildState: GuildSafetyState,
+    now: number,
+    allowEviction = true
+  ): void {
     const windowStart = now - this.config.windowMs;
     guildState.blockedTimestamps = guildState.blockedTimestamps.filter(ts => ts >= windowStart);
+
+    if (
+      allowEviction &&
+      guildState.blockedTimestamps.length === 0 &&
+      (!guildState.killSwitchUntil || guildState.killSwitchUntil <= now) &&
+      (!guildState.lastAlertAt || now - guildState.lastAlertAt >= this.config.alertCooldownMs)
+    ) {
+      this.state.delete(guildId);
+    }
+  }
+
+  private pruneStaleGuildStates(now: number): void {
+    for (const [guildId, guildState] of this.state.entries()) {
+      this.pruneWindow(guildId, guildState, now);
+    }
   }
 
   private isBlockedIncident(incidentType: SafetyIncidentType): boolean {

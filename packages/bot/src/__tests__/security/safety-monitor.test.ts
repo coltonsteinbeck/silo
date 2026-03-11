@@ -121,4 +121,37 @@ describe('safety-monitor', () => {
     expect(monitor.isKillSwitchActive('guild-4', 54_999)).toBe(true);
     expect(monitor.isKillSwitchActive('guild-4', 55_001)).toBe(false);
   });
+
+  test('evicts stale guild state after window, kill switch, and cooldown have elapsed', () => {
+    const monitor = new SafetyMonitor({
+      enabled: true,
+      blockThreshold: 1,
+      windowMs: 1_000,
+      killSwitchEnabled: true,
+      killSwitchDurationMs: 2_000,
+      alertCooldownMs: 1_500
+    });
+
+    monitor.recordIncident(
+      {
+        guildId: 'guild-stale',
+        incidentType: 'input_blocked',
+        categories: ['hate']
+      },
+      1_000
+    );
+
+    expect(((monitor as any).state as Map<string, unknown>).has('guild-stale')).toBe(true);
+
+    monitor.recordIncident(
+      {
+        guildId: 'guild-other',
+        incidentType: 'output_warned',
+        categories: ['harassment']
+      },
+      4_000
+    );
+
+    expect(((monitor as any).state as Map<string, unknown>).has('guild-stale')).toBe(false);
+  });
 });

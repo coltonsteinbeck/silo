@@ -15,7 +15,7 @@ describe('content-sanitizer failure fallback', () => {
     const result = buildModerationApiFailureResult('hash123', true);
 
     expect(result.allowed).toBe(false);
-    expect(result.action).toBe('blocked');
+    expect(result.action).toBe('api_error_fail_closed');
     expect(result.flaggedCategories).toEqual(['api_error_fail_closed']);
     expect(result.contentHash).toBe('hash123');
   });
