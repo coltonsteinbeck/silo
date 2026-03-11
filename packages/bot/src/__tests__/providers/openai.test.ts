@@ -1,6 +1,18 @@
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { OpenAIProvider } from '../../providers/openai';
 
+describe('OpenAIProvider capabilities', () => {
+  test('exposes expected vision capabilities', () => {
+    const provider = new OpenAIProvider();
+
+    expect(provider.capabilities).toBeDefined();
+    expect(provider.capabilities).toStrictEqual({
+      vision: true,
+      maxImagesPerRequest: 1
+    });
+  });
+});
+
 describe('OpenAIProvider.generateImage error handling', () => {
   let provider: OpenAIProvider;
   let consoleErrorSpy: ReturnType<typeof mock>;
@@ -8,7 +20,7 @@ describe('OpenAIProvider.generateImage error handling', () => {
 
   beforeEach(() => {
     provider = new OpenAIProvider('sk-test');
-    consoleErrorSpy = mock(() => {});
+    consoleErrorSpy = mock(() => { });
     originalConsoleError = console.error;
     console.error = consoleErrorSpy as any;
   });

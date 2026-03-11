@@ -12,10 +12,20 @@ export function composeSystemPromptWithSafety(basePrompt: string): string {
 
   const hasMarker = normalizedBase.includes(IMMUTABLE_SAFETY_POLICY_MARKER);
   const hasFullPolicy = normalizedBase.includes(immutablePolicy);
+  const markerPattern = new RegExp(`\\[${IMMUTABLE_SAFETY_POLICY_MARKER}\\]`, 'g');
 
-  if (hasMarker && hasFullPolicy) {
-    return normalizedBase;
+  const cleanedNormalizedBase = (hasMarker || hasFullPolicy
+    ? normalizedBase
+      .split(immutablePolicy)
+      .join('')
+      .replace(markerPattern, '')
+      .trim()
+    : normalizedBase
+  ).trim();
+
+  if (!cleanedNormalizedBase) {
+    return immutablePolicy;
   }
 
-  return `${normalizedBase}\n\n${immutablePolicy}`;
+  return `${cleanedNormalizedBase}\n\n${immutablePolicy}`;
 }

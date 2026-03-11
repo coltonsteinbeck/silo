@@ -37,6 +37,13 @@ function resolveServerConflictKey(contextType: string, entities: string[]): stri
   return null;
 }
 
+export const serverMemorySetInternals = {
+  extractLoreEntities,
+  SERVER_CONTEXT_TRUST,
+  SERVER_CONTEXT_PRIORITY,
+  resolveServerConflictKey
+};
+
 export class ServerMemorySetCommand implements Command {
   data = new SlashCommandBuilder()
     .setName('server-memory-set')
@@ -71,7 +78,7 @@ export class ServerMemorySetCommand implements Command {
     private db: DatabaseAdapter,
     private permissions: PermissionManager,
     private registry?: ProviderRegistry
-  ) {}
+  ) { }
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -104,15 +111,15 @@ export class ServerMemorySetCommand implements Command {
       expiresAt = new Date(Date.now() + expiresInHours * 60 * 60 * 1000);
     }
 
-    const entities = extractLoreEntities(content);
+    const entities = serverMemorySetInternals.extractLoreEntities(content);
     const normalizedContextType = contextType.toLowerCase();
     const metadata = {
       entities,
       source: 'server_moderator_command',
-      sourcePriority: SERVER_CONTEXT_PRIORITY[normalizedContextType] ?? 80,
-      trustScore: SERVER_CONTEXT_TRUST[normalizedContextType] ?? 0.74,
+      sourcePriority: serverMemorySetInternals.SERVER_CONTEXT_PRIORITY[normalizedContextType] ?? 80,
+      trustScore: serverMemorySetInternals.SERVER_CONTEXT_TRUST[normalizedContextType] ?? 0.74,
       verified: true,
-      conflictKey: resolveServerConflictKey(normalizedContextType, entities)
+      conflictKey: serverMemorySetInternals.resolveServerConflictKey(normalizedContextType, entities)
     };
 
     // Generate embedding for semantic search if RAG is enabled

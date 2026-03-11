@@ -17,12 +17,24 @@ export function parseAllowedPromptHashes(raw: string | undefined): Set<string> {
     return new Set();
   }
 
-  return new Set(
-    raw
-      .split(',')
-      .map(item => item.trim())
-      .filter(item => /^[a-f0-9]{16}$/i.test(item))
-  );
+  const trimmedItems = raw
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean);
+
+  if (trimmedItems.length === 0) {
+    throw new Error('SAFETY_ALLOWED_PROMPT_HASHES is configured but contains no valid entries');
+  }
+
+  const normalized = trimmedItems
+    .filter(item => /^[a-f0-9]{16}$/i.test(item))
+    .map(item => item.toLowerCase());
+
+  if (normalized.length === 0) {
+    throw new Error('SAFETY_ALLOWED_PROMPT_HASHES is configured but contains no valid hashes');
+  }
+
+  return new Set(normalized);
 }
 
 export function resolvePromptPolicy(params: {
@@ -32,11 +44,12 @@ export function resolvePromptPolicy(params: {
 }): PromptPolicyResolution {
   const { customPrompt, defaultPrompt, allowedPromptHashesRaw } = params;
   const normalizedCustomPrompt = customPrompt?.trim() || null;
+  const defaultPromptHash = hashPrompt(defaultPrompt);
 
   if (!normalizedCustomPrompt) {
     return {
       effectivePrompt: defaultPrompt,
-      promptHash: 'default',
+      promptHash: defaultPromptHash,
       usedCustomPrompt: false,
       rejectedCustomPrompt: false,
       customPromptHash: null
@@ -49,7 +62,7 @@ export function resolvePromptPolicy(params: {
   if (allowedPromptHashes.size > 0 && !allowedPromptHashes.has(customPromptHash)) {
     return {
       effectivePrompt: defaultPrompt,
-      promptHash: 'default',
+      promptHash: defaultPromptHash,
       usedCustomPrompt: false,
       rejectedCustomPrompt: true,
       customPromptHash
