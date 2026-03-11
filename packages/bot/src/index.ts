@@ -49,6 +49,12 @@ import {
 import { QuotaMiddleware } from './middleware/quota';
 import { CostAggregator } from './services/cost-aggregator';
 import { selectMemoryContext } from './services/memory-selector';
+import {
+  assembleConversationContext,
+  buildImageSummaryBlock
+} from './services/conversation-context';
+import { resolveReplyContext } from './services/reply-context';
+import { decideVisionRouting, enforceVisionRoutingPrecheck } from './services/vision-routing';
 
 // Global error handlers to prevent silent crashes
 process.on('uncaughtException', error => {
@@ -356,7 +362,8 @@ async function main() {
       const imageAttachments = message.attachments.filter(
         att => att.contentType?.startsWith('image/') && att.size <= 20 * 1024 * 1024
       );
-      const hasImages = imageAttachments.size > 0;
+      const currentImageUrls = imageAttachments.map(att => att.url);
+      const replyContext = await resolveReplyContext(message, 2);
 
       // === Phase 1: Gates (moderation + quota — can early-exit) ===
       // Run content moderation and member fetch in parallel (independent operations)
@@ -398,6 +405,13 @@ async function main() {
         );
       }
 
+      const conversationContext = assembleConversationContext({
+        processedContent,
+        currentImageUrls,
+        replyContext,
+        maxVisionTargets: 2
+      });
+
       logger.info(`[Perf] Gates completed in ${Date.now() - requestStart}ms`);
 
       // === Phase 2: Config lookups (parallel — both are independent DB reads) ===
@@ -410,13 +424,19 @@ async function main() {
       const preferredProvider = serverConfig?.defaultProvider;
       const textProvider = providers.getTextProvider(preferredProvider || undefined);
       const visionProvider = providers.getVisionProvider(preferredProvider || undefined);
-      const useVision = hasImages && !!visionProvider;
+      const visionRouting = decideVisionRouting(conversationContext, visionProvider);
+      const useVision = visionRouting.useVision;
+
+      const blockedByVisionPrecheck = await enforceVisionRoutingPrecheck(message, visionRouting);
+      if (blockedByVisionPrecheck) {
+        return;
+      }
 
       let estimatedTokens = 0;
       let visionUserLimit: number | undefined;
 
       if (useVision) {
-        const estimatedVisionTokens = imageAttachments.size * 1000;
+        const estimatedVisionTokens = visionRouting.estimatedVisionTokens;
         const visionQuotaCheck = await quotaMiddleware.checkQuota(
           message.guildId,
           message.author.id,
@@ -533,7 +553,7 @@ async function main() {
             config,
             serverId: guildId,
             userId: message.author.id,
-            content: processedContent
+            content: conversationContext.mergedUserContent
           });
 
           if (selection.selected.length > 0) {
@@ -561,23 +581,21 @@ async function main() {
         }
       })();
 
-      // Run history fetch, memory retrieval, and user message store in parallel
+      // Run history fetch and memory retrieval in parallel
       const [history, memorySelection] = await Promise.all([
         db.getConversationHistory(message.channelId, promptHash, 10),
-        memoryPromise,
-        db.storeConversationMessage({
-          guildId: message.guildId,
-          channelId: message.channelId,
-          userId: message.author.id,
-          promptHash,
-          role: 'user',
-          content: processedContent
-        })
+        memoryPromise
       ]);
 
       const messages = history.map(msg => ({
         role: msg.role,
-        content: msg.role === 'user' ? `[User: ${msg.userId}] ${msg.content}` : msg.content
+        content: [
+          msg.role === 'user' ? `[User: ${msg.userId}] ${msg.content}` : msg.content,
+          msg.referencedContent ? `[Referenced context]\n${msg.referencedContent}` : '',
+          msg.imageSummary ? `[Image context]\n${msg.imageSummary}` : ''
+        ]
+          .filter(Boolean)
+          .join('\n\n')
       }));
 
       const memoryContext = memorySelection.context;
@@ -610,49 +628,61 @@ async function main() {
       // === Phase 4: LLM call ===
       const llmStart = Date.now();
       let usedVision = false;
+      let visionTokensUsed = 0;
       const MAX_TEXT_RESPONSE_TOKENS = 180;
-      const MAX_VISION_RESPONSE_TOKENS = 260;
-      const VISION_MEMORY_CONTEXT_MAX_CHARS = 1000;
+      const imageSummaries: string[] = [];
 
-      const response = useVision
-        ? await (async () => {
-          const imageUrls = imageAttachments.map(att => att.url);
-          const userVisionPrompt = processedContent || 'Describe this image.';
-          const limitedMemoryContext =
-            memoryContext.length > VISION_MEMORY_CONTEXT_MAX_CHARS
-              ? `${memoryContext.slice(0, VISION_MEMORY_CONTEXT_MAX_CHARS)}\n- [memory context truncated for token efficiency]`
-              : memoryContext;
-          const visionPrompt = `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${memoryMentionInstruction}${memoryConflictInstruction}${limitedMemoryContext}\n\n${userVisionPrompt}`;
-          const visionResult = await visionProvider.analyzeImage!(
-            imageUrls[0]!,
-            imageUrls.length > 1
-              ? `${visionPrompt}\n\nUser attached ${imageUrls.length} images; analyze the first image in detail.`
-              : visionPrompt,
-            { maxTokens: MAX_VISION_RESPONSE_TOKENS }
-          );
-          usedVision = true;
-          return {
-            content: visionResult.content,
-            usage: visionResult.usage,
-            model: `${visionProvider.name}-vision`
-          };
-        })()
-        : await textProvider.generateText(
-          [
-            {
-              role: 'system',
-              content: `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${memoryMentionInstruction}${memoryConflictInstruction}${memoryContext}`
-            },
-            ...messages,
-            {
-              role: 'user',
-              content: processedContent
-            }
-          ],
+      if (useVision && visionProvider?.analyzeImage) {
+        for (const [index, target] of conversationContext.visionTargets.entries()) {
+          const sourceLabel =
+            target.source === 'reply' && target.replyDepth
+              ? `reply_level_${target.replyDepth}`
+              : 'current_message';
+          const visionPrompt = [
+            'Summarize this image for downstream conversation grounding.',
+            'Keep output factual, concise, and neutral (max 3 sentences).',
+            'Include visible text if present.',
+            `Source: ${sourceLabel}.`,
+            `User request: ${conversationContext.mergedUserContent || 'Describe image context.'}`
+          ].join('\n');
+
+          const visionResult = await visionProvider.analyzeImage(target.url, visionPrompt, {
+            maxTokens: 140
+          });
+
+          const normalizedSummary = visionResult.content.replace(/\s+/g, ' ').trim();
+          imageSummaries.push(`[${index + 1}|${sourceLabel}] ${normalizedSummary}`);
+          visionTokensUsed +=
+            visionResult.usage?.totalTokens ||
+            visionResult.usage?.completionTokens ||
+            visionResult.usage?.promptTokens ||
+            120;
+        }
+
+        usedVision = imageSummaries.length > 0;
+      }
+
+      const imageSummaryBlock = buildImageSummaryBlock(imageSummaries);
+      const mergedUserPrompt = [conversationContext.mergedUserContent, imageSummaryBlock]
+        .filter(Boolean)
+        .join('\n\n');
+
+      const response = await textProvider.generateText(
+        [
           {
-            maxTokens: MAX_TEXT_RESPONSE_TOKENS
+            role: 'system',
+            content: `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${memoryMentionInstruction}${memoryConflictInstruction}${memoryContext}`
+          },
+          ...messages,
+          {
+            role: 'user',
+            content: mergedUserPrompt || processedContent
           }
-        );
+        ],
+        {
+          maxTokens: MAX_TEXT_RESPONSE_TOKENS
+        }
+      );
 
       logger.info(
         `[Perf] LLM responded in ${Date.now() - llmStart}ms (model: ${response.model || 'unknown'}${usedVision ? ', vision' : ''})`
@@ -740,22 +770,43 @@ async function main() {
       logger.info(`[Perf] Total response time: ${Date.now() - requestStart}ms`);
 
       // Fire-and-forget: post-LLM writes don't block the user-facing response
-      const actualTokens = response.usage?.completionTokens || response.usage?.totalTokens || 500;
+      const actualTokens = response.usage?.totalTokens || response.usage?.completionTokens || 500;
+      const conversationWrites = [
+        db.storeConversationMessage({
+          guildId: message.guildId,
+          channelId: message.channelId,
+          userId: message.author.id,
+          discordMessageId: message.id,
+          promptHash,
+          role: 'user',
+          content: processedContent,
+          replyToMessageId: conversationContext.directReplyMessageId,
+          replyToUserId: conversationContext.directReplyUserId,
+          referencedContent: conversationContext.referencedContent || null,
+          imageSummary: imageSummaryBlock || null
+        }),
+        db.storeConversationMessage({
+          guildId: message.guildId,
+          channelId: message.channelId,
+          userId: message.author.id,
+          promptHash,
+          role: 'assistant',
+          content: responseContent,
+          replyToMessageId: conversationContext.directReplyMessageId,
+          replyToUserId: conversationContext.directReplyUserId,
+          referencedContent: conversationContext.referencedContent || null,
+          imageSummary: imageSummaryBlock || null
+        })
+      ];
+
       if (usedVision) {
         Promise.all([
-          db.storeConversationMessage({
-            guildId: message.guildId,
-            channelId: message.channelId,
-            userId: message.author.id,
-            promptHash,
-            role: 'assistant',
-            content: responseContent
-          }),
+          ...conversationWrites,
           quotaMiddleware.recordUsage(
             message.guildId,
             message.author.id,
             'vision_tokens',
-            actualTokens,
+            Math.max(visionTokensUsed, actualTokens),
             visionUserLimit
           )
         ]).catch(err => {
@@ -763,14 +814,7 @@ async function main() {
         });
       } else {
         Promise.all([
-          db.storeConversationMessage({
-            guildId: message.guildId,
-            channelId: message.channelId,
-            userId: message.author.id,
-            promptHash,
-            role: 'assistant',
-            content: responseContent
-          }),
+          ...conversationWrites,
           quotaMiddleware.recordUsage(
             message.guildId,
             message.author.id,

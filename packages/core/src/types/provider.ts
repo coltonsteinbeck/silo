@@ -37,6 +37,11 @@ export interface ImageAnalysisOptions {
   maxTokens?: number;
 }
 
+export interface ProviderCapabilities {
+  vision: boolean;
+  maxImagesPerRequest?: number;
+}
+
 export interface ImageAnalysisResponse {
   content: string;
   usage?: {
@@ -48,6 +53,7 @@ export interface ImageAnalysisResponse {
 
 export interface BaseProvider {
   name: string;
+  capabilities?: ProviderCapabilities;
   isConfigured(): boolean;
 }
 
