@@ -78,7 +78,7 @@ export class ServerMemorySetCommand implements Command {
     private db: DatabaseAdapter,
     private permissions: PermissionManager,
     private registry?: ProviderRegistry
-  ) { }
+  ) {}
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -119,7 +119,10 @@ export class ServerMemorySetCommand implements Command {
       sourcePriority: serverMemorySetInternals.SERVER_CONTEXT_PRIORITY[normalizedContextType] ?? 80,
       trustScore: serverMemorySetInternals.SERVER_CONTEXT_TRUST[normalizedContextType] ?? 0.74,
       verified: true,
-      conflictKey: serverMemorySetInternals.resolveServerConflictKey(normalizedContextType, entities)
+      conflictKey: serverMemorySetInternals.resolveServerConflictKey(
+        normalizedContextType,
+        entities
+      )
     };
 
     // Generate embedding for semantic search if RAG is enabled

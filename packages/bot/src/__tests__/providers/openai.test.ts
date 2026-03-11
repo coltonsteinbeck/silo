@@ -20,7 +20,7 @@ describe('OpenAIProvider.generateImage error handling', () => {
 
   beforeEach(() => {
     provider = new OpenAIProvider('sk-test');
-    consoleErrorSpy = mock(() => { });
+    consoleErrorSpy = mock(() => {});
     originalConsoleError = console.error;
     console.error = consoleErrorSpy as any;
   });
