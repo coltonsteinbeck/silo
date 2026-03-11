@@ -35,9 +35,14 @@ export interface ConversationMessage {
   guildId: string;
   channelId: string;
   userId: string;
+  discordMessageId?: string | null;
   promptHash: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
+  replyToMessageId?: string | null;
+  replyToUserId?: string | null;
+  referencedContent?: string | null;
+  imageSummary?: string | null;
   createdAt: Date;
 }
 

@@ -42,9 +42,14 @@ interface ConversationMessageRow {
   guild_id: string;
   channel_id: string;
   user_id: string;
+  discord_message_id: string | null;
   prompt_hash: string;
   role: string; // Note: This comes from DB, may be any string
   content: string;
+  reply_to_message_id: string | null;
+  reply_to_user_id: string | null;
+  referenced_content: string | null;
+  image_summary: string | null;
   created_at: string;
 }
 
@@ -887,9 +892,14 @@ export class PostgresAdapter implements DatabaseAdapter {
       guildId: row.guild_id,
       channelId: row.channel_id,
       userId: row.user_id,
+      discordMessageId: row.discord_message_id,
       promptHash: row.prompt_hash,
       role: row.role as ConversationMessage['role'],
       content: row.content,
+      replyToMessageId: row.reply_to_message_id,
+      replyToUserId: row.reply_to_user_id,
+      referencedContent: row.referenced_content,
+      imageSummary: row.image_summary,
       createdAt: new Date(row.created_at)
     }));
   }
@@ -898,16 +908,33 @@ export class PostgresAdapter implements DatabaseAdapter {
     message: Omit<ConversationMessage, 'id' | 'createdAt'>
   ): Promise<ConversationMessage> {
     const result = await this.pool.query(
-      `INSERT INTO conversation_messages (guild_id, channel_id, user_id, prompt_hash, role, content)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO conversation_messages (
+         guild_id,
+         channel_id,
+         user_id,
+         discord_message_id,
+         prompt_hash,
+         role,
+         content,
+         reply_to_message_id,
+         reply_to_user_id,
+         referenced_content,
+         image_summary
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
       [
         message.guildId,
         message.channelId,
         message.userId,
+        message.discordMessageId ?? null,
         message.promptHash,
         message.role,
-        message.content
+        message.content,
+        message.replyToMessageId ?? null,
+        message.replyToUserId ?? null,
+        message.referencedContent ?? null,
+        message.imageSummary ?? null
       ]
     );
 
@@ -917,9 +944,14 @@ export class PostgresAdapter implements DatabaseAdapter {
       guildId: row.guild_id,
       channelId: row.channel_id,
       userId: row.user_id,
+      discordMessageId: row.discord_message_id,
       promptHash: row.prompt_hash,
       role: row.role,
       content: row.content,
+      replyToMessageId: row.reply_to_message_id,
+      replyToUserId: row.reply_to_user_id,
+      referencedContent: row.referenced_content,
+      imageSummary: row.image_summary,
       createdAt: new Date(row.created_at)
     };
   }

@@ -20,6 +20,7 @@ function redactSecrets(value: string): string {
 
 export class OpenAIProvider implements TextProvider, ImageProvider {
   name = 'openai';
+  capabilities = { vision: true, maxImagesPerRequest: 1 };
   private client: OpenAI | null = null;
   private defaultModel: string;
   private defaultImageModel: string;
@@ -64,10 +65,10 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
       content: choice.message.content,
       usage: response.usage
         ? {
-            promptTokens: response.usage.prompt_tokens,
-            completionTokens: response.usage.completion_tokens,
-            totalTokens: response.usage.total_tokens
-          }
+          promptTokens: response.usage.prompt_tokens,
+          completionTokens: response.usage.completion_tokens,
+          totalTokens: response.usage.total_tokens
+        }
         : undefined,
       model: response.model
     };
@@ -165,10 +166,10 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
       content: choice.message.content,
       usage: response.usage
         ? {
-            promptTokens: response.usage.prompt_tokens,
-            completionTokens: response.usage.completion_tokens,
-            totalTokens: response.usage.total_tokens
-          }
+          promptTokens: response.usage.prompt_tokens,
+          completionTokens: response.usage.completion_tokens,
+          totalTokens: response.usage.total_tokens
+        }
         : undefined
     };
   }
