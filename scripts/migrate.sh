@@ -235,6 +235,110 @@ ORDER BY 1;
 SQL
 }
 
+record_migration_tracking_rows() {
+    local db_url="$1"
+    local migration_file="$2"
+    local filename
+    local stem
+    local prefix
+
+    filename=$(basename "$migration_file")
+    stem="${filename%.sql}"
+    prefix="${stem%%_*}"
+
+    psql "$db_url" -v ON_ERROR_STOP=1 \
+        -v mig_filename="$filename" \
+        -v mig_stem="$stem" \
+        -v mig_prefix="$prefix" <<'SQL'
+DO $$
+DECLARE
+    target RECORD;
+    has_filename boolean;
+    has_version boolean;
+    has_name boolean;
+    insert_columns text;
+    insert_values text;
+    missing_required int;
+BEGIN
+    FOR target IN
+        SELECT table_schema, table_name
+        FROM information_schema.tables
+        WHERE (table_schema = 'supabase_migrations' AND table_name IN ('migrations', 'schema_migrations'))
+           OR (table_schema = 'public' AND table_name = 'schema_migrations')
+    LOOP
+        has_filename := EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = target.table_schema
+              AND table_name = target.table_name
+              AND column_name = 'filename'
+        );
+
+        has_version := EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = target.table_schema
+              AND table_name = target.table_name
+              AND column_name = 'version'
+        );
+
+        has_name := EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = target.table_schema
+              AND table_name = target.table_name
+              AND column_name = 'name'
+        );
+
+        IF has_filename THEN
+            insert_columns := 'filename';
+            insert_values := quote_literal(:'mig_filename');
+        ELSIF has_version AND has_name THEN
+            insert_columns := 'version, name';
+            insert_values := quote_literal(:'mig_prefix') || ', ' || quote_literal(:'mig_filename');
+        ELSIF has_version THEN
+            insert_columns := 'version';
+            insert_values := quote_literal(:'mig_prefix');
+        ELSIF has_name THEN
+            insert_columns := 'name';
+            insert_values := quote_literal(:'mig_stem');
+        ELSE
+            CONTINUE;
+        END IF;
+
+        SELECT COUNT(*)
+        INTO missing_required
+        FROM information_schema.columns c
+        WHERE c.table_schema = target.table_schema
+          AND c.table_name = target.table_name
+          AND c.is_nullable = 'NO'
+          AND c.column_default IS NULL
+          AND c.identity_generation IS NULL
+          AND c.generated = 'NEVER'
+          AND c.column_name <> ALL (
+              string_to_array(replace(insert_columns, ' ', ''), ',')
+          );
+
+        IF missing_required > 0 THEN
+            RAISE NOTICE 'Skipping migration tracking insert for %.% due to unsupported required columns',
+                target.table_schema,
+                target.table_name;
+            CONTINUE;
+        END IF;
+
+        EXECUTE format(
+            'INSERT INTO %I.%I (%s) VALUES (%s) ON CONFLICT DO NOTHING',
+            target.table_schema,
+            target.table_name,
+            insert_columns,
+            insert_values
+        );
+    END LOOP;
+END;
+$$;
+SQL
+}
+
 migration_is_applied() {
     local migration_file="$1"
     local applied_keys="$2"
@@ -384,6 +488,7 @@ fi
 for migration in "${PENDING_FILES[@]}"; do
     echo "Applying $(basename "$migration")..."
     psql "$DB_URL" -v ON_ERROR_STOP=1 -f "$migration"
+    record_migration_tracking_rows "$DB_URL" "$migration"
 done
 
 echo "Migrations complete"

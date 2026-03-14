@@ -294,7 +294,7 @@ export class AnalyticsCommand implements Command {
           }
         )
         .setFooter({
-          text: 'Quotas reset daily at midnight UTC • Contact admin to adjust limits'
+          text: 'Quotas reset daily at midnight ET • Contact admin to adjust limits'
         })
         .setTimestamp();
 
