@@ -178,7 +178,7 @@ describe('QuotaMiddleware', () => {
 
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain('daily');
-      expect(result.reason).toContain('midnight UTC');
+      expect(result.reason).toContain('midnight ET');
     });
 
     test('fails closed when role quota lookup throws', async () => {
@@ -244,6 +244,20 @@ describe('QuotaMiddleware', () => {
       const estimate = await middleware.estimateResponseTokens(100000);
 
       expect(estimate).toBeLessThanOrEqual(4000);
+    });
+
+    test('caps estimate to the configured response token ceiling', async () => {
+      const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
+      const estimate = await middleware.estimateResponseTokensWithCap(5000, 180);
+
+      expect(estimate).toBe(180);
+    });
+
+    test('respects a very small remaining token budget', async () => {
+      const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
+      const estimate = await middleware.estimateResponseTokensWithCap(5000, 17);
+
+      expect(estimate).toBe(17);
     });
 
     test('uses accuracy stats when sample count >= 10', async () => {
@@ -344,6 +358,33 @@ describe('QuotaMiddleware', () => {
       await middleware.logAccuracy('guild1', 'user1', 500, 300, 287);
 
       expect(mockAdminDb.logQuotaAccuracy).toHaveBeenCalledWith('guild1', 'user1', 500, 300, 287);
+    });
+  });
+
+  describe('getChargeableTextTokens', () => {
+    test('prefers completion tokens for response-only billing', () => {
+      const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
+      const billedTokens = middleware.getChargeableTextTokens(
+        {
+          promptTokens: 900,
+          completionTokens: 120,
+          totalTokens: 1020
+        },
+        'Short reply'
+      );
+
+      expect(billedTokens).toBe(120);
+    });
+
+    test('falls back to response length estimate when provider omits usage', () => {
+      const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
+      const billedTokens = middleware.getChargeableTextTokens(
+        undefined,
+        'This is a fallback reply.'
+      );
+
+      expect(billedTokens).toBeGreaterThan(0);
+      expect(billedTokens).toBe(Math.ceil('This is a fallback reply.'.length / 4));
     });
   });
 

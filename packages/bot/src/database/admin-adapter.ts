@@ -10,6 +10,8 @@ import {
   logger
 } from '@silo/core';
 
+const QUOTA_LOCAL_DATE_SQL = `quota_local_date()`;
+
 export class AdminAdapter {
   constructor(private pool: Pool) {}
 
@@ -698,7 +700,7 @@ export class AdminAdapter {
           WHEN 'vision_tokens' THEN COALESCE(total_vision_tokens, 0)
         END as current_usage
       FROM guild_daily_usage 
-      WHERE guild_id = $1 AND usage_date = CURRENT_DATE`,
+      WHERE guild_id = $1 AND usage_date = ${QUOTA_LOCAL_DATE_SQL}`,
       [guildId, usageType]
     );
 
@@ -743,7 +745,7 @@ export class AdminAdapter {
   } | null> {
     const result = await this.pool.query(
       `SELECT * FROM guild_daily_usage 
-       WHERE guild_id = $1 AND usage_date = CURRENT_DATE`,
+       WHERE guild_id = $1 AND usage_date = ${QUOTA_LOCAL_DATE_SQL}`,
       [guildId]
     );
 
@@ -775,7 +777,7 @@ export class AdminAdapter {
          COALESCE(voice_minutes_used, 0) as voice_minutes,
          COALESCE(vision_tokens_used, 0) as vision_tokens
        FROM usage_tracking
-       WHERE guild_id = $1 AND user_id = $2 AND usage_date = CURRENT_DATE`,
+       WHERE guild_id = $1 AND user_id = $2 AND usage_date = ${QUOTA_LOCAL_DATE_SQL}`,
       [guildId, userId]
     );
 
@@ -1016,6 +1018,177 @@ export class AdminAdapter {
       `DELETE FROM quota_reset_notifications WHERE guild_id = $1 AND user_id = $2`,
       [guildId, userId]
     );
+  }
+
+  async getQuotaOverrideCooldown(
+    guildId: string,
+    adminUserId: string
+  ): Promise<{
+    allowed: boolean;
+    lastAppliedAt: Date | null;
+    nextAvailableAt: Date | null;
+  }> {
+    const result = await this.pool.query(
+      `SELECT MAX(applied_at) as last_applied_at
+       FROM quota_override_audit
+       WHERE guild_id = $1 AND admin_user_id = $2`,
+      [guildId, adminUserId]
+    );
+
+    const rawLastAppliedAt = result.rows[0]?.last_applied_at;
+    if (!rawLastAppliedAt) {
+      return {
+        allowed: true,
+        lastAppliedAt: null,
+        nextAvailableAt: null
+      };
+    }
+
+    const lastAppliedAt = new Date(rawLastAppliedAt);
+    const nextAvailableAt = new Date(lastAppliedAt.getTime() + 24 * 60 * 60 * 1000);
+    const allowed = Date.now() >= nextAvailableAt.getTime();
+
+    return {
+      allowed,
+      lastAppliedAt,
+      nextAvailableAt
+    };
+  }
+
+  async applyQuotaOverride(
+    guildId: string,
+    adminUserId: string,
+    targetUserId?: string
+  ): Promise<{
+    affectedUsers: number;
+    usageDate: string;
+  }> {
+    const client = await this.pool.connect();
+
+    try {
+      await client.query('BEGIN');
+
+      const cooldownResult = await client.query(
+        `SELECT MAX(applied_at) as last_applied_at
+         FROM quota_override_audit
+         WHERE guild_id = $1 AND admin_user_id = $2`,
+        [guildId, adminUserId]
+      );
+
+      const rawLastAppliedAt = cooldownResult.rows[0]?.last_applied_at;
+      if (rawLastAppliedAt) {
+        const lastAppliedAt = new Date(rawLastAppliedAt);
+        const nextAvailableAt = new Date(lastAppliedAt.getTime() + 24 * 60 * 60 * 1000);
+        if (Date.now() < nextAvailableAt.getTime()) {
+          throw new Error(`Admin override cooldown active until ${nextAvailableAt.toISOString()}`);
+        }
+      }
+
+      const usageDateResult = await client.query(
+        `SELECT ${QUOTA_LOCAL_DATE_SQL}::text as usage_date`
+      );
+      const usageDate = usageDateResult.rows[0]?.usage_date || '';
+
+      let affectedUsers = 0;
+
+      if (targetUserId) {
+        const resetResult = await client.query(
+          `UPDATE usage_tracking
+           SET text_tokens_used = 0,
+               images_used = 0,
+               voice_minutes_used = 0,
+               vision_tokens_used = 0,
+               updated_at = NOW()
+           WHERE guild_id = $1
+             AND user_id = $2
+             AND usage_date = ${QUOTA_LOCAL_DATE_SQL}`,
+          [guildId, targetUserId]
+        );
+        affectedUsers = resetResult.rowCount ?? 0;
+      } else {
+        const resetResult = await client.query(
+          `UPDATE usage_tracking
+           SET text_tokens_used = 0,
+               images_used = 0,
+               voice_minutes_used = 0,
+               vision_tokens_used = 0,
+               updated_at = NOW()
+           WHERE guild_id = $1
+             AND usage_date = ${QUOTA_LOCAL_DATE_SQL}`,
+          [guildId]
+        );
+        affectedUsers = resetResult.rowCount ?? 0;
+      }
+
+      const aggregateResult = await client.query(
+        `SELECT
+           COALESCE(SUM(text_tokens_used), 0)::bigint as total_text_tokens,
+           COALESCE(SUM(images_used), 0)::bigint as total_images,
+           COALESCE(SUM(voice_minutes_used), 0)::bigint as total_voice_minutes,
+           COALESCE(SUM(vision_tokens_used), 0)::bigint as total_vision_tokens
+         FROM usage_tracking
+         WHERE guild_id = $1 AND usage_date = ${QUOTA_LOCAL_DATE_SQL}`,
+        [guildId]
+      );
+
+      const aggregate = aggregateResult.rows[0] || {
+        total_text_tokens: 0,
+        total_images: 0,
+        total_voice_minutes: 0,
+        total_vision_tokens: 0
+      };
+
+      await client.query(
+        `INSERT INTO guild_daily_usage (
+           guild_id,
+           usage_date,
+           total_text_tokens,
+           total_images,
+           total_voice_minutes,
+           total_vision_tokens,
+           updated_at
+         ) VALUES (
+           $1,
+           ${QUOTA_LOCAL_DATE_SQL},
+           $2,
+           $3,
+           $4,
+           $5,
+           NOW()
+         )
+         ON CONFLICT (guild_id, usage_date) DO UPDATE SET
+           total_text_tokens = EXCLUDED.total_text_tokens,
+           total_images = EXCLUDED.total_images,
+           total_voice_minutes = EXCLUDED.total_voice_minutes,
+           total_vision_tokens = EXCLUDED.total_vision_tokens,
+           updated_at = NOW()`,
+        [
+          guildId,
+          Number(aggregate.total_text_tokens) || 0,
+          Number(aggregate.total_images) || 0,
+          Number(aggregate.total_voice_minutes) || 0,
+          Number(aggregate.total_vision_tokens) || 0
+        ]
+      );
+
+      await client.query(
+        `INSERT INTO quota_override_audit (guild_id, admin_user_id, target_user_id, scope, usage_date)
+         VALUES ($1, $2, $3, $4, ${QUOTA_LOCAL_DATE_SQL})`,
+        [guildId, adminUserId, targetUserId ?? null, targetUserId ? 'user' : 'all']
+      );
+
+      await client.query('COMMIT');
+
+      return {
+        affectedUsers,
+        usageDate
+      };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   /**

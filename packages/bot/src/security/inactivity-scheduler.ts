@@ -128,7 +128,7 @@ class InactivityScheduler {
       // 4. Delete data for guilds 30 days after deactivation
       await this.processDataDeletions();
 
-      // 5. Send quota reset notifications (only at/after midnight UTC)
+      // 5. Send quota reset notifications (only at/after midnight ET)
       await this.processQuotaResetNotifications();
 
       // 6. Cleanup old quota accuracy logs and usage data
@@ -436,7 +436,7 @@ class InactivityScheduler {
           { name: '🎨 Images', value: `${quota.images} available`, inline: true },
           { name: '🎤 Voice Minutes', value: `${quota.voice_minutes} available`, inline: true }
         )
-        .setFooter({ text: 'Resets daily at midnight UTC' })
+        .setFooter({ text: 'Resets daily at midnight ET' })
         .setTimestamp();
 
       // Send message that only pings the specific user

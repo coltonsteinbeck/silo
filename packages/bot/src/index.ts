@@ -444,6 +444,8 @@ async function main() {
       let estimatedTokens = 0;
       let visionUserLimit: number | undefined;
       let textUserLimit: number | undefined;
+      const DEFAULT_MAX_TEXT_RESPONSE_TOKENS = 180;
+      let maxTextResponseTokens = DEFAULT_MAX_TEXT_RESPONSE_TOKENS;
 
       if (useVision) {
         const estimatedVisionTokens = visionRouting.estimatedVisionTokens;
@@ -470,29 +472,33 @@ async function main() {
 
         visionUserLimit = visionQuotaCheck.max;
       } else {
-        estimatedTokens = await quotaMiddleware.estimateResponseTokens(processedContent.length);
-        const quotaCheck = await quotaMiddleware.checkQuota(
+        const quotaStatus = await quotaMiddleware.checkQuota(
           message.guildId,
           message.author.id,
           member,
           'text_tokens',
-          estimatedTokens
+          0
         );
 
-        if (!quotaCheck.allowed) {
+        if (!quotaStatus.allowed || quotaStatus.remaining <= 0) {
           await quotaMiddleware.markForResetNotification(
             message.guildId,
             message.author.id,
             message.channelId
           );
           await message.reply({
-            content: `⚠️ ${quotaCheck.reason}`,
+            content: `⚠️ ${quotaStatus.reason || 'You have no text token quota remaining. Resets at midnight ET.'}`,
             allowedMentions: { repliedUser: false }
           });
           return;
         }
 
-        textUserLimit = quotaCheck.max;
+        maxTextResponseTokens = Math.min(DEFAULT_MAX_TEXT_RESPONSE_TOKENS, quotaStatus.remaining);
+        estimatedTokens = await quotaMiddleware.estimateResponseTokensWithCap(
+          processedContent.length,
+          maxTextResponseTokens
+        );
+        textUserLimit = quotaStatus.max;
       }
 
       logger.info(
@@ -640,7 +646,6 @@ async function main() {
       const llmStart = Date.now();
       let usedVision = false;
       let visionTokensUsed = 0;
-      const MAX_TEXT_RESPONSE_TOKENS = 180;
       const imageSummaries: string[] = [];
 
       if (useVision && visionProvider?.analyzeImage) {
@@ -691,7 +696,7 @@ async function main() {
           }
         ],
         {
-          maxTokens: MAX_TEXT_RESPONSE_TOKENS
+          maxTokens: maxTextResponseTokens
         }
       );
 
@@ -790,7 +795,7 @@ async function main() {
       logger.info(`[Perf] Total response time: ${Date.now() - requestStart}ms`);
 
       // Fire-and-forget: post-LLM writes don't block the user-facing response
-      const actualTokens = response.usage?.totalTokens || response.usage?.completionTokens || 500;
+      const actualTokens = quotaMiddleware.getChargeableTextTokens(response.usage, responseContent);
       const conversationWrites = [
         db.storeConversationMessage({
           guildId: message.guildId,

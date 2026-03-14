@@ -19,6 +19,12 @@ interface AtomicRecordResult {
   remaining: number;
 }
 
+interface TokenUsageMetrics {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+}
+
 // Guild-level max quotas (cannot exceed these)
 const GUILD_MAX_QUOTAS = {
   text_tokens: 50000,
@@ -91,11 +97,35 @@ export class QuotaMiddleware {
    * Uses 7-day rolling average from accuracy logs
    */
   async estimateResponseTokens(inputLength: number): Promise<number> {
+    return this.estimateResponseTokensWithCap(inputLength, 4000);
+  }
+
+  /**
+   * Estimate response tokens based on input length, capped to the caller's max output size.
+   */
+  async estimateResponseTokensWithCap(inputLength: number, maxTokens: number): Promise<number> {
     const multiplier = await this.getEstimateMultiplier();
     const estimated = Math.ceil(inputLength * multiplier) + DEFAULT_BASE_TOKENS;
+    const safeMaxTokens = Math.max(1, Math.floor(maxTokens));
+    const minimumEstimate = Math.min(50, safeMaxTokens);
 
-    // Clamp to reasonable bounds (min 50, max 4000 for typical responses)
-    return Math.max(50, Math.min(4000, estimated));
+    return Math.max(minimumEstimate, Math.min(safeMaxTokens, estimated));
+  }
+
+  /**
+   * Bill text quotas against response tokens only, falling back conservatively if usage is missing.
+   */
+  getChargeableTextTokens(usage: TokenUsageMetrics | undefined, responseContent: string): number {
+    if (usage && Number.isFinite(usage.completionTokens) && (usage.completionTokens ?? 0) >= 0) {
+      return usage.completionTokens ?? 0;
+    }
+
+    if (usage && Number.isFinite(usage.totalTokens) && (usage.totalTokens ?? 0) >= 0) {
+      return usage.totalTokens ?? 0;
+    }
+
+    const fallbackEstimate = Math.ceil(responseContent.trim().length / 4);
+    return Math.max(1, fallbackEstimate);
   }
 
   /**
@@ -221,7 +251,7 @@ export class QuotaMiddleware {
           allowed: false,
           remaining,
           max: userLimit,
-          reason: `You've reached your daily ${this.formatUsageType(usageType)} limit. Resets at midnight UTC.`
+          reason: `You've reached your daily ${this.formatUsageType(usageType)} limit. Resets at midnight ET.`
         };
       }
 
