@@ -116,103 +116,135 @@ export class QuotaMiddleware {
       return { allowed: true, remaining: Infinity, max: Infinity };
     }
 
-    // Get user's role tier
-    const tier = await this.permissions.getUserRoleTier(guildId, userId, member);
+    try {
+      // Get user's role tier
+      const tier = await this.permissions.getUserRoleTier(guildId, userId, member);
 
-    // Get user's quota limit from database (guild-specific or global fallback)
-    const quotaLimits = await this.adminDb.getRoleTierQuota(guildId, tier);
-    const userLimit = this.getQuotaByType(quotaLimits, usageType);
+      // Get user's quota limit from database (guild-specific or global fallback)
+      const quotaLimits = await this.adminDb.getRoleTierQuota(guildId, tier);
+      const userLimit = this.getQuotaByType(quotaLimits, usageType);
 
-    // Special case: quota = 0 means no access
-    if (userLimit === 0) {
-      logger.debug('Quota check: no access', { guildId, userId, tier, type: usageType });
-      if (usageType === 'voice_minutes') {
+      if (!Number.isFinite(userLimit) || userLimit < 0) {
+        logger.error('Quota check failed closed due to invalid user limit', {
+          guildId,
+          userId,
+          tier,
+          type: usageType,
+          userLimit
+        });
         return {
           allowed: false,
           remaining: 0,
           max: 0,
-          reason: 'Voice features require Trusted role or higher. Ask an admin for access.'
+          reason: 'Quota data is temporarily unavailable. Please try again shortly.'
         };
       }
-      return {
-        allowed: false,
-        remaining: 0,
-        max: 0,
-        reason: `You don't have access to ${this.formatUsageType(usageType)}s.`
-      };
-    }
 
-    // Check guild quota first
-    const guildCheck = await this.adminDb.checkGuildQuota(guildId, usageType, amount);
-    if (!guildCheck.allowed) {
-      logger.warn('Quota check: guild limit reached', {
-        guildId,
-        type: usageType,
-        remaining: guildCheck.remaining,
-        max: guildCheck.max
-      });
-      return {
-        allowed: false,
-        remaining: guildCheck.remaining,
-        max: guildCheck.max,
-        reason: `Server has reached its daily ${this.formatUsageType(usageType)} limit.`
-      };
-    }
+      // Special case: quota = 0 means no access
+      if (userLimit === 0) {
+        logger.debug('Quota check: no access', { guildId, userId, tier, type: usageType });
+        if (usageType === 'voice_minutes') {
+          return {
+            allowed: false,
+            remaining: 0,
+            max: 0,
+            reason: 'Voice features require Trusted role or higher. Ask an admin for access.'
+          };
+        }
+        return {
+          allowed: false,
+          remaining: 0,
+          max: 0,
+          reason: `You don't have access to ${this.formatUsageType(usageType)}s.`
+        };
+      }
 
-    // Get user's current daily usage
-    const userUsage = await this.adminDb.getUserDailyUsage(guildId, userId);
-    const currentUsage = userUsage ? this.getUserUsageByType(userUsage, usageType) : 0;
-    const remaining = Math.max(0, userLimit - currentUsage);
-    const percentUsed = userLimit > 0 ? Math.round((currentUsage / userLimit) * 100) : 0;
+      // Check guild quota first
+      const guildCheck = await this.adminDb.checkGuildQuota(guildId, usageType, amount);
+      if (!guildCheck.allowed) {
+        logger.warn('Quota check: guild limit reached', {
+          guildId,
+          type: usageType,
+          remaining: guildCheck.remaining,
+          max: guildCheck.max
+        });
+        return {
+          allowed: false,
+          remaining: guildCheck.remaining,
+          max: guildCheck.max,
+          reason: `Server has reached its daily ${this.formatUsageType(usageType)} limit.`
+        };
+      }
 
-    // Log quota status
-    logger.debug('Quota check', {
-      guildId,
-      userId,
-      tier,
-      type: usageType,
-      current: currentUsage,
-      requested: amount,
-      remaining,
-      max: userLimit,
-      percentUsed
-    });
+      // Get user's current daily usage
+      const userUsage = await this.adminDb.getUserDailyUsage(guildId, userId);
+      const currentUsage = userUsage ? this.getUserUsageByType(userUsage, usageType) : 0;
+      const remaining = Math.max(0, userLimit - currentUsage);
+      const percentUsed = userLimit > 0 ? Math.round((currentUsage / userLimit) * 100) : 0;
 
-    // Warn when quota is running low (<20% remaining)
-    if (percentUsed >= 80 && remaining > 0) {
-      logger.warn('User quota low', {
+      // Log quota status
+      logger.debug('Quota check', {
         guildId,
         userId,
+        tier,
         type: usageType,
+        current: currentUsage,
+        requested: amount,
         remaining,
         max: userLimit,
         percentUsed
       });
-    }
 
-    if (currentUsage + amount > userLimit) {
-      logger.error('Quota exceeded', {
+      // Warn when quota is running low (<20% remaining)
+      if (percentUsed >= 80 && remaining > 0) {
+        logger.warn('User quota low', {
+          guildId,
+          userId,
+          type: usageType,
+          remaining,
+          max: userLimit,
+          percentUsed
+        });
+      }
+
+      if (currentUsage + amount > userLimit) {
+        logger.error('Quota exceeded', {
+          guildId,
+          userId,
+          type: usageType,
+          requested: amount,
+          current: currentUsage,
+          remaining,
+          max: userLimit
+        });
+        return {
+          allowed: false,
+          remaining,
+          max: userLimit,
+          reason: `You've reached your daily ${this.formatUsageType(usageType)} limit. Resets at midnight UTC.`
+        };
+      }
+
+      return {
+        allowed: true,
+        remaining: remaining - amount,
+        max: userLimit,
+        reason: undefined
+      };
+    } catch (error) {
+      logger.error('Quota check failed closed due to lookup error', {
         guildId,
         userId,
         type: usageType,
-        requested: amount,
-        current: currentUsage,
-        remaining,
-        max: userLimit
+        error
       });
       return {
         allowed: false,
-        remaining,
-        max: userLimit,
-        reason: `You've reached your daily ${this.formatUsageType(usageType)} limit. Resets at midnight UTC.`
+        remaining: 0,
+        max: 0,
+        reason: 'Quota service is temporarily unavailable. Please try again in a moment.'
       };
     }
-
-    return {
-      allowed: true,
-      remaining: remaining - amount,
-      max: userLimit
-    };
   }
 
   /**
@@ -262,30 +294,52 @@ export class QuotaMiddleware {
     usageType: UsageType,
     amount: number
   ): Promise<AtomicRecordResult> {
-    const tier = await this.permissions.getUserRoleTier(guildId, userId, member);
-    const quotaLimits = await this.adminDb.getRoleTierQuota(guildId, tier);
-    const userLimit = this.getQuotaByType(quotaLimits, usageType);
+    try {
+      const tier = await this.permissions.getUserRoleTier(guildId, userId, member);
+      const quotaLimits = await this.adminDb.getRoleTierQuota(guildId, tier);
+      const userLimit = this.getQuotaByType(quotaLimits, usageType);
 
-    const result = await this.adminDb.atomicIncrementUsage(
-      guildId,
-      userId,
-      usageType,
-      amount,
-      userLimit
-    );
+      if (!Number.isFinite(userLimit) || userLimit < 0) {
+        logger.error('Atomic usage record failed due to invalid user limit', {
+          guildId,
+          userId,
+          tier,
+          type: usageType,
+          userLimit
+        });
+        return { success: false, newTotal: 0, remaining: 0 };
+      }
 
-    logger.debug('Usage recorded (atomic)', {
-      guildId,
-      userId,
-      tier,
-      type: usageType,
-      amount,
-      success: result.success,
-      newTotal: result.newTotal,
-      remaining: result.remaining
-    });
+      const result = await this.adminDb.atomicIncrementUsage(
+        guildId,
+        userId,
+        usageType,
+        amount,
+        userLimit
+      );
 
-    return result;
+      logger.debug('Usage recorded (atomic)', {
+        guildId,
+        userId,
+        tier,
+        type: usageType,
+        amount,
+        success: result.success,
+        newTotal: result.newTotal,
+        remaining: result.remaining
+      });
+
+      return result;
+    } catch (error) {
+      logger.error('Atomic usage record failed', {
+        guildId,
+        userId,
+        type: usageType,
+        amount,
+        error
+      });
+      return { success: false, newTotal: 0, remaining: 0 };
+    }
   }
 
   /**

@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS role_tier_quotas (
 
 CREATE INDEX IF NOT EXISTS idx_role_tier_quotas_guild ON role_tier_quotas(guild_id);
 CREATE INDEX IF NOT EXISTS idx_role_tier_quotas_tier ON role_tier_quotas(role_tier);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_role_tier_quotas_scope_tier
+  ON role_tier_quotas (COALESCE(guild_id, '__global__'), role_tier);
 
 -- Pre-populate global defaults (immutable by admins, managed by system only)
 INSERT INTO role_tier_quotas (guild_id, role_tier, text_tokens, images, voice_minutes) VALUES
@@ -89,7 +91,9 @@ BEGIN
   RETURN QUERY
   SELECT rtq.text_tokens, rtq.images, rtq.voice_minutes
   FROM role_tier_quotas rtq
-  WHERE rtq.guild_id = p_guild_id AND rtq.role_tier = p_role_tier;
+  WHERE rtq.guild_id = p_guild_id AND rtq.role_tier = p_role_tier
+  ORDER BY rtq.updated_at DESC NULLS LAST, rtq.created_at DESC NULLS LAST
+  LIMIT 1;
   
   IF FOUND THEN
     RETURN;
@@ -99,7 +103,9 @@ BEGIN
   RETURN QUERY
   SELECT rtq.text_tokens, rtq.images, rtq.voice_minutes
   FROM role_tier_quotas rtq
-  WHERE rtq.guild_id IS NULL AND rtq.role_tier = p_role_tier;
+  WHERE rtq.guild_id IS NULL AND rtq.role_tier = p_role_tier
+  ORDER BY rtq.updated_at DESC NULLS LAST, rtq.created_at DESC NULLS LAST
+  LIMIT 1;
 END;
 $get_role_tier_quota$ LANGUAGE plpgsql STABLE;
 

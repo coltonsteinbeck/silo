@@ -179,6 +179,14 @@ Safety controls:
 
 Use one migration-aware command with explicit targets.
 
+For this repo's standard branch workflow, run schema migrations on the persistent dev branch (no data refresh):
+
+```bash
+bun run migrate:dev
+```
+
+Do not use refresh scripts for schema changes. Use refresh scripts only for data movement.
+
 Primary command:
 
 ```bash
@@ -193,6 +201,9 @@ bash scripts/migrate.sh --target local --status
 
 # Preview pending only
 bash scripts/migrate.sh --target dev --dry-run
+
+# Show pending/applied on persistent dev branch
+bash scripts/migrate.sh --target dev --status
 
 # Apply to prod (requires explicit confirmation)
 bash scripts/migrate.sh --target prod --confirm-prod
@@ -295,7 +306,8 @@ Usage limits reset at midnight UTC:
 
 | Feature       | Member | Trusted | Moderator | Admin |
 | ------------- | ------ | ------- | --------- | ----- |
-| Text tokens   | 5k     | 10k     | 20k       | 50k   |
+| Text tokens   | 7k     | 13k     | 20k       | 50k   |
+| Vision tokens | 1.5k   | 4k      | 5k        | 10k   |
 | Images        | 1      | 2       | 3         | 5     |
 | Voice minutes | 0      | 5       | 10        | 15    |
 

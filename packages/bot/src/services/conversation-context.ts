@@ -28,9 +28,8 @@ export function assembleConversationContext({
   maxVisionTargets = 2
 }: AssembleConversationContextArgs): AssembledConversationContext {
   const referencedContent = replyContext.textContext;
-  const mergedUserContent = referencedContent
-    ? `${processedContent}\n\nReferenced context:\n${referencedContent}`
-    : processedContent;
+  // Keep reference context for storage/auditing, but do not inject it into live prompts.
+  const mergedUserContent = processedContent;
 
   const currentTargets: VisionTarget[] = currentImageUrls.map(url => ({
     url,

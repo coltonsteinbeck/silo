@@ -180,6 +180,47 @@ describe('QuotaMiddleware', () => {
       expect(result.reason).toContain('daily');
       expect(result.reason).toContain('midnight UTC');
     });
+
+    test('fails closed when role quota lookup throws', async () => {
+      mockAdminDb.getRoleTierQuota = mock(async () => {
+        throw new Error('db unavailable');
+      });
+
+      const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
+      const result = await middleware.checkQuota(
+        'guild1',
+        'user1',
+        { id: 'user1' } as any,
+        'text_tokens',
+        100
+      );
+
+      expect(result.allowed).toBe(false);
+      expect(result.max).toBe(0);
+      expect(result.reason).toContain('temporarily unavailable');
+    });
+
+    test('fails closed when resolved user limit is invalid', async () => {
+      mockAdminDb.getRoleTierQuota = mock(async () => ({
+        textTokens: Number.NaN,
+        images: 1,
+        voiceMinutes: 1,
+        visionTokens: 1
+      }));
+
+      const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
+      const result = await middleware.checkQuota(
+        'guild1',
+        'user1',
+        { id: 'user1' } as any,
+        'text_tokens',
+        1
+      );
+
+      expect(result.allowed).toBe(false);
+      expect(result.max).toBe(0);
+      expect(result.reason).toContain('temporarily unavailable');
+    });
   });
 
   describe('estimateResponseTokens', () => {
@@ -275,6 +316,25 @@ describe('QuotaMiddleware', () => {
         100,
         10000
       );
+    });
+
+    test('fails closed when atomic usage lookup throws', async () => {
+      mockAdminDb.getRoleTierQuota = mock(async () => {
+        throw new Error('lookup failure');
+      });
+
+      const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
+      const result = await middleware.recordUsageAtomic(
+        'guild1',
+        'user1',
+        { id: 'user1' } as any,
+        'text_tokens',
+        100
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.newTotal).toBe(0);
+      expect(result.remaining).toBe(0);
     });
   });
 
