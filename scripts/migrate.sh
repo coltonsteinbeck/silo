@@ -250,6 +250,10 @@ record_migration_tracking_rows() {
         -v mig_filename="$filename" \
         -v mig_stem="$stem" \
         -v mig_prefix="$prefix" <<'SQL'
+SELECT set_config('silo.mig_filename', :'mig_filename', false);
+SELECT set_config('silo.mig_stem', :'mig_stem', false);
+SELECT set_config('silo.mig_prefix', :'mig_prefix', false);
+
 DO $$
 DECLARE
     target RECORD;
@@ -259,6 +263,9 @@ DECLARE
     insert_columns text;
     insert_values text;
     missing_required int;
+    mig_filename text := current_setting('silo.mig_filename', true);
+    mig_stem text := current_setting('silo.mig_stem', true);
+    mig_prefix text := current_setting('silo.mig_prefix', true);
 BEGIN
     FOR target IN
         SELECT table_schema, table_name
@@ -292,16 +299,16 @@ BEGIN
 
         IF has_filename THEN
             insert_columns := 'filename';
-            insert_values := quote_literal(:'mig_filename');
+            insert_values := quote_literal(mig_filename);
         ELSIF has_version AND has_name THEN
             insert_columns := 'version, name';
-            insert_values := quote_literal(:'mig_prefix') || ', ' || quote_literal(:'mig_filename');
+            insert_values := quote_literal(mig_prefix) || ', ' || quote_literal(mig_filename);
         ELSIF has_version THEN
             insert_columns := 'version';
-            insert_values := quote_literal(:'mig_prefix');
+            insert_values := quote_literal(mig_prefix);
         ELSIF has_name THEN
             insert_columns := 'name';
-            insert_values := quote_literal(:'mig_stem');
+            insert_values := quote_literal(mig_stem);
         ELSE
             CONTINUE;
         END IF;
@@ -314,7 +321,7 @@ BEGIN
           AND c.is_nullable = 'NO'
           AND c.column_default IS NULL
           AND c.identity_generation IS NULL
-          AND c.generated = 'NEVER'
+          AND c.is_generated = 'NEVER'
           AND c.column_name <> ALL (
               string_to_array(replace(insert_columns, ' ', ''), ',')
           );
