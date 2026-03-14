@@ -9,7 +9,7 @@ const INTERNAL_METADATA_PATTERNS: RegExp[] = [
   /\[Attached images:\s*\d+\]\s*/gi
 ];
 
-const XML_LIKE_TAG_PATTERN = /<\/?[a-z][a-z0-9_:-]*(?:\s[^<>]*)?>/gi;
+const XML_LIKE_TAG_PATTERN = /<\/?[a-z][a-z0-9_:-]*(?:\s[^<>]*?)?\/?>/gi;
 const DANGLING_TAG_TOKEN_PATTERN = /(^|\s)<[a-z][a-z0-9_:-]*(?=\s|$)/gim;
 
 export function sanitizeAssistantOutput(

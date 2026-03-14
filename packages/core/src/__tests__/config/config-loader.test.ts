@@ -316,6 +316,20 @@ describe('ConfigLoader', () => {
       expect(config.rateLimits.commandsPerUser).toBe(20);
       expect(config.rateLimits.aiRequestsPerGuild).toBe(100);
     });
+
+    test('throws descriptive error for malformed connector host URL', () => {
+      cleanup = withEnv({
+        DEPLOYMENT_MODE: 'development',
+        DEV_DB_IDENTIFIER: 'https://bad host',
+        SUPABASE_DEV_PW: 'pw',
+        DATABASE_URL: undefined,
+        DISCORD_TOKEN: 'a'.repeat(60),
+        DISCORD_CLIENT_ID: '123456789012345678',
+        REDIS_URL: 'redis://localhost:6379'
+      });
+
+      expect(() => ConfigLoader.load()).toThrow('Invalid connector host/identifier');
+    });
   });
 
   describe('validate', () => {

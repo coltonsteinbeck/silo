@@ -14,7 +14,13 @@ function normalizeSupabaseHost(identifierOrHost: string): string {
 
   // Accept full URLs and strip to hostname.
   if (value.startsWith('http://') || value.startsWith('https://')) {
-    return new URL(value).hostname;
+    try {
+      return new URL(value).hostname;
+    } catch {
+      throw new Error(
+        `Invalid connector host/identifier: "${identifierOrHost}". Expected a valid URL or Supabase identifier.`
+      );
+    }
   }
 
   // If dots are present, treat as an already-qualified hostname.

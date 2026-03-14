@@ -53,4 +53,23 @@ describe('AnthropicProvider', () => {
       'No text response from Anthropic'
     );
   });
+
+  test('treats whitespace-only text blocks as empty and throws no-text error', async () => {
+    createMock = mock(async () => ({
+      content: [
+        { type: 'tool_use', id: 'tool_1', name: 'lookup', input: { query: 'x' } },
+        { type: 'text', text: '    ' },
+        { type: 'text', text: '\n\t  ' },
+        { type: 'text', text: '' }
+      ],
+      usage: { input_tokens: 20, output_tokens: 8 },
+      model: 'claude-test'
+    }));
+
+    (provider as any).client.messages.create = createMock;
+
+    await expect(provider.generateText([{ role: 'user', content: 'hello' }])).rejects.toThrow(
+      'No text response from Anthropic'
+    );
+  });
 });
