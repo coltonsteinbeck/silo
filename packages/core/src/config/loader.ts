@@ -9,6 +9,23 @@ function parseOptionalNumber(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function normalizeSupabaseHost(identifierOrHost: string): string {
+  const value = identifierOrHost.trim();
+
+  // Accept full URLs and strip to hostname.
+  if (value.startsWith('http://') || value.startsWith('https://')) {
+    return new URL(value).hostname;
+  }
+
+  // If dots are present, treat as an already-qualified hostname.
+  if (value.includes('.')) {
+    return value;
+  }
+
+  // Otherwise treat as a Supabase project/branch identifier.
+  return `db.${value}`;
+}
+
 function buildDatabaseUrl(): string {
   // Honor explicit override first
   if (process.env.DATABASE_URL) {
@@ -29,7 +46,8 @@ function buildDatabaseUrl(): string {
       );
     }
     const encodedPassword = encodeURIComponent(password);
-    return `postgresql://postgres:${encodedPassword}@db.${identifier}:5432/postgres`;
+    const host = normalizeSupabaseHost(identifier);
+    return `postgresql://postgres:${encodedPassword}@${host}:5432/postgres`;
   }
 
   if (mode === 'development') {
@@ -37,7 +55,8 @@ function buildDatabaseUrl(): string {
     const password = process.env.SUPABASE_DEV_PW;
     if (identifier && password) {
       const encodedPassword = encodeURIComponent(password);
-      return `postgresql://postgres:${encodedPassword}@db.${identifier}:5432/postgres`;
+      const host = normalizeSupabaseHost(identifier);
+      return `postgresql://postgres:${encodedPassword}@${host}:5432/postgres`;
     }
   }
 

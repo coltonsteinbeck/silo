@@ -82,7 +82,8 @@ EXECUTE FUNCTION update_updated_at_column();
 CREATE OR REPLACE FUNCTION get_role_tier_quota(
   p_guild_id TEXT,
   p_role_tier TEXT
-) RETURNS TABLE(text_tokens INTEGER, images INTEGER, voice_minutes INTEGER) AS $$
+) RETURNS TABLE(text_tokens INTEGER, images INTEGER, voice_minutes INTEGER)
+AS $get_role_tier_quota$
 BEGIN
   -- Try guild-specific first
   RETURN QUERY
@@ -100,119 +101,127 @@ BEGIN
   FROM role_tier_quotas rtq
   WHERE rtq.guild_id IS NULL AND rtq.role_tier = p_role_tier;
 END;
-$$ LANGUAGE plpgsql STABLE;
+$get_role_tier_quota$ LANGUAGE plpgsql STABLE;
 
 -- ============================================================================
 -- FUNCTION: Atomic increment usage (race-condition safe)
 -- ============================================================================
 
-CREATE OR REPLACE FUNCTION increment_usage_atomic(
-  p_guild_id TEXT,
-  p_user_id TEXT,
-  p_resource TEXT,
-  p_amount INTEGER,
-  p_user_limit INTEGER
-) RETURNS TABLE(success BOOLEAN, new_total INTEGER, remaining INTEGER) AS $$
-DECLARE
-  v_current INTEGER;
-  v_new INTEGER;
-  v_result RECORD;
+DO $create_increment_usage_atomic$
 BEGIN
-  -- Ensure record exists for today (upsert)
-  INSERT INTO usage_tracking (guild_id, user_id, usage_date)
-  VALUES (p_guild_id, p_user_id, CURRENT_DATE)
-  ON CONFLICT (guild_id, user_id, usage_date) DO NOTHING;
+  EXECUTE $function$
+  CREATE OR REPLACE FUNCTION increment_usage_atomic(
+    p_guild_id TEXT,
+    p_user_id TEXT,
+    p_resource TEXT,
+    p_amount INTEGER,
+    p_user_limit INTEGER
+  ) RETURNS TABLE(success BOOLEAN, new_total INTEGER, remaining INTEGER)
+  LANGUAGE plpgsql
+  AS $body$
+  DECLARE
+    v_current INTEGER;
+    v_result RECORD;
+  BEGIN
+    -- Ensure record exists for today (upsert)
+    INSERT INTO usage_tracking (guild_id, user_id, usage_date)
+    VALUES (p_guild_id, p_user_id, CURRENT_DATE)
+    ON CONFLICT (guild_id, user_id, usage_date) DO NOTHING;
 
-  -- Atomic check-and-increment in single UPDATE with WHERE clause
-  IF p_resource = 'text_tokens' THEN
-    UPDATE usage_tracking
-    SET text_tokens_used = text_tokens_used + p_amount,
-        text_requests = text_requests + 1,
-        updated_at = NOW()
-    WHERE guild_id = p_guild_id 
-      AND user_id = p_user_id 
-      AND usage_date = CURRENT_DATE
-      AND text_tokens_used + p_amount <= p_user_limit
-    RETURNING TRUE AS success,
-              text_tokens_used AS new_total,
-              (p_user_limit - text_tokens_used) AS remaining
-    INTO v_result;
-    
-  ELSIF p_resource = 'images' THEN
-    UPDATE usage_tracking
-    SET images_used = images_used + p_amount,
-        image_requests = image_requests + 1,
-        updated_at = NOW()
-    WHERE guild_id = p_guild_id 
-      AND user_id = p_user_id 
-      AND usage_date = CURRENT_DATE
-      AND images_used + p_amount <= p_user_limit
-    RETURNING TRUE AS success,
-              images_used AS new_total,
-              (p_user_limit - images_used) AS remaining
-    INTO v_result;
-    
-  ELSIF p_resource = 'voice_minutes' THEN
-    UPDATE usage_tracking
-    SET voice_minutes_used = voice_minutes_used + p_amount,
-        voice_requests = voice_requests + 1,
-        updated_at = NOW()
-    WHERE guild_id = p_guild_id 
-      AND user_id = p_user_id 
-      AND usage_date = CURRENT_DATE
-      AND voice_minutes_used + p_amount <= p_user_limit
-    RETURNING TRUE AS success,
-              voice_minutes_used AS new_total,
-              (p_user_limit - voice_minutes_used) AS remaining
-    INTO v_result;
-  END IF;
+    -- Atomic check-and-increment in single UPDATE with WHERE clause
+    IF p_resource = 'text_tokens' THEN
+      UPDATE usage_tracking
+      SET text_tokens_used = text_tokens_used + p_amount,
+          text_requests = text_requests + 1,
+          updated_at = NOW()
+      WHERE guild_id = p_guild_id
+        AND user_id = p_user_id
+        AND usage_date = CURRENT_DATE
+        AND text_tokens_used + p_amount <= p_user_limit
+      RETURNING TRUE AS success,
+                text_tokens_used AS new_total,
+                (p_user_limit - text_tokens_used) AS remaining
+      INTO v_result;
 
-  -- If update succeeded, also update guild aggregate
-  IF v_result.success IS TRUE THEN
-    INSERT INTO guild_daily_usage (guild_id, usage_date, total_text_tokens, total_images, total_voice_minutes)
-    VALUES (
-      p_guild_id, 
-      CURRENT_DATE,
-      CASE WHEN p_resource = 'text_tokens' THEN p_amount ELSE 0 END,
-      CASE WHEN p_resource = 'images' THEN p_amount ELSE 0 END,
-      CASE WHEN p_resource = 'voice_minutes' THEN p_amount ELSE 0 END
-    )
-    ON CONFLICT (guild_id, usage_date) DO UPDATE SET
-      total_text_tokens = guild_daily_usage.total_text_tokens + 
+    ELSIF p_resource = 'images' THEN
+      UPDATE usage_tracking
+      SET images_used = images_used + p_amount,
+          image_requests = image_requests + 1,
+          updated_at = NOW()
+      WHERE guild_id = p_guild_id
+        AND user_id = p_user_id
+        AND usage_date = CURRENT_DATE
+        AND images_used + p_amount <= p_user_limit
+      RETURNING TRUE AS success,
+                images_used AS new_total,
+                (p_user_limit - images_used) AS remaining
+      INTO v_result;
+
+    ELSIF p_resource = 'voice_minutes' THEN
+      UPDATE usage_tracking
+      SET voice_minutes_used = voice_minutes_used + p_amount,
+          voice_requests = voice_requests + 1,
+          updated_at = NOW()
+      WHERE guild_id = p_guild_id
+        AND user_id = p_user_id
+        AND usage_date = CURRENT_DATE
+        AND voice_minutes_used + p_amount <= p_user_limit
+      RETURNING TRUE AS success,
+                voice_minutes_used AS new_total,
+                (p_user_limit - voice_minutes_used) AS remaining
+      INTO v_result;
+    END IF;
+
+    -- If update succeeded, also update guild aggregate
+    IF v_result.success IS TRUE THEN
+      INSERT INTO guild_daily_usage (guild_id, usage_date, total_text_tokens, total_images, total_voice_minutes)
+      VALUES (
+        p_guild_id,
+        CURRENT_DATE,
         CASE WHEN p_resource = 'text_tokens' THEN p_amount ELSE 0 END,
-      total_images = guild_daily_usage.total_images + 
         CASE WHEN p_resource = 'images' THEN p_amount ELSE 0 END,
-      total_voice_minutes = guild_daily_usage.total_voice_minutes + 
-        CASE WHEN p_resource = 'voice_minutes' THEN p_amount ELSE 0 END,
-      updated_at = NOW();
-    
-    RETURN QUERY SELECT v_result.success, v_result.new_total, v_result.remaining;
-    RETURN;
-  END IF;
+        CASE WHEN p_resource = 'voice_minutes' THEN p_amount ELSE 0 END
+      )
+      ON CONFLICT (guild_id, usage_date) DO UPDATE SET
+        total_text_tokens = guild_daily_usage.total_text_tokens +
+          CASE WHEN p_resource = 'text_tokens' THEN p_amount ELSE 0 END,
+        total_images = guild_daily_usage.total_images +
+          CASE WHEN p_resource = 'images' THEN p_amount ELSE 0 END,
+        total_voice_minutes = guild_daily_usage.total_voice_minutes +
+          CASE WHEN p_resource = 'voice_minutes' THEN p_amount ELSE 0 END,
+        updated_at = NOW();
 
-  -- If no rows updated, quota was exceeded - get current value
-  SELECT 
-    CASE p_resource
-      WHEN 'text_tokens' THEN text_tokens_used
-      WHEN 'images' THEN images_used
-      WHEN 'voice_minutes' THEN voice_minutes_used
-      ELSE 0
-    END INTO v_current
-  FROM usage_tracking
-  WHERE guild_id = p_guild_id AND user_id = p_user_id AND usage_date = CURRENT_DATE;
-  
-  v_current := COALESCE(v_current, 0);
-  
-  RETURN QUERY SELECT FALSE, v_current, GREATEST(0, p_user_limit - v_current);
+      RETURN QUERY SELECT v_result.success, v_result.new_total, v_result.remaining;
+      RETURN;
+    END IF;
+
+    -- If no rows updated, quota was exceeded - get current value
+    SELECT
+      CASE p_resource
+        WHEN 'text_tokens' THEN text_tokens_used
+        WHEN 'images' THEN images_used
+        WHEN 'voice_minutes' THEN voice_minutes_used
+        ELSE 0
+      END INTO v_current
+    FROM usage_tracking
+    WHERE guild_id = p_guild_id AND user_id = p_user_id AND usage_date = CURRENT_DATE;
+
+    v_current := COALESCE(v_current, 0);
+
+    RETURN QUERY SELECT FALSE, v_current, GREATEST(0, p_user_limit - v_current);
+  END;
+  $body$;
+  $function$;
 END;
-$$ LANGUAGE plpgsql;
+$create_increment_usage_atomic$;
 
 -- ============================================================================
 -- FUNCTION: Get 7-day accuracy stats for estimate tuning
 -- ============================================================================
 
 CREATE OR REPLACE FUNCTION get_accuracy_stats(p_days INTEGER DEFAULT 7)
-RETURNS TABLE(avg_ratio NUMERIC, sample_count BIGINT, std_dev NUMERIC) AS $$
+RETURNS TABLE(avg_ratio NUMERIC, sample_count BIGINT, std_dev NUMERIC)
+AS $get_accuracy_stats$
   SELECT 
     AVG(actual_tokens::NUMERIC / NULLIF(input_length, 0)) as avg_ratio,
     COUNT(*) as sample_count,
@@ -221,14 +230,15 @@ RETURNS TABLE(avg_ratio NUMERIC, sample_count BIGINT, std_dev NUMERIC) AS $$
   WHERE created_at > NOW() - (p_days || ' days')::INTERVAL
     AND input_length > 0
     AND actual_tokens > 0;
-$$ LANGUAGE sql STABLE;
+$get_accuracy_stats$ LANGUAGE sql STABLE;
 
 -- ============================================================================
 -- FUNCTION: Cleanup old accuracy logs (>30 days)
 -- ============================================================================
 
 CREATE OR REPLACE FUNCTION cleanup_old_accuracy_logs(p_days INTEGER DEFAULT 30)
-RETURNS INTEGER AS $$
+RETURNS INTEGER
+AS $cleanup_old_accuracy_logs$
 DECLARE
   deleted_count INTEGER;
 BEGIN
@@ -236,14 +246,15 @@ BEGIN
   GET DIAGNOSTICS deleted_count = ROW_COUNT;
   RETURN deleted_count;
 END;
-$$ LANGUAGE plpgsql;
+$cleanup_old_accuracy_logs$ LANGUAGE plpgsql;
 
 -- ============================================================================
 -- FUNCTION: Cleanup old usage data (>90 days)
 -- ============================================================================
 
 CREATE OR REPLACE FUNCTION cleanup_old_usage(p_days INTEGER DEFAULT 90)
-RETURNS TABLE(usage_deleted INTEGER, guild_usage_deleted INTEGER) AS $$
+RETURNS TABLE(usage_deleted INTEGER, guild_usage_deleted INTEGER)
+AS $cleanup_old_usage$
 DECLARE
   v_usage_deleted INTEGER;
   v_guild_deleted INTEGER;
@@ -256,7 +267,7 @@ BEGIN
   
   RETURN QUERY SELECT v_usage_deleted, v_guild_deleted;
 END;
-$$ LANGUAGE plpgsql;
+$cleanup_old_usage$ LANGUAGE plpgsql;
 
 -- ============================================================================
 -- FUNCTION: Get users needing reset notification
@@ -268,12 +279,12 @@ RETURNS TABLE(
   user_id TEXT,
   channel_id TEXT,
   exhausted_at TIMESTAMP WITH TIME ZONE
-) AS $$
+) AS $get_users_needing_reset_notification$
   SELECT qrn.guild_id, qrn.user_id, qrn.channel_id, qrn.exhausted_at
   FROM quota_reset_notifications qrn
   -- Only return if it's a new day (quota has reset)
   WHERE DATE(qrn.exhausted_at) < CURRENT_DATE;
-$$ LANGUAGE sql STABLE;
+$get_users_needing_reset_notification$ LANGUAGE sql STABLE;
 
 -- ============================================================================
 -- FUNCTION: Get guild quota stats for admin view
@@ -286,7 +297,7 @@ RETURNS TABLE(
   voice_minutes_used BIGINT,
   unique_users BIGINT,
   pending_reset_notifications BIGINT
-) AS $$
+) AS $get_guild_quota_stats$
   SELECT 
     COALESCE(SUM(ut.text_tokens_used), 0) as text_tokens_used,
     COALESCE(SUM(ut.images_used), 0) as images_used,
@@ -295,7 +306,7 @@ RETURNS TABLE(
     (SELECT COUNT(*) FROM quota_reset_notifications WHERE guild_id = p_guild_id) as pending_reset_notifications
   FROM usage_tracking ut
   WHERE ut.guild_id = p_guild_id AND ut.usage_date = CURRENT_DATE;
-$$ LANGUAGE sql STABLE;
+$get_guild_quota_stats$ LANGUAGE sql STABLE;
 
 -- ============================================================================
 -- RLS POLICIES

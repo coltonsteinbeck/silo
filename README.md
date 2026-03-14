@@ -70,8 +70,11 @@ bun install
 # Get your Postgres connection string from Supabase
 export DATABASE_URL='postgresql://postgres:[password]@db.[project].supabase.co:5432/postgres'
 
-# Run migrations
-bun run migrate:remote
+# Run migration status (remote target)
+bash scripts/migrate.sh --target remote --status
+
+# Apply only pending migrations (remote target)
+bash scripts/migrate.sh --target remote
 
 # Start local Redis
 docker run -d -p 6379:6379 redis:7-alpine
@@ -143,6 +146,69 @@ docker run -d \
 # Or with docker-compose (includes Postgres + Redis)
 docker-compose -f docker-compose.prod.yml up -d
 ```
+
+### Data Refresh Workflow (Prod -> Local -> Dev Branch)
+
+Use a two-lane workflow to avoid accidental writes and reduce schema drift:
+
+1. Refresh local Supabase first (Docker + local `DATABASE_URL`).
+2. Run app and smoke tests locally.
+3. Refresh persistent dev branch only after local validation passes.
+
+Persistent branch refresh script:
+
+```bash
+bun run db:refresh:branch
+```
+
+Required environment variables for branch refresh:
+
+- `HOSTED_DB_IDENTIFIER`
+- `SUPABASE_PW`
+- `DEV_DB_IDENTIFIER`
+- `SUPABASE_DEV_PW`
+
+Safety controls:
+
+- The branch script requires `CONFIRM_REMOTE_RESTORE=true`.
+- The script fails if source and target hosts match.
+- The script fails if the branch target resolves to localhost.
+- The script can back up the target branch before restore and checks migration compatibility by default.
+
+### Migration Workflow (Schema Promotion)
+
+Use one migration-aware command with explicit targets.
+
+Primary command:
+
+```bash
+bash scripts/migrate.sh --target <local|dev|prod|remote>
+```
+
+Helpful modes:
+
+```bash
+# Show pending/applied without changing schema
+bash scripts/migrate.sh --target local --status
+
+# Preview pending only
+bash scripts/migrate.sh --target dev --dry-run
+
+# Apply to prod (requires explicit confirmation)
+bash scripts/migrate.sh --target prod --confirm-prod
+```
+
+Promotion order:
+
+1. Apply locally first.
+2. Apply to persistent dev branch.
+3. Apply to production last.
+
+Migration safety rules:
+
+- Treat already-applied migration files as immutable.
+- If a migration already ran in dev/prod, add a new corrective migration instead of editing old files.
+- Keep data refresh scripts (`clone-prod-to-local.sh`, `refresh-prod-to-branch.sh`) for data movement only; use `migrate.sh` for schema progression.
 
 ## Getting Discord Bot Token
 
@@ -277,7 +343,12 @@ All configuration in `.env`:
 
 - `bun run dev` - Start in development mode
 - `bun run build` - Build for production
-- `bun run migrate` - Run database migrations
+- `bun run migrate` - Apply pending migrations to default target (local)
+- `bun run migrate:status` - Show applied/pending migrations without changes
+- `bun run migrate:dry-run` - Preview pending migrations without applying
+- `bun run migrate:local` - Apply pending migrations to local DB
+- `bun run migrate:dev` - Apply pending migrations to persistent dev branch DB
+- `bun run migrate:prod` - Apply pending migrations to prod DB (guarded)
 - `bun run type-check` - Check TypeScript types
 
 ## License
