@@ -49,6 +49,7 @@ BEGIN
       WHEN 'text_tokens' THEN COALESCE(q.daily_text_tokens, 50000)
       WHEN 'images' THEN COALESCE(q.daily_images, 5)
       WHEN 'voice_minutes' THEN COALESCE(q.daily_voice_minutes, 15)
+      WHEN 'vision_tokens' THEN COALESCE(q.daily_vision_tokens, 20000)
       ELSE 0
     END INTO quota_limit
   FROM guild_quotas q
@@ -59,6 +60,7 @@ BEGIN
       WHEN 'text_tokens' THEN 50000
       WHEN 'images' THEN 5
       WHEN 'voice_minutes' THEN 15
+      WHEN 'vision_tokens' THEN 20000
       ELSE 0
     END;
   END IF;
@@ -68,6 +70,7 @@ BEGIN
       WHEN 'text_tokens' THEN COALESCE(SUM(text_tokens_used), 0)
       WHEN 'images' THEN COALESCE(SUM(images_used), 0)
       WHEN 'voice_minutes' THEN COALESCE(SUM(voice_minutes_used), 0)
+      WHEN 'vision_tokens' THEN COALESCE(SUM(vision_tokens_used), 0)
       ELSE 0
     END INTO current_usage
   FROM usage_tracking
