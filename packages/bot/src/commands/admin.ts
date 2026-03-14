@@ -45,6 +45,17 @@ export class AdminCommand implements Command {
           .addUserOption(option =>
             option.setName('user').setDescription('User to view history for').setRequired(false)
           )
+      )
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('quota-override')
+          .setDescription('Reset quota usage for one user or the whole server (ET day)')
+          .addUserOption(option =>
+            option
+              .setName('user')
+              .setDescription('User to reset (leave empty to reset all users)')
+              .setRequired(false)
+          )
       );
   }
 
@@ -91,6 +102,9 @@ export class AdminCommand implements Command {
           break;
         case 'quota-history':
           await this.handleQuotaHistory(interaction);
+          break;
+        case 'quota-override':
+          await this.handleQuotaOverride(interaction);
           break;
         default:
           await interaction.reply({
@@ -284,7 +298,7 @@ export class AdminCommand implements Command {
           inline: true
         }
       )
-      .setFooter({ text: 'Resets daily at midnight UTC' })
+      .setFooter({ text: 'Resets daily at midnight ET' })
       .setTimestamp();
 
     await interaction.editReply({ embeds: [embed] });
@@ -342,7 +356,7 @@ export class AdminCommand implements Command {
           inline: false
         }
       )
-      .setFooter({ text: 'Response-only token tracking • Resets at midnight UTC' })
+      .setFooter({ text: 'Response-only token tracking • Resets at midnight ET' })
       .setTimestamp();
 
     await interaction.editReply({ embeds: [embed] });
@@ -397,10 +411,63 @@ export class AdminCommand implements Command {
           inline: true
         }
       )
-      .setFooter({ text: 'Quotas reset daily at midnight UTC' })
+      .setFooter({ text: 'Quotas reset daily at midnight ET' })
       .setTimestamp();
 
     await interaction.editReply({ embeds: [embed] });
+  }
+
+  private async handleQuotaOverride(interaction: ChatInputCommandInteraction): Promise<void> {
+    await interaction.deferReply({ ephemeral: true });
+
+    const guildId = interaction.guildId!;
+    const adminUserId = interaction.user.id;
+    const targetUser = interaction.options.getUser('user');
+
+    const cooldown = await this.adminDb.getQuotaOverrideCooldown(guildId, adminUserId);
+    if (!cooldown.allowed) {
+      const nextAvailableAt = cooldown.nextAvailableAt
+        ? cooldown.nextAvailableAt.toLocaleString('en-US', {
+            timeZone: 'America/New_York',
+            hour12: true,
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: 'numeric',
+            minute: '2-digit'
+          })
+        : 'in less than 24 hours';
+
+      await interaction.editReply({
+        content: `Cooldown active. You can use quota override again after ${nextAvailableAt} ET.`
+      });
+      return;
+    }
+
+    const result = await this.adminDb.applyQuotaOverride(guildId, adminUserId, targetUser?.id);
+
+    await this.adminDb.logAction({
+      guildId,
+      userId: adminUserId,
+      action: 'quota_override_applied',
+      details: {
+        scope: targetUser ? 'user' : 'all',
+        targetUserId: targetUser?.id ?? null,
+        affectedUsers: result.affectedUsers,
+        usageDate: result.usageDate
+      }
+    });
+
+    if (targetUser) {
+      await interaction.editReply({
+        content: `Quota override applied for <@${targetUser.id}>. Reset ET day usage (${result.usageDate}).`
+      });
+      return;
+    }
+
+    await interaction.editReply({
+      content: `Quota override applied for all users in this server for ET day ${result.usageDate}. Affected users: ${result.affectedUsers}.`
+    });
   }
 
   private progressBar(percent: number): string {

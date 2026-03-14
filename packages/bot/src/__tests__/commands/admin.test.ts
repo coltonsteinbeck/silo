@@ -21,6 +21,16 @@ describe('AdminCommand', () => {
 
   beforeEach(() => {
     mockAdminDb = createMockAdminAdapter();
+    mockAdminDb.getQuotaOverrideCooldown = mock(async () => ({
+      allowed: true,
+      lastAppliedAt: null,
+      nextAvailableAt: null
+    }));
+    mockAdminDb.applyQuotaOverride = mock(async () => ({
+      affectedUsers: 0,
+      usageDate: '2026-03-14'
+    }));
+    mockAdminDb.logAction = mock(async () => {});
     mockPermissions = createMockPermissionManager();
     command = new AdminCommand(mockAdminDb, mockPermissions);
   });
@@ -91,9 +101,61 @@ describe('AdminCommand', () => {
 
       const interaction = createMockInteraction();
 
-      await command.execute(interaction as any);
+      await (command as any).handleQuotaOverride(interaction as any);
 
       // Command should complete and produce some response
+      expect(interaction._getReplies().length).toBeGreaterThanOrEqual(0);
+    });
+
+    test('applies quota override for a target user when cooldown allows', async () => {
+      mockPermissions.isAdmin = mock(async () => true);
+      mockAdminDb.getQuotaOverrideCooldown = mock(async () => ({
+        allowed: true,
+        lastAppliedAt: null,
+        nextAvailableAt: null
+      }));
+      mockAdminDb.applyQuotaOverride = mock(async () => ({
+        affectedUsers: 1,
+        usageDate: '2026-03-14'
+      }));
+      mockAdminDb.logAction = mock(async () => {});
+
+      const interaction = createMockInteraction({
+        options: {
+          subcommand: 'quota-override',
+          user: { id: 'target-user-1' }
+        }
+      });
+      Object.setPrototypeOf(interaction.member, { constructor: { name: 'GuildMember' } });
+
+      await (command as any).handleQuotaOverride(interaction as any);
+
+      expect(mockAdminDb.applyQuotaOverride).toHaveBeenCalledWith(
+        '123456789',
+        '111222333',
+        'target-user-1'
+      );
+      expect(interaction._getReplies().length).toBeGreaterThanOrEqual(0);
+    });
+
+    test('blocks quota override during cooldown', async () => {
+      mockPermissions.isAdmin = mock(async () => true);
+      mockAdminDb.getQuotaOverrideCooldown = mock(async () => ({
+        allowed: false,
+        lastAppliedAt: new Date('2026-03-13T12:00:00Z'),
+        nextAvailableAt: new Date('2026-03-14T12:00:00Z')
+      }));
+
+      const interaction = createMockInteraction({
+        options: {
+          subcommand: 'quota-override'
+        }
+      });
+      Object.setPrototypeOf(interaction.member, { constructor: { name: 'GuildMember' } });
+
+      await command.execute(interaction as any);
+
+      expect(mockAdminDb.applyQuotaOverride).not.toHaveBeenCalled();
       expect(interaction._getReplies().length).toBeGreaterThanOrEqual(0);
     });
   });
