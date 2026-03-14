@@ -46,6 +46,7 @@ import {
   resolvePromptPolicy,
   safetyMonitor
 } from './security';
+import { sanitizeAssistantOutput } from './security/output-sanitizer';
 import { QuotaMiddleware } from './middleware/quota';
 import { CostAggregator } from './services/cost-aggregator';
 import { selectMemoryContext } from './services/memory-selector';
@@ -149,6 +150,14 @@ async function main() {
 
   const config = ConfigLoader.load();
   logger.info('Configuration loaded successfully');
+  try {
+    const dbUrl = new URL(config.database.url);
+    logger.info(
+      `Database target resolved: ${dbUrl.hostname}${dbUrl.port ? `:${dbUrl.port}` : ''}/${dbUrl.pathname.replace(/^\//, '') || 'postgres'}`
+    );
+  } catch {
+    logger.warn('Database target could not be parsed from configuration URL');
+  }
 
   // Initialize database
   const db = new PostgresAdapter(config.database.url, {
@@ -434,6 +443,7 @@ async function main() {
 
       let estimatedTokens = 0;
       let visionUserLimit: number | undefined;
+      let textUserLimit: number | undefined;
 
       if (useVision) {
         const estimatedVisionTokens = visionRouting.estimatedVisionTokens;
@@ -481,6 +491,8 @@ async function main() {
           });
           return;
         }
+
+        textUserLimit = quotaCheck.max;
       }
 
       logger.info(
@@ -591,7 +603,6 @@ async function main() {
         role: msg.role,
         content: [
           msg.role === 'user' ? `[User: ${msg.userId}] ${msg.content}` : msg.content,
-          msg.referencedContent ? `[Referenced context]\n${msg.referencedContent}` : '',
           msg.imageSummary ? `[Image context]\n${msg.imageSummary}` : ''
         ]
           .filter(Boolean)
@@ -750,6 +761,15 @@ async function main() {
         }
       }
 
+      responseContent = sanitizeAssistantOutput(responseContent, {
+        stripInternalMetadata: true,
+        stripXmlLikeTags: true
+      });
+
+      if (!responseContent.trim()) {
+        responseContent = 'Sorry, I could not generate a valid response. Please try again.';
+      }
+
       if (responseContent.length > MAX_MESSAGE_LENGTH) {
         // Truncate and add ellipsis
         responseContent = responseContent.substring(0, MAX_MESSAGE_LENGTH - 4) + '...';
@@ -800,6 +820,7 @@ async function main() {
       ];
 
       if (usedVision) {
+        const safeVisionUserLimit = Number.isFinite(visionUserLimit) ? visionUserLimit : undefined;
         Promise.all([
           ...conversationWrites,
           quotaMiddleware.recordUsage(
@@ -807,19 +828,21 @@ async function main() {
             message.author.id,
             'vision_tokens',
             Math.max(visionTokensUsed, actualTokens),
-            visionUserLimit
+            safeVisionUserLimit
           )
         ]).catch(err => {
           logger.error('Failed to complete post-response writes:', err);
         });
       } else {
+        const safeTextUserLimit = Number.isFinite(textUserLimit) ? textUserLimit : undefined;
         Promise.all([
           ...conversationWrites,
           quotaMiddleware.recordUsage(
             message.guildId,
             message.author.id,
             'text_tokens',
-            actualTokens
+            actualTokens,
+            safeTextUserLimit
           ),
           quotaMiddleware.logAccuracy(
             message.guildId,
