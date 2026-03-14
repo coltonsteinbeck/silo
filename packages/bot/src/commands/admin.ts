@@ -210,14 +210,41 @@ export class AdminCommand implements Command {
       return;
     }
 
-    // Get user's role tier and quota limits
-    const tier = await this.permissions.getUserRoleTier(guildId, targetUser.id, targetMember);
-    const quotaLimits = await this.adminDb.getRoleTierQuota(guildId, tier);
-    const usage = await this.adminDb.getUserDailyUsage(guildId, targetUser.id);
+    let tier: 'admin' | 'moderator' | 'trusted' | 'member' | 'restricted';
+    let quotaLimits: {
+      textTokens: number;
+      images: number;
+      voiceMinutes: number;
+      visionTokens: number;
+    };
+    let usage: {
+      textTokens: number;
+      images: number;
+      voiceMinutes: number;
+      visionTokens: number;
+    } | null;
+
+    try {
+      tier = await this.permissions.getUserRoleTier(guildId, targetUser.id, targetMember);
+      quotaLimits = await this.adminDb.getRoleTierQuota(guildId, tier);
+      usage = await this.adminDb.getUserDailyUsage(guildId, targetUser.id);
+    } catch (error) {
+      logger.error('Admin quota-view data fetch failed', {
+        guildId,
+        adminId: interaction.user.id,
+        targetUserId: targetUser.id,
+        error
+      });
+      await interaction.editReply({
+        content: 'Unable to load quota status right now. Please try again in a moment.'
+      });
+      return;
+    }
 
     const textUsed = usage?.textTokens || 0;
     const imagesUsed = usage?.images || 0;
     const voiceUsed = usage?.voiceMinutes || 0;
+    const visionUsed = usage?.visionTokens || 0;
 
     const textPercent =
       quotaLimits.textTokens > 0 ? Math.round((textUsed / quotaLimits.textTokens) * 100) : 0;
@@ -225,6 +252,8 @@ export class AdminCommand implements Command {
       quotaLimits.images > 0 ? Math.round((imagesUsed / quotaLimits.images) * 100) : 0;
     const voicePercent =
       quotaLimits.voiceMinutes > 0 ? Math.round((voiceUsed / quotaLimits.voiceMinutes) * 100) : 0;
+    const visionPercent =
+      quotaLimits.visionTokens > 0 ? Math.round((visionUsed / quotaLimits.visionTokens) * 100) : 0;
 
     const embed = new EmbedBuilder()
       .setTitle(`📊 Quota Status: ${targetUser.username}`)
@@ -247,6 +276,11 @@ export class AdminCommand implements Command {
         {
           name: '🎤 Voice Minutes',
           value: `${voiceUsed} / ${quotaLimits.voiceMinutes}\n${this.progressBar(voicePercent)} ${voicePercent}%`,
+          inline: true
+        },
+        {
+          name: '👁️ Vision Tokens',
+          value: `${visionUsed.toLocaleString()} / ${quotaLimits.visionTokens.toLocaleString()}\n${this.progressBar(visionPercent)} ${visionPercent}%`,
           inline: true
         }
       )

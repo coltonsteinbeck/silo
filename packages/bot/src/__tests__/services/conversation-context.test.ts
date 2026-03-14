@@ -5,7 +5,7 @@ import {
 } from '../../services/conversation-context';
 
 describe('conversation-context', () => {
-  test('merges referenced content into user content', () => {
+  test('keeps referenced content for storage but excludes it from merged user prompt', () => {
     const context = assembleConversationContext({
       processedContent: 'Has he gone guru?',
       currentImageUrls: [],
@@ -18,7 +18,7 @@ describe('conversation-context', () => {
     });
 
     expect(context.referencedContent).toContain('Some prior message');
-    expect(context.mergedUserContent).toContain('Referenced context:');
+    expect(context.mergedUserContent).toBe('Has he gone guru?');
     expect(context.directReplyMessageId).toBe('m_ref');
     expect(context.directReplyUserId).toBe('u_ref');
   });

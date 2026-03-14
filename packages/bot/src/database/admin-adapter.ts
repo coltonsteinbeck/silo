@@ -846,12 +846,41 @@ export class AdminAdapter {
       > = {
         admin: { textTokens: 50000, images: 5, voiceMinutes: 15, visionTokens: 10000 },
         moderator: { textTokens: 20000, images: 3, voiceMinutes: 10, visionTokens: 5000 },
-        trusted: { textTokens: 10000, images: 2, voiceMinutes: 5, visionTokens: 3000 },
-        member: { textTokens: 5000, images: 1, voiceMinutes: 0, visionTokens: 1000 },
+        trusted: { textTokens: 13000, images: 2, voiceMinutes: 5, visionTokens: 4000 },
+        member: { textTokens: 7000, images: 1, voiceMinutes: 0, visionTokens: 1500 },
         restricted: { textTokens: 0, images: 0, voiceMinutes: 0, visionTokens: 0 }
       };
-      const defaultMember = { textTokens: 5000, images: 1, voiceMinutes: 0, visionTokens: 1000 };
+      const defaultMember = { textTokens: 7000, images: 1, voiceMinutes: 0, visionTokens: 1500 };
       return defaults[roleTier] ?? defaultMember;
+    }
+
+    if (result.rows.length > 1) {
+      // Fail-closed for ambiguous quota rows: use the most restrictive values.
+      logger.error(
+        'Multiple quota rows returned for role tier lookup; applying restrictive merge',
+        {
+          guildId,
+          roleTier,
+          rowCount: result.rows.length
+        }
+      );
+
+      const restrictive = result.rows.reduce(
+        (acc, row) => ({
+          textTokens: Math.min(acc.textTokens, row.text_tokens ?? 0),
+          images: Math.min(acc.images, row.images ?? 0),
+          voiceMinutes: Math.min(acc.voiceMinutes, row.voice_minutes ?? 0),
+          visionTokens: Math.min(acc.visionTokens, row.vision_tokens ?? 0)
+        }),
+        {
+          textTokens: Number.MAX_SAFE_INTEGER,
+          images: Number.MAX_SAFE_INTEGER,
+          voiceMinutes: Number.MAX_SAFE_INTEGER,
+          visionTokens: Number.MAX_SAFE_INTEGER
+        }
+      );
+
+      return restrictive;
     }
 
     const row = result.rows[0];
