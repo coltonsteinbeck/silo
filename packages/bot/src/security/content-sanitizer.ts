@@ -237,7 +237,7 @@ export function hasPromptInjectionPattern(content: string): boolean {
   return PROMPT_INJECTION_PATTERNS.some(pattern => pattern.test(normalized));
 }
 
-function normalizeContentForEvasionDetection(content: string): string {
+export function normalizeContentForEvasionDetection(content: string): string {
   return content
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')

@@ -8,6 +8,24 @@ interface InlineImagePart {
   };
 }
 
+interface GoogleGenerateContentPart {
+  text?: string;
+  inlineData?: {
+    mimeType?: string;
+    data?: string;
+  };
+}
+
+interface GoogleGenerateContentCandidate {
+  content?: {
+    parts?: GoogleGenerateContentPart[];
+  };
+}
+
+interface GoogleGenerateContentResponse {
+  candidates?: GoogleGenerateContentCandidate[];
+}
+
 function normalizeResolution(value: string | undefined): string {
   if (!value) {
     return '1K';
@@ -123,7 +141,7 @@ export class GoogleImageProvider implements ImageProvider {
       throw new Error(`Google image generation failed (${response.status}): ${body.slice(0, 300)}`);
     }
 
-    const json = (await response.json()) as any;
+    const json = (await response.json()) as GoogleGenerateContentResponse;
     const candidates = Array.isArray(json.candidates) ? json.candidates : [];
 
     const parts =
@@ -131,7 +149,7 @@ export class GoogleImageProvider implements ImageProvider {
         ? candidates[0].content.parts
         : [];
 
-    const imagePart = parts.find((part: any) => part.inlineData?.data);
+    const imagePart = parts.find(part => part.inlineData?.data);
     if (!imagePart?.inlineData?.data) {
       logger.warn('Google image response did not include inline image data', {
         model,
@@ -143,8 +161,8 @@ export class GoogleImageProvider implements ImageProvider {
     const mimeType = imagePart.inlineData.mimeType || 'image/png';
     const revisedPrompt =
       parts
-        .filter((part: any) => typeof part.text === 'string')
-        .map((part: any) => part.text.trim())
+        .filter(part => typeof part.text === 'string')
+        .map(part => (part.text || '').trim())
         .filter(Boolean)
         .join('\n') || undefined;
 

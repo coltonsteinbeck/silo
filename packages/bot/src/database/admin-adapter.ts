@@ -1,4 +1,5 @@
 import { Pool } from 'pg';
+import { createHash } from 'crypto';
 import {
   ServerConfig,
   AuditLog,
@@ -11,6 +12,30 @@ import {
 } from '@silo/core';
 
 const QUOTA_LOCAL_DATE_SQL = `quota_local_date()`;
+
+function normalizeUrlForStorage(rawUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl);
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString();
+  } catch {
+    return rawUrl.split('#')[0]?.split('?')[0] || rawUrl;
+  }
+}
+
+function hashUrl(normalizedUrl: string): string {
+  return createHash('sha256').update(normalizedUrl).digest('hex');
+}
+
+function isUndefinedColumnError(error: unknown): error is { code: string; message?: string } {
+  return Boolean(
+    error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      (error as { code?: unknown }).code === '42703'
+  );
+}
 
 export class AdminAdapter {
   constructor(private pool: Pool) {}
@@ -244,22 +269,56 @@ export class AdminAdapter {
     reason: string;
     metadata?: Record<string, unknown>;
   }): Promise<void> {
+    const normalizedUrl = normalizeUrlForStorage(event.url);
+    const urlHash = hashUrl(normalizedUrl);
+    const metadata = event.metadata ? { ...event.metadata } : {};
+
     try {
       await this.pool.query(
-        `INSERT INTO url_security_events (guild_id, user_id, channel_id, url, domain, action, reason, metadata)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        `INSERT INTO url_security_events (guild_id, user_id, channel_id, url, url_hash, domain, action, reason, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
           event.guildId,
           event.userId,
           event.channelId ?? null,
-          event.url,
+          normalizedUrl,
+          urlHash,
           event.domain,
           event.action,
           event.reason,
-          event.metadata ? JSON.stringify(event.metadata) : null
+          JSON.stringify(metadata)
         ]
       );
     } catch (error) {
+      if (isUndefinedColumnError(error)) {
+        try {
+          await this.pool.query(
+            `INSERT INTO url_security_events (guild_id, user_id, channel_id, url, domain, action, reason, metadata)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [
+              event.guildId,
+              event.userId,
+              event.channelId ?? null,
+              normalizedUrl,
+              event.domain,
+              event.action,
+              event.reason,
+              JSON.stringify({ ...metadata, urlHash })
+            ]
+          );
+          return;
+        } catch (fallbackError) {
+          logger.error('Failed to log URL security event with legacy schema fallback', {
+            guildId: event.guildId,
+            userId: event.userId,
+            action: event.action,
+            reason: event.reason,
+            error: fallbackError
+          });
+          return;
+        }
+      }
+
       logger.error('Failed to log URL security event', {
         guildId: event.guildId,
         userId: event.userId,

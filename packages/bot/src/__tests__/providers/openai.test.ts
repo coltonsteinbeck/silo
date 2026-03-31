@@ -92,3 +92,67 @@ describe('OpenAIProvider.generateImage error handling', () => {
     );
   });
 });
+
+describe('OpenAIProvider.generateImage reference image path', () => {
+  test('returns image data from responses.create output', async () => {
+    const provider = new OpenAIProvider('sk-test');
+
+    (provider as any).client = {
+      responses: {
+        create: mock(async () => ({
+          output: [
+            {
+              type: 'image_generation_call',
+              status: 'completed',
+              result: 'base64-image-data',
+              revised_prompt: 'revised prompt'
+            }
+          ]
+        }))
+      },
+      images: {
+        generate: mock(async () => {
+          throw new Error('images.generate should not be called for reference-image path');
+        })
+      }
+    };
+
+    const result = await provider.generateImage('draw cat', {
+      referenceImages: ['https://example.com/ref.png']
+    });
+
+    expect(result.url).toBe('data:image/png;base64,base64-image-data');
+    expect(result.revisedPrompt).toBe('revised prompt');
+    expect(result.model).toBe('gpt-image-1');
+  });
+
+  test('throws when responses.create payload is malformed', async () => {
+    const provider = new OpenAIProvider('sk-test');
+
+    (provider as any).client = {
+      responses: {
+        create: mock(async () => ({ output: [{ type: 'reasoning' }] }))
+      }
+    };
+
+    await expect(
+      provider.generateImage('draw cat', { referenceImages: ['https://example.com/ref.png'] })
+    ).rejects.toThrow('OpenAI image generation failed: No image output from OpenAI response tool call');
+  });
+
+  test('throws when image_generation_call has no result', async () => {
+    const provider = new OpenAIProvider('sk-test');
+
+    (provider as any).client = {
+      responses: {
+        create: mock(async () => ({
+          output: [{ type: 'image_generation_call', status: 'completed' }]
+        }))
+      }
+    };
+
+    await expect(
+      provider.generateImage('draw cat', { referenceImages: ['https://example.com/ref.png'] })
+    ).rejects.toThrow('OpenAI image generation failed: No image output from OpenAI response tool call');
+  });
+});

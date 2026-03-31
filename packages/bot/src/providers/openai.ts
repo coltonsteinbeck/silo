@@ -11,6 +11,70 @@ import type {
   ImageAnalysisResponse
 } from '@silo/core';
 
+type OpenAIImageToolQuality = 'auto' | 'high' | 'medium' | 'low';
+type OpenAIImageToolAction = 'auto' | 'generate' | 'edit';
+type OpenAIImageToolInputFidelity = 'low' | 'high';
+
+type OpenAIResponsesInputText = {
+  type: 'input_text';
+  text: string;
+};
+
+type OpenAIResponsesInputImage = {
+  type: 'input_image';
+  image_url: string;
+};
+
+type OpenAIResponsesInputContent = OpenAIResponsesInputText | OpenAIResponsesInputImage;
+
+interface OpenAIResponsesCreateRequest {
+  model: string;
+  input: Array<{
+    role: 'user';
+    content: OpenAIResponsesInputContent[];
+  }>;
+  tools: Array<{
+    type: 'image_generation';
+    size: string;
+    quality: OpenAIImageToolQuality;
+    action: OpenAIImageToolAction;
+    input_fidelity?: OpenAIImageToolInputFidelity;
+  }>;
+}
+
+interface OpenAIImageGenerationCall {
+  type?: string;
+  status?: string;
+  result?: string;
+  revised_prompt?: string;
+}
+
+interface OpenAIResponsesCreateResult {
+  output?: OpenAIImageGenerationCall[];
+}
+
+type OpenAIImageSize =
+  | '256x256'
+  | '512x512'
+  | '1024x1024'
+  | '1024x1536'
+  | '1536x1024'
+  | 'auto';
+
+function toOpenAIImageSize(size: string | undefined): OpenAIImageSize {
+  switch (size) {
+    case '256x256':
+    case '512x512':
+    case '1024x1024':
+    case '1024x1536':
+    case '1536x1024':
+    case 'auto':
+      return size;
+    default:
+      return '1024x1024';
+  }
+}
+
 function redactSecrets(value: string): string {
   return value
     .replace(/\bsk-[A-Za-z0-9_-]+\b/g, '[redacted-key]')
@@ -86,10 +150,10 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
       const references = options?.referenceImages || [];
 
       if (references.length > 0) {
-        const tool: Record<string, unknown> = {
+        const tool: OpenAIResponsesCreateRequest['tools'][number] = {
           type: 'image_generation',
           size: options?.size || '1024x1024',
-          quality: options?.quality || 'auto',
+          quality: (options?.quality as OpenAIImageToolQuality) || 'auto',
           action: options?.action || 'edit'
         };
 
@@ -97,14 +161,18 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
           tool.input_fidelity = options.inputFidelity;
         }
 
-        const response = await this.client.responses.create({
+        const createResponse = this.client.responses.create as unknown as (
+          request: OpenAIResponsesCreateRequest
+        ) => Promise<OpenAIResponsesCreateResult>;
+
+        const response = await createResponse({
           model: options?.model || this.defaultImageModel,
           input: [
             {
               role: 'user',
               content: [
                 { type: 'input_text', text: prompt },
-                ...references.map(imageUrl => ({
+                ...references.map<OpenAIResponsesInputImage>(imageUrl => ({
                   type: 'input_image',
                   image_url: imageUrl
                 }))
@@ -112,10 +180,10 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
             }
           ],
           tools: [tool]
-        } as any);
+        });
 
-        const output = (response as any).output || [];
-        const imageCall = output.find((item: any) => item.type === 'image_generation_call');
+        const output = Array.isArray(response.output) ? response.output : [];
+        const imageCall = output.find(item => item.type === 'image_generation_call');
         if (!imageCall?.result) {
           throw new Error('No image output from OpenAI response tool call');
         }
@@ -123,8 +191,7 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
         return {
           url: `data:image/png;base64,${imageCall.result}`,
           revisedPrompt: imageCall.revised_prompt,
-          model: options?.model || this.defaultImageModel,
-          moderationPassed: imageCall.status === 'completed'
+          model: options?.model || this.defaultImageModel
         };
       }
 
@@ -139,7 +206,7 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
         model: options?.model || this.defaultImageModel,
         prompt,
         n: 1,
-        size: (options?.size as any) || '1024x1024',
+        size: toOpenAIImageSize(options?.size),
         quality: (options?.quality as 'auto' | 'high' | 'medium' | 'low') || 'auto'
       });
 
@@ -159,8 +226,7 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
         return {
           url: `data:image/png;base64,${image.b64_json}`,
           revisedPrompt: image.revised_prompt,
-          model: options?.model || this.defaultImageModel,
-          moderationPassed: true
+          model: options?.model || this.defaultImageModel
         };
       }
 
@@ -172,8 +238,7 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
       return {
         url: image.url,
         revisedPrompt: image.revised_prompt,
-        model: options?.model || this.defaultImageModel,
-        moderationPassed: true
+        model: options?.model || this.defaultImageModel
       };
     } catch (error) {
       const message = redactSecrets(error instanceof Error ? error.message : String(error));
