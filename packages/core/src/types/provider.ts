@@ -25,11 +25,33 @@ export interface ImageGenerationOptions {
   size?: string;
   quality?: string;
   style?: string;
+  aspectRatio?: string;
+  resolution?: string;
+  referenceImages?: string[];
+  action?: 'auto' | 'generate' | 'edit';
+  inputFidelity?: 'low' | 'high';
 }
 
 export interface ImageGenerationResponse {
   url: string;
   revisedPrompt?: string;
+  model?: string;
+  moderationPassed?: boolean;
+}
+
+export interface VideoGenerationOptions {
+  model?: string;
+  duration?: number;
+  aspectRatio?: string;
+  resolution?: string;
+  referenceImages?: string[];
+}
+
+export interface VideoGenerationResponse {
+  url: string;
+  model?: string;
+  duration?: number;
+  moderationPassed?: boolean;
 }
 
 export interface ImageAnalysisOptions {
@@ -40,6 +62,9 @@ export interface ImageAnalysisOptions {
 export interface ProviderCapabilities {
   vision: boolean;
   maxImagesPerRequest?: number;
+  maxImageReferences?: number;
+  maxVideoReferences?: number;
+  videoGeneration?: boolean;
 }
 
 export interface ImageAnalysisResponse {
@@ -73,9 +98,13 @@ export interface ImageProvider extends BaseProvider {
   ): Promise<ImageAnalysisResponse>;
 }
 
+export interface VideoProvider extends BaseProvider {
+  generateVideo(prompt: string, options?: VideoGenerationOptions): Promise<VideoGenerationResponse>;
+}
+
 export interface EmbeddingProvider extends BaseProvider {
   generateEmbedding(text: string): Promise<number[]>;
   generateEmbeddings(texts: string[]): Promise<number[][]>;
 }
 
-export type ProviderType = 'text' | 'image' | 'embedding';
+export type ProviderType = 'text' | 'image' | 'video' | 'embedding';

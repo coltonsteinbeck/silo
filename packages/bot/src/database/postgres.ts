@@ -1,6 +1,6 @@
 import { Pool, PoolClient } from 'pg';
-import { readFileSync, readdirSync } from 'fs';
-import { join } from 'path';
+import { readFileSync, readdirSync, existsSync, statSync } from 'fs';
+import { dirname, join, resolve } from 'path';
 import {
   DatabaseAdapter,
   UserMemory,
@@ -173,7 +173,7 @@ export class PostgresAdapter implements DatabaseAdapter {
     let client: PoolClient | undefined;
 
     try {
-      const migrationsDir = join(process.cwd(), 'supabase', 'migrations');
+      const migrationsDir = this.resolveMigrationsDir();
       const migrationFiles = readdirSync(migrationsDir)
         .filter(file => file.endsWith('.sql'))
         .sort();
@@ -196,14 +196,14 @@ export class PostgresAdapter implements DatabaseAdapter {
       await client.query('SELECT pg_advisory_lock($1)', [PostgresAdapter.MIGRATION_LOCK_ID]);
 
       await client.query(`
-        CREATE TABLE IF NOT EXISTS schema_migrations (
+        CREATE TABLE IF NOT EXISTS public.schema_migrations (
           filename TEXT PRIMARY KEY,
           applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
       `);
 
       const appliedResult = await client.query<{ filename: string }>(
-        'SELECT filename FROM schema_migrations'
+        'SELECT filename FROM public.schema_migrations'
       );
       const appliedMigrations = new Set(appliedResult.rows.map(row => row.filename));
 
@@ -220,7 +220,7 @@ export class PostgresAdapter implements DatabaseAdapter {
 
         for (const file of filesToBaseline) {
           await client.query(
-            'INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING',
+            'INSERT INTO public.schema_migrations (filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING',
             [file]
           );
           appliedMigrations.add(file);
@@ -247,14 +247,14 @@ export class PostgresAdapter implements DatabaseAdapter {
 
         try {
           await client.query(sql);
-          await client.query('INSERT INTO schema_migrations (filename) VALUES ($1)', [file]);
+          await client.query('INSERT INTO public.schema_migrations (filename) VALUES ($1)', [file]);
           appliedMigrations.add(file);
           appliedCount += 1;
           logger.info(`✓ Migration applied and tracked: ${file}`);
         } catch (error: any) {
           if (this.isAlreadyAppliedMigrationError(error)) {
             await client.query(
-              'INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING',
+              'INSERT INTO public.schema_migrations (filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING',
               [file]
             );
             appliedMigrations.add(file);
@@ -305,6 +305,30 @@ export class PostgresAdapter implements DatabaseAdapter {
         client.release();
       }
     }
+  }
+
+  private resolveMigrationsDir(): string {
+    let current = resolve(process.cwd());
+
+    while (true) {
+      const candidate = join(current, 'supabase', 'migrations');
+      if (existsSync(candidate)) {
+        const stats = statSync(candidate);
+        if (stats.isDirectory()) {
+          return candidate;
+        }
+      }
+
+      const parent = dirname(current);
+      if (parent === current) {
+        break;
+      }
+
+      current = parent;
+    }
+
+    // Fall back to cwd-relative path so original behavior remains predictable in logs.
+    return join(process.cwd(), 'supabase', 'migrations');
   }
 
   private isAlreadyAppliedMigrationError(error: unknown): boolean {

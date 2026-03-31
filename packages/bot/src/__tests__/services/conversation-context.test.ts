@@ -23,7 +23,7 @@ describe('conversation-context', () => {
     expect(context.directReplyUserId).toBe('u_ref');
   });
 
-  test('orders vision targets current first then replies and applies cap', () => {
+  test('uses current-message images only by default for vision targets', () => {
     const context = assembleConversationContext({
       processedContent: 'What is happening?',
       currentImageUrls: ['https://img.test/current.png'],
@@ -49,12 +49,36 @@ describe('conversation-context', () => {
       maxVisionTargets: 2
     });
 
-    expect(context.visionTargets).toHaveLength(2);
+    expect(context.visionTargets).toHaveLength(1);
     expect(context.visionTargets[0]).toEqual({
       url: 'https://img.test/current.png',
       source: 'current',
       replyDepth: null
     });
+  });
+
+  test('can include reply images in vision targets when explicitly enabled', () => {
+    const context = assembleConversationContext({
+      processedContent: 'What is happening?',
+      currentImageUrls: ['https://img.test/current.png'],
+      replyContext: {
+        chain: [
+          {
+            messageId: 'r1',
+            userId: 'u1',
+            content: 'reply 1',
+            imageUrls: ['https://img.test/reply1-a.png']
+          }
+        ],
+        directReplyMessageId: 'r1',
+        directReplyUserId: 'u1',
+        textContext: 'prior context'
+      },
+      maxVisionTargets: 2,
+      includeReplyImagesInVision: true
+    });
+
+    expect(context.visionTargets).toHaveLength(2);
     expect(context.visionTargets[1]).toEqual({
       url: 'https://img.test/reply1-a.png',
       source: 'reply',

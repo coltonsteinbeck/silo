@@ -6,10 +6,12 @@ set -euo pipefail
 # Required (choose source):
 #   1) PROD_DB_URL=postgresql://...
 #   2) HOSTED_DB_IDENTIFIER=... and SUPABASE_PW=...
+#   3) DATABASE_PROD_URL=postgresql://... (alias of PROD_DB_URL)
 #
 # Required (choose target):
 #   1) BRANCH_DB_URL=postgresql://...
 #   2) DEV_DB_IDENTIFIER=... and SUPABASE_DEV_PW=...
+#   3) DATABASE_DEV_URL=postgresql://... (alias of BRANCH_DB_URL)
 #
 # Safety requirement:
 #   CONFIRM_REMOTE_RESTORE=true
@@ -30,6 +32,7 @@ set -euo pipefail
 #   ALLOW_MIGRATION_DRIFT=false
 #   PRE_RESTORE_SQL_FILE=path/to/pre.sql
 #   POST_RESTORE_SQL_FILE=path/to/post.sql
+#   ALLOW_LOCAL_TARGET=true|false
 #
 # Example:
 #   HOSTED_DB_IDENTIFIER='db.prod-project.supabase.co' SUPABASE_PW='***' \
@@ -37,8 +40,27 @@ set -euo pipefail
 #   DB_SSL=true CONFIRM_REMOTE_RESTORE=true \
 #   ./scripts/refresh-prod-to-branch.sh
 
-PROD_DB_URL=${PROD_DB_URL:-}
-BRANCH_DB_URL=${BRANCH_DB_URL:-}
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
+ENV_FILE=${REFRESH_ENV_FILE:-"$SCRIPT_DIR/../.env"}
+
+# If required vars are missing from the current process environment, try loading
+# them from the repo .env file so direct script runs behave like app startup.
+if { [ -z "${PROD_DB_URL:-}" ] && { [ -z "${HOSTED_DB_IDENTIFIER:-}" ] || [ -z "${SUPABASE_PW:-}" ]; }; } \
+  || { [ -z "${BRANCH_DB_URL:-}" ] && { [ -z "${DEV_DB_IDENTIFIER:-}" ] || [ -z "${SUPABASE_DEV_PW:-}" ]; }; } \
+  || [ -z "${CONFIRM_REMOTE_RESTORE:-}" ]; then
+  if [ -f "$ENV_FILE" ]; then
+    set -a
+    # shellcheck source=/dev/null
+    . "$ENV_FILE"
+    set +a
+  fi
+fi
+
+DATABASE_PROD_URL=${DATABASE_PROD_URL:-}
+DATABASE_DEV_URL=${DATABASE_DEV_URL:-}
+
+PROD_DB_URL=${PROD_DB_URL:-$DATABASE_PROD_URL}
+BRANCH_DB_URL=${BRANCH_DB_URL:-$DATABASE_DEV_URL}
 
 HOSTED_DB_IDENTIFIER=${HOSTED_DB_IDENTIFIER:-}
 SUPABASE_PW=${SUPABASE_PW:-}
@@ -63,6 +85,7 @@ PRE_RESTORE_SQL_FILE=${PRE_RESTORE_SQL_FILE:-}
 POST_RESTORE_SQL_FILE=${POST_RESTORE_SQL_FILE:-}
 
 CONFIRM_REMOTE_RESTORE=${CONFIRM_REMOTE_RESTORE:-false}
+ALLOW_LOCAL_TARGET=${ALLOW_LOCAL_TARGET:-false}
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -98,6 +121,10 @@ extract_host() {
   echo "$1" | sed -E 's|^[^:]+://([^@]+@)?([^:/?]+).*|\2|'
 }
 
+extract_user() {
+  echo "$1" | sed -nE 's|^[^:]+://([^:@/?]+)(:[^@]*)?@.*|\1|p'
+}
+
 is_local_host() {
   case "$1" in
     localhost|127.0.0.1|host.docker.internal|::1)
@@ -107,6 +134,93 @@ is_local_host() {
       return 1
       ;;
   esac
+}
+
+is_direct_supabase_host() {
+  case "$1" in
+    db.*.supabase.co)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+has_ipv6_default_route() {
+  if command -v route >/dev/null 2>&1; then
+    if route -n get -inet6 default >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+
+  if command -v ip >/dev/null 2>&1; then
+    if ip -6 route show default 2>/dev/null | grep -q .; then
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+extract_port() {
+  local url="$1"
+  local parsed_port
+
+  parsed_port=$(echo "$url" | sed -nE 's|^[^:]+://([^@]+@)?[^:/?]+:([0-9]+).*|\2|p')
+  if [ -n "$parsed_port" ]; then
+    echo "$parsed_port"
+  else
+    echo "5432"
+  fi
+}
+
+can_reach_ipv6_tcp() {
+  local host="$1"
+  local port="$2"
+
+  if ! command -v nc >/dev/null 2>&1; then
+    return 1
+  fi
+
+  if nc -6 -z -G 3 "$host" "$port" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if nc -6 -z -w 3 "$host" "$port" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  return 1
+}
+
+preflight_direct_supabase_ipv6() {
+  local host="$1"
+  local label="$2"
+  local url="$3"
+  local port
+
+  if ! is_direct_supabase_host "$host"; then
+    return 0
+  fi
+
+  port=$(extract_port "$url")
+
+  if can_reach_ipv6_tcp "$host" "$port"; then
+    return 0
+  fi
+
+  echo "Network preflight failed for $label host: $host"
+  echo "Detected direct Supabase DB endpoint (db.<project>.supabase.co), which requires IPv6 routing from this machine."
+  if ! has_ipv6_default_route; then
+    echo "No default IPv6 route was detected."
+  else
+    echo "IPv6 route may exist, but $host:$port is not reachable over IPv6 from this machine."
+  fi
+  echo "Fix options:"
+  echo "  1) Use Supabase pooler URLs for PROD_DB_URL/BRANCH_DB_URL (or DATABASE_PROD_URL/DATABASE_DEV_URL)."
+  echo "  2) Restore outbound IPv6 routing on this host/network and retry."
+  exit 1
 }
 
 build_db_url() {
@@ -133,21 +247,90 @@ require_cmd bun
 
 latest_migration() {
   local db_url="$1"
-  psql "$db_url" -tA -v ON_ERROR_STOP=1 <<'SQL'
-SELECT COALESCE(
-  (
-    SELECT filename
-    FROM schema_migrations
-    ORDER BY filename DESC
-    LIMIT 1
-  ),
-  ''
-)
-WHERE to_regclass('public.schema_migrations') IS NOT NULL
-UNION ALL
-SELECT ''
-WHERE to_regclass('public.schema_migrations') IS NULL
-LIMIT 1;
+  psql "$db_url" -q -tA -v ON_ERROR_STOP=1 <<'SQL'
+CREATE OR REPLACE FUNCTION pg_temp.latest_migration_name()
+RETURNS text
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  rec RECORD;
+  candidate text;
+BEGIN
+  FOR rec IN
+    SELECT table_schema, table_name
+    FROM information_schema.tables
+    WHERE (table_schema = 'public' AND table_name = 'schema_migrations')
+       OR (table_schema = 'supabase_migrations' AND table_name IN ('schema_migrations', 'migrations'))
+    ORDER BY
+      CASE
+        WHEN table_schema = 'public' AND table_name = 'schema_migrations' THEN 1
+        WHEN table_schema = 'supabase_migrations' AND table_name = 'schema_migrations' THEN 2
+        ELSE 3
+      END
+  LOOP
+    IF EXISTS (
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = rec.table_schema
+        AND table_name = rec.table_name
+        AND column_name = 'filename'
+    ) THEN
+      EXECUTE format(
+        'SELECT filename::text FROM %I.%I WHERE filename IS NOT NULL ORDER BY filename DESC LIMIT 1',
+        rec.table_schema,
+        rec.table_name
+      )
+      INTO candidate;
+
+      IF candidate IS NOT NULL THEN
+        RETURN candidate;
+      END IF;
+    END IF;
+
+    IF EXISTS (
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = rec.table_schema
+        AND table_name = rec.table_name
+        AND column_name = 'version'
+    ) THEN
+      EXECUTE format(
+        'SELECT version::text FROM %I.%I WHERE version IS NOT NULL ORDER BY version DESC LIMIT 1',
+        rec.table_schema,
+        rec.table_name
+      )
+      INTO candidate;
+
+      IF candidate IS NOT NULL THEN
+        RETURN candidate;
+      END IF;
+    END IF;
+
+    IF EXISTS (
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = rec.table_schema
+        AND table_name = rec.table_name
+        AND column_name = 'name'
+    ) THEN
+      EXECUTE format(
+        'SELECT name::text FROM %I.%I WHERE name IS NOT NULL ORDER BY name DESC LIMIT 1',
+        rec.table_schema,
+        rec.table_name
+      )
+      INTO candidate;
+
+      IF candidate IS NOT NULL THEN
+        RETURN candidate;
+      END IF;
+    END IF;
+  END LOOP;
+
+  RETURN '';
+END;
+$$;
+
+SELECT COALESCE(pg_temp.latest_migration_name(), '');
 SQL
 }
 
@@ -192,6 +375,8 @@ fi
 
 PROD_HOST=$(extract_host "$PROD_DB_URL")
 BRANCH_HOST=$(extract_host "$BRANCH_DB_URL")
+PROD_USER=$(extract_user "$PROD_DB_URL")
+BRANCH_USER=$(extract_user "$BRANCH_DB_URL")
 
 if is_local_host "$PROD_HOST"; then
   echo "Safety check failed: prod source host appears local ($PROD_HOST)."
@@ -199,13 +384,25 @@ if is_local_host "$PROD_HOST"; then
 fi
 
 if is_local_host "$BRANCH_HOST"; then
-  echo "Safety check failed: branch target host appears local ($BRANCH_HOST). Use local script for local restores."
-  exit 1
+  if ! bool_true "$ALLOW_LOCAL_TARGET"; then
+    echo "Safety check failed: branch target host appears local ($BRANCH_HOST)."
+    echo "Set ALLOW_LOCAL_TARGET=true to explicitly allow local target restores."
+    exit 1
+  fi
 fi
 
 if [ "$PROD_HOST" = "$BRANCH_HOST" ]; then
-  echo "Safety check failed: source and target hosts are identical ($PROD_HOST)."
-  exit 1
+  if [ -n "$PROD_USER" ] && [ -n "$BRANCH_USER" ] && [ "$PROD_USER" != "$BRANCH_USER" ]; then
+    echo "[check] Source and target share host ($PROD_HOST) but use different users; allowing pooled cross-project refresh."
+  else
+    echo "Safety check failed: source and target hosts are identical ($PROD_HOST)."
+    exit 1
+  fi
+fi
+
+preflight_direct_supabase_ipv6 "$PROD_HOST" "source" "$PROD_DB_URL"
+if ! is_local_host "$BRANCH_HOST"; then
+  preflight_direct_supabase_ipv6 "$BRANCH_HOST" "target" "$BRANCH_DB_URL"
 fi
 
 mkdir -p "$BACKUP_DIR"
@@ -248,6 +445,12 @@ if bool_true "$CHECK_MIGRATION_COMPATIBILITY"; then
   if [ "$SOURCE_MIGRATION" != "$TARGET_MIGRATION" ]; then
     if [ -n "$SOURCE_MIGRATION_PREFIX" ] && [ -n "$TARGET_MIGRATION_PREFIX" ] && [ "$SOURCE_MIGRATION_PREFIX" = "$TARGET_MIGRATION_PREFIX" ]; then
       echo "[check] Latest migration filenames differ but version prefixes match; treating as compatible."
+    elif [ -n "$SOURCE_MIGRATION_PREFIX" ] && [ -n "$TARGET_MIGRATION_PREFIX" ]; then
+      if ((10#$SOURCE_MIGRATION_PREFIX > 10#$TARGET_MIGRATION_PREFIX)); then
+        MIGRATION_MISMATCH=true
+      elif ((10#$SOURCE_MIGRATION_PREFIX < 10#$TARGET_MIGRATION_PREFIX)); then
+        echo "[check] Target migration is ahead of source; allowing refresh."
+      fi
     else
       MIGRATION_MISMATCH=true
     fi

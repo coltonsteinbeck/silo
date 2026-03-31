@@ -2,6 +2,8 @@
 set -euo pipefail
 
 SCRIPT_NAME=$(basename "$0")
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
+ENV_FILE=${MIGRATE_ENV_FILE:-"$SCRIPT_DIR/../.env"}
 
 TARGET="local"
 DB_URL_OVERRIDE=""
@@ -24,11 +26,11 @@ Options:
 
 Target URL resolution:
     local:
-        --db-url > LOCAL_DB_URL > DATABASE_URL > postgresql://postgres:postgres@127.0.0.1:54322/postgres
+        --db-url > LOCAL_DB_URL > DATABASE_LOCAL_URL > DATABASE_URL > postgresql://postgres:postgres@127.0.0.1:54322/postgres
     dev:
-        --db-url > DEV_DB_URL > derived from DEV_DB_IDENTIFIER + SUPABASE_DEV_PW
+        --db-url > DEV_DB_URL > DATABASE_DEV_URL > derived from DEV_DB_IDENTIFIER + SUPABASE_DEV_PW
     prod:
-        --db-url > PROD_DB_URL > derived from HOSTED_DB_IDENTIFIER + SUPABASE_PW
+        --db-url > PROD_DB_URL > DATABASE_PROD_URL > derived from HOSTED_DB_IDENTIFIER + SUPABASE_PW
     remote:
         --db-url > DATABASE_URL
 
@@ -37,6 +39,13 @@ Notes:
     - Applied migrations are discovered from schema migration tables if present.
 EOF
 }
+
+if [ -f "$ENV_FILE" ]; then
+    set -a
+    # shellcheck source=/dev/null
+    . "$ENV_FILE"
+    set +a
+fi
 
 normalize_identifier() {
     local value="$1"
@@ -111,6 +120,8 @@ resolve_db_url() {
                 echo "$DB_URL_OVERRIDE"
             elif [ -n "${LOCAL_DB_URL:-}" ]; then
                 echo "$LOCAL_DB_URL"
+            elif [ -n "${DATABASE_LOCAL_URL:-}" ]; then
+                echo "$DATABASE_LOCAL_URL"
             elif [ -n "${DATABASE_URL:-}" ]; then
                 echo "$DATABASE_URL"
             else
@@ -122,10 +133,12 @@ resolve_db_url() {
                 echo "$DB_URL_OVERRIDE"
             elif [ -n "${DEV_DB_URL:-}" ]; then
                 echo "$DEV_DB_URL"
+            elif [ -n "${DATABASE_DEV_URL:-}" ]; then
+                echo "$DATABASE_DEV_URL"
             elif [ -n "${DEV_DB_IDENTIFIER:-}" ] && [ -n "${SUPABASE_DEV_PW:-}" ]; then
                 build_db_url "$DEV_DB_IDENTIFIER" "$SUPABASE_DEV_PW" "${DEV_DB_SSL:-$shared_ssl}"
             else
-                echo "Error: unable to resolve dev DB URL. Set --db-url, DEV_DB_URL, or DEV_DB_IDENTIFIER + SUPABASE_DEV_PW" >&2
+                echo "Error: unable to resolve dev DB URL. Set --db-url, DEV_DB_URL, DATABASE_DEV_URL, or DEV_DB_IDENTIFIER + SUPABASE_DEV_PW" >&2
                 exit 1
             fi
             ;;
@@ -134,10 +147,12 @@ resolve_db_url() {
                 echo "$DB_URL_OVERRIDE"
             elif [ -n "${PROD_DB_URL:-}" ]; then
                 echo "$PROD_DB_URL"
+            elif [ -n "${DATABASE_PROD_URL:-}" ]; then
+                echo "$DATABASE_PROD_URL"
             elif [ -n "${HOSTED_DB_IDENTIFIER:-}" ] && [ -n "${SUPABASE_PW:-}" ]; then
                 build_db_url "$HOSTED_DB_IDENTIFIER" "$SUPABASE_PW" "${PROD_DB_SSL:-$shared_ssl}"
             else
-                echo "Error: unable to resolve prod DB URL. Set --db-url, PROD_DB_URL, or HOSTED_DB_IDENTIFIER + SUPABASE_PW" >&2
+                echo "Error: unable to resolve prod DB URL. Set --db-url, PROD_DB_URL, DATABASE_PROD_URL, or HOSTED_DB_IDENTIFIER + SUPABASE_PW" >&2
                 exit 1
             fi
             ;;

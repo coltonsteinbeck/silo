@@ -20,13 +20,15 @@ describe('QuotaMiddleware', () => {
         textTokens: 0,
         images: 0,
         voiceMinutes: 0,
-        visionTokens: 0
+        visionTokens: 0,
+        videoTokens: 0
       })),
       getRoleTierQuota: mock(async () => ({
         textTokens: 5000,
         images: 1,
         voiceMinutes: 0,
-        visionTokens: 1000
+        visionTokens: 1000,
+        videoTokens: 4
       })),
       incrementUsage: mock(async () => true),
       atomicIncrementUsage: mock(async () => ({ success: true, newTotal: 100, remaining: 4900 })),
@@ -78,7 +80,8 @@ describe('QuotaMiddleware', () => {
         textTokens: 10000,
         images: 2,
         voiceMinutes: 5,
-        visionTokens: 5000
+        visionTokens: 5000,
+        videoTokens: 8
       }));
 
       const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
@@ -101,7 +104,8 @@ describe('QuotaMiddleware', () => {
         textTokens: 0,
         images: 0,
         voiceMinutes: 0,
-        visionTokens: 0
+        visionTokens: 0,
+        videoTokens: 0
       }));
 
       const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
@@ -123,7 +127,8 @@ describe('QuotaMiddleware', () => {
         textTokens: 5000,
         images: 1,
         voiceMinutes: 0,
-        visionTokens: 0
+        visionTokens: 0,
+        videoTokens: 0
       }));
 
       const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
@@ -164,7 +169,8 @@ describe('QuotaMiddleware', () => {
         textTokens: 5000,
         images: 0,
         voiceMinutes: 0,
-        visionTokens: 0
+        visionTokens: 0,
+        videoTokens: 0
       }));
 
       const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
@@ -205,7 +211,8 @@ describe('QuotaMiddleware', () => {
         textTokens: Number.NaN,
         images: 1,
         voiceMinutes: 1,
-        visionTokens: 1
+        visionTokens: 1,
+        videoTokens: 1
       }));
 
       const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
@@ -308,7 +315,8 @@ describe('QuotaMiddleware', () => {
         textTokens: 10000,
         images: 2,
         voiceMinutes: 5,
-        visionTokens: 5000
+        visionTokens: 5000,
+        videoTokens: 8
       }));
 
       const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
@@ -407,13 +415,15 @@ describe('QuotaMiddleware', () => {
         textTokens: 5000,
         images: 1,
         voiceMinutes: 0,
-        visionTokens: 1000
+        visionTokens: 1000,
+        videoTokens: 4
       }));
       mockAdminDb.getUserDailyUsage = mock(async () => ({
         textTokens: 1000,
         images: 0,
         voiceMinutes: 0,
-        visionTokens: 0
+        visionTokens: 0,
+        videoTokens: 1
       }));
 
       const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
@@ -423,6 +433,8 @@ describe('QuotaMiddleware', () => {
       expect(result.text_tokens.max).toBe(5000);
       expect(result.images.remaining).toBe(1);
       expect(result.images.max).toBe(1);
+      expect(result.video_tokens.remaining).toBe(3);
+      expect(result.video_tokens.max).toBe(4);
     });
   });
 

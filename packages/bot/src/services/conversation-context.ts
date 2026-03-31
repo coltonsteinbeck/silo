@@ -19,13 +19,15 @@ interface AssembleConversationContextArgs {
   currentImageUrls: string[];
   replyContext: ResolvedReplyContext;
   maxVisionTargets?: number;
+  includeReplyImagesInVision?: boolean;
 }
 
 export function assembleConversationContext({
   processedContent,
   currentImageUrls,
   replyContext,
-  maxVisionTargets = 2
+  maxVisionTargets = 2,
+  includeReplyImagesInVision = false
 }: AssembleConversationContextArgs): AssembledConversationContext {
   const referencedContent = replyContext.textContext;
   // Keep reference context for storage/auditing, but do not inject it into live prompts.
@@ -37,13 +39,15 @@ export function assembleConversationContext({
     replyDepth: null
   }));
 
-  const replyTargets: VisionTarget[] = replyContext.chain.flatMap((entry, index) =>
-    entry.imageUrls.map(url => ({
-      url,
-      source: 'reply' as const,
-      replyDepth: index + 1
-    }))
-  );
+  const replyTargets: VisionTarget[] = includeReplyImagesInVision
+    ? replyContext.chain.flatMap((entry, index) =>
+        entry.imageUrls.map(url => ({
+          url,
+          source: 'reply' as const,
+          replyDepth: index + 1
+        }))
+      )
+    : [];
 
   const visionTargets = [...currentTargets, ...replyTargets].slice(0, maxVisionTargets);
 

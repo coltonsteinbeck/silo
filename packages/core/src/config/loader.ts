@@ -1,4 +1,72 @@
 import { ConfigSchema, type Config } from './schema';
+import fs from 'node:fs';
+import path from 'node:path';
+
+let envLoaded = false;
+
+function findEnvFile(startDir: string): string | undefined {
+  let current = path.resolve(startDir);
+
+  while (true) {
+    const candidate = path.join(current, '.env');
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return undefined;
+    }
+    current = parent;
+  }
+}
+
+function stripWrappingQuotes(value: string): string {
+  if (value.length >= 2) {
+    const first = value[0];
+    const last = value[value.length - 1];
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      return value.slice(1, -1);
+    }
+  }
+  return value;
+}
+
+function loadEnvFileIfNeeded(): void {
+  if (envLoaded) {
+    return;
+  }
+
+  const envFile = findEnvFile(process.cwd());
+  if (!envFile) {
+    envLoaded = true;
+    return;
+  }
+
+  const content = fs.readFileSync(envFile, 'utf8');
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) {
+      continue;
+    }
+
+    const lineWithoutExport = line.startsWith('export ') ? line.slice(7).trim() : line;
+    const equalIndex = lineWithoutExport.indexOf('=');
+    if (equalIndex <= 0) {
+      continue;
+    }
+
+    const key = lineWithoutExport.slice(0, equalIndex).trim();
+    if (!key || process.env[key] !== undefined) {
+      continue;
+    }
+
+    const rawValue = lineWithoutExport.slice(equalIndex + 1).trim();
+    process.env[key] = stripWrappingQuotes(rawValue);
+  }
+
+  envLoaded = true;
+}
 
 function parseOptionalNumber(value: string | undefined): number | undefined {
   if (!value) {
@@ -7,6 +75,17 @@ function parseOptionalNumber(value: string | undefined): number | undefined {
 
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function parseCsvList(value: string | undefined): string[] {
+  if (!value) {
+    return [];
+  }
+
+  return value
+    .split(',')
+    .map(item => item.trim().toLowerCase())
+    .filter(Boolean);
 }
 
 function normalizeSupabaseHost(identifierOrHost: string): string {
@@ -33,7 +112,7 @@ function normalizeSupabaseHost(identifierOrHost: string): string {
 }
 
 function buildDatabaseUrl(): string {
-  // Honor explicit override first
+  // Global explicit override first
   if (process.env.DATABASE_URL) {
     return process.env.DATABASE_URL;
   }
@@ -41,6 +120,10 @@ function buildDatabaseUrl(): string {
   const mode = process.env.DEPLOYMENT_MODE?.toLowerCase();
 
   if (mode === 'production') {
+    if (process.env.DATABASE_PROD_URL) {
+      return process.env.DATABASE_PROD_URL;
+    }
+
     const identifier = process.env.HOSTED_DB_IDENTIFIER;
     const password = process.env.SUPABASE_PW;
     if (!identifier || !password) {
@@ -57,6 +140,14 @@ function buildDatabaseUrl(): string {
   }
 
   if (mode === 'development') {
+    if (process.env.DATABASE_DEV_URL) {
+      return process.env.DATABASE_DEV_URL;
+    }
+
+    if (process.env.DATABASE_LOCAL_URL) {
+      return process.env.DATABASE_LOCAL_URL;
+    }
+
     const identifier = process.env.DEV_DB_IDENTIFIER;
     const password = process.env.SUPABASE_DEV_PW;
     if (identifier && password) {
@@ -72,6 +163,8 @@ function buildDatabaseUrl(): string {
 
 export class ConfigLoader {
   static load(): Config {
+    loadEnvFileIfNeeded();
+
     const rawConfig = {
       discord: {
         token: process.env.DISCORD_TOKEN,
@@ -82,7 +175,8 @@ export class ConfigLoader {
         openai: process.env.OPENAI_API_KEY
           ? {
               apiKey: process.env.OPENAI_API_KEY,
-              model: process.env.OPENAI_MODEL || 'gpt-4o-mini'
+              model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+              imageModel: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-1'
             }
           : undefined,
         anthropic: process.env.ANTHROPIC_API_KEY
@@ -94,7 +188,9 @@ export class ConfigLoader {
         xai: process.env.XAI_API_KEY
           ? {
               apiKey: process.env.XAI_API_KEY,
-              model: process.env.XAI_MODEL || 'grok-4-1-fast-non-reasoning'
+              model: process.env.XAI_MODEL || 'grok-4-1-fast-non-reasoning',
+              imageModel: process.env.XAI_IMAGE_MODEL || 'grok-imagine-image',
+              videoModel: process.env.XAI_VIDEO_MODEL || 'grok-imagine-video'
             }
           : undefined,
         local:
@@ -108,7 +204,7 @@ export class ConfigLoader {
         google: process.env.GOOGLE_API_KEY
           ? {
               apiKey: process.env.GOOGLE_API_KEY,
-              model: process.env.GOOGLE_MODEL || 'gemini-2.0-flash-exp'
+              model: process.env.GOOGLE_MODEL || 'gemini-3.1-flash-image-preview'
             }
           : undefined
       },
@@ -156,7 +252,14 @@ export class ConfigLoader {
       security: {
         healthCheckSecret: process.env.HEALTH_CHECK_SECRET,
         alertWebhookUrl: process.env.ALERT_WEBHOOK_URL,
-        enableMonitoring: process.env.ENABLE_MONITORING === 'true'
+        enableMonitoring: process.env.ENABLE_MONITORING === 'true',
+        urlPolicy: {
+          denylistDomains: parseCsvList(process.env.URL_DENYLIST_DOMAINS),
+          allowlistDomains: parseCsvList(process.env.URL_ALLOWLIST_DOMAINS),
+          enforceAllowlist: process.env.URL_ALLOWLIST_ENFORCED === 'true',
+          blockKnownShorteners: process.env.URL_BLOCK_KNOWN_SHORTENERS !== 'false',
+          safeBrowsingApiKey: process.env.GOOGLE_SAFE_BROWSING_API_KEY
+        }
       }
     };
 
