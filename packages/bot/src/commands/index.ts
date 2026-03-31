@@ -5,6 +5,7 @@ import { UserMemorySetCommand } from './memory/user-set';
 import { ServerMemorySetCommand } from './memory/server-set';
 import { ClearMemoryCommand } from './memory/clear';
 import { DrawCommand } from './draw';
+import { VideoCommand } from './video';
 import { ThreadCommand } from './thread';
 import { DigestCommand } from './digest';
 import { AdminCommand } from './admin';
@@ -14,6 +15,7 @@ import { AnalyticsCommand } from './analytics';
 import { SpeakCommand } from './speak';
 import { StopSpeakingCommand } from './stopspeaking';
 import { FeedbackCommand } from './feedback';
+import { PromptCommand } from './prompt';
 import { DatabaseAdapter, Config } from '@silo/core';
 import { ProviderRegistry } from '../providers/registry';
 import { AdminAdapter } from '../database/admin-adapter';
@@ -23,7 +25,7 @@ import { QuotaMiddleware } from '../middleware/quota';
 export function createCommands(
   db: DatabaseAdapter,
   registry: ProviderRegistry,
-  _config: Config, // Reserved for future use
+  config: Config,
   adminDb: AdminAdapter,
   permissions: PermissionManager,
   quotaMiddleware?: QuotaMiddleware
@@ -41,9 +43,17 @@ export function createCommands(
   commands.set(serverSetMemory.data.name, serverSetMemory);
   commands.set(clearMemory.data.name, clearMemory);
 
+  const urlSecurity = {
+    policy: config.security?.urlPolicy,
+    adminDb
+  };
+
   // Media generation
-  const draw = new DrawCommand(registry, quotaMiddleware);
+  const draw = new DrawCommand(registry, quotaMiddleware, urlSecurity);
   commands.set(draw.data.name, draw);
+
+  const video = new VideoCommand(registry, quotaMiddleware, urlSecurity);
+  commands.set(video.data.name, video);
 
   // Collaboration features
   const thread = new ThreadCommand(db, registry, adminDb);
@@ -74,6 +84,9 @@ export function createCommands(
   // Feedback command
   const feedback = new FeedbackCommand(adminDb);
   commands.set(feedback.data.name, feedback);
+
+  const prompt = new PromptCommand(adminDb);
+  commands.set(prompt.data.name, prompt);
 
   return commands;
 }

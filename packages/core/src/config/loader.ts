@@ -9,6 +9,17 @@ function parseOptionalNumber(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function parseCsvList(value: string | undefined): string[] {
+  if (!value) {
+    return [];
+  }
+
+  return value
+    .split(',')
+    .map(item => item.trim().toLowerCase())
+    .filter(Boolean);
+}
+
 function normalizeSupabaseHost(identifierOrHost: string): string {
   const value = identifierOrHost.trim();
 
@@ -82,7 +93,8 @@ export class ConfigLoader {
         openai: process.env.OPENAI_API_KEY
           ? {
               apiKey: process.env.OPENAI_API_KEY,
-              model: process.env.OPENAI_MODEL || 'gpt-4o-mini'
+              model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+              imageModel: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-1.5'
             }
           : undefined,
         anthropic: process.env.ANTHROPIC_API_KEY
@@ -94,7 +106,9 @@ export class ConfigLoader {
         xai: process.env.XAI_API_KEY
           ? {
               apiKey: process.env.XAI_API_KEY,
-              model: process.env.XAI_MODEL || 'grok-4-1-fast-non-reasoning'
+              model: process.env.XAI_MODEL || 'grok-4-1-fast-non-reasoning',
+              imageModel: process.env.XAI_IMAGE_MODEL || 'grok-imagine-image',
+              videoModel: process.env.XAI_VIDEO_MODEL || 'grok-imagine-video'
             }
           : undefined,
         local:
@@ -108,7 +122,7 @@ export class ConfigLoader {
         google: process.env.GOOGLE_API_KEY
           ? {
               apiKey: process.env.GOOGLE_API_KEY,
-              model: process.env.GOOGLE_MODEL || 'gemini-2.0-flash-exp'
+              model: process.env.GOOGLE_MODEL || 'gemini-3.1-flash-image-preview'
             }
           : undefined
       },
@@ -156,7 +170,14 @@ export class ConfigLoader {
       security: {
         healthCheckSecret: process.env.HEALTH_CHECK_SECRET,
         alertWebhookUrl: process.env.ALERT_WEBHOOK_URL,
-        enableMonitoring: process.env.ENABLE_MONITORING === 'true'
+        enableMonitoring: process.env.ENABLE_MONITORING === 'true',
+        urlPolicy: {
+          denylistDomains: parseCsvList(process.env.URL_DENYLIST_DOMAINS),
+          allowlistDomains: parseCsvList(process.env.URL_ALLOWLIST_DOMAINS),
+          enforceAllowlist: process.env.URL_ALLOWLIST_ENFORCED === 'true',
+          blockKnownShorteners: process.env.URL_BLOCK_KNOWN_SHORTENERS !== 'false',
+          safeBrowsingApiKey: process.env.GOOGLE_SAFE_BROWSING_API_KEY
+        }
       }
     };
 

@@ -230,12 +230,14 @@ export class AdminCommand implements Command {
       images: number;
       voiceMinutes: number;
       visionTokens: number;
+      videoTokens: number;
     };
     let usage: {
       textTokens: number;
       images: number;
       voiceMinutes: number;
       visionTokens: number;
+      videoTokens: number;
     } | null;
 
     try {
@@ -259,6 +261,7 @@ export class AdminCommand implements Command {
     const imagesUsed = usage?.images || 0;
     const voiceUsed = usage?.voiceMinutes || 0;
     const visionUsed = usage?.visionTokens || 0;
+    const videoUsed = usage?.videoTokens || 0;
 
     const textPercent =
       quotaLimits.textTokens > 0 ? Math.round((textUsed / quotaLimits.textTokens) * 100) : 0;
@@ -268,6 +271,8 @@ export class AdminCommand implements Command {
       quotaLimits.voiceMinutes > 0 ? Math.round((voiceUsed / quotaLimits.voiceMinutes) * 100) : 0;
     const visionPercent =
       quotaLimits.visionTokens > 0 ? Math.round((visionUsed / quotaLimits.visionTokens) * 100) : 0;
+    const videoPercent =
+      quotaLimits.videoTokens > 0 ? Math.round((videoUsed / quotaLimits.videoTokens) * 100) : 0;
 
     const embed = new EmbedBuilder()
       .setTitle(`📊 Quota Status: ${targetUser.username}`)
@@ -295,6 +300,11 @@ export class AdminCommand implements Command {
         {
           name: '👁️ Vision Tokens',
           value: `${visionUsed.toLocaleString()} / ${quotaLimits.visionTokens.toLocaleString()}\n${this.progressBar(visionPercent)} ${visionPercent}%`,
+          inline: true
+        },
+        {
+          name: '🎬 Video Tokens',
+          value: `${videoUsed.toLocaleString()} / ${quotaLimits.videoTokens.toLocaleString()}\n${this.progressBar(videoPercent)} ${videoPercent}%`,
           inline: true
         }
       )
@@ -328,7 +338,9 @@ export class AdminCommand implements Command {
           value: [
             `💬 Text Tokens: ${stats.textTokensUsed.toLocaleString()}`,
             `🎨 Images: ${stats.imagesUsed}`,
-            `🎤 Voice: ${stats.voiceMinutesUsed} minutes`
+            `🎤 Voice: ${stats.voiceMinutesUsed} minutes`,
+            `👁️ Vision Tokens: ${stats.visionTokensUsed.toLocaleString()}`,
+            `🎬 Video Tokens: ${stats.videoTokensUsed.toLocaleString()}`
           ].join('\n'),
           inline: true
         },
@@ -405,7 +417,9 @@ export class AdminCommand implements Command {
             ? [
                 `💬 Tokens: ${usage.textTokens.toLocaleString()}`,
                 `🎨 Images: ${usage.images}`,
-                `🎤 Voice: ${usage.voiceMinutes} min`
+                `🎤 Voice: ${usage.voiceMinutes} min`,
+                `👁️ Vision: ${usage.visionTokens.toLocaleString()} tokens`,
+                `🎬 Video: ${usage.videoTokens.toLocaleString()} tokens`
               ].join('\n')
             : 'No usage today',
           inline: true

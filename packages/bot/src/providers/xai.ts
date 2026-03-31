@@ -2,11 +2,14 @@ import OpenAI from 'openai';
 import type {
   TextProvider,
   ImageProvider,
+  VideoProvider,
   Message,
   TextGenerationOptions,
   TextGenerationResponse,
   ImageGenerationOptions,
   ImageGenerationResponse,
+  VideoGenerationOptions,
+  VideoGenerationResponse,
   ImageAnalysisOptions,
   ImageAnalysisResponse
 } from '@silo/core';
@@ -16,18 +19,38 @@ import type {
  * https://docs.x.ai/api
  * Supports text generation and image understanding.
  */
-export class XAIProvider implements TextProvider, ImageProvider {
+export class XAIProvider implements TextProvider, ImageProvider, VideoProvider {
   name = 'xai';
-  capabilities = { vision: true, maxImagesPerRequest: 1 };
+  capabilities = {
+    vision: true,
+    maxImagesPerRequest: 1,
+    maxImageReferences: 5,
+    maxVideoReferences: 7,
+    videoGeneration: true
+  };
   private client: OpenAI | null = null;
+  private apiKey: string | null = null;
+  private baseUrl: string;
   private defaultModel: string;
+  private defaultImageModel: string;
+  private defaultVideoModel: string;
 
-  constructor(apiKey?: string, model: string = 'grok-4-1-fast-non-reasoning') {
+  constructor(
+    apiKey?: string,
+    model: string = 'grok-4-1-fast-non-reasoning',
+    imageModel: string = 'grok-imagine-image',
+    videoModel: string = 'grok-imagine-video',
+    baseURL: string = 'https://api.x.ai/v1'
+  ) {
     this.defaultModel = model;
+    this.defaultImageModel = imageModel;
+    this.defaultVideoModel = videoModel;
+    this.baseUrl = baseURL.replace(/\/$/, '');
     if (apiKey) {
+      this.apiKey = apiKey;
       this.client = new OpenAI({
         apiKey,
-        baseURL: 'https://api.x.ai/v1',
+        baseURL: this.baseUrl,
         timeout: 60000
       });
     }
@@ -74,11 +97,149 @@ export class XAIProvider implements TextProvider, ImageProvider {
     };
   }
 
+  private async requestJson<T>(
+    path: string,
+    init: NonNullable<Parameters<typeof fetch>[1]>
+  ): Promise<T> {
+    if (!this.apiKey) {
+      throw new Error('xAI provider not configured');
+    }
+
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.apiKey}`,
+        ...(init.headers || {})
+      }
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`xAI API error (${response.status}): ${body.slice(0, 300)}`);
+    }
+
+    return (await response.json()) as T;
+  }
+
   async generateImage(
-    _prompt: string,
-    _options?: ImageGenerationOptions
+    prompt: string,
+    options?: ImageGenerationOptions
   ): Promise<ImageGenerationResponse> {
-    throw new Error('xAI does not support image generation. Use OpenAI instead.');
+    const references = options?.referenceImages || [];
+
+    const payload: Record<string, unknown> = {
+      model: options?.model || this.defaultImageModel,
+      prompt,
+      image_format: 'url'
+    };
+
+    if (options?.aspectRatio) {
+      payload.aspect_ratio = options.aspectRatio;
+    }
+    if (options?.resolution) {
+      payload.resolution = options.resolution;
+    }
+
+    if (references.length === 1) {
+      payload.image_url = references[0];
+    } else if (references.length > 1) {
+      payload.image_urls = references;
+    }
+
+    const response = await this.requestJson<any>('/images/generations', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+
+    const imageEntry = response?.data?.[0] || response?.images?.[0] || response?.image || response;
+    const url = imageEntry?.url || response?.url;
+
+    if (!url || typeof url !== 'string') {
+      throw new Error('xAI image generation returned no URL');
+    }
+
+    return {
+      url,
+      revisedPrompt: imageEntry?.revised_prompt,
+      model: imageEntry?.model || payload.model?.toString(),
+      moderationPassed:
+        typeof imageEntry?.respect_moderation === 'boolean' ? imageEntry.respect_moderation : true
+    };
+  }
+
+  async generateVideo(
+    prompt: string,
+    options?: VideoGenerationOptions
+  ): Promise<VideoGenerationResponse> {
+    const payload: Record<string, unknown> = {
+      model: options?.model || this.defaultVideoModel,
+      prompt,
+      duration: options?.duration ?? 8
+    };
+
+    if (options?.aspectRatio) {
+      payload.aspect_ratio = options.aspectRatio;
+    }
+    if (options?.resolution) {
+      payload.resolution = options.resolution;
+    }
+
+    const references = options?.referenceImages || [];
+    if (references.length === 1) {
+      payload.image_url = references[0];
+    } else if (references.length > 1) {
+      payload.reference_image_urls = references;
+    }
+
+    const start = await this.requestJson<{ request_id?: string }>('/videos/generations', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+
+    const requestId = start.request_id;
+    if (!requestId) {
+      throw new Error('xAI video generation did not return request_id');
+    }
+
+    const timeoutMs = 12 * 60 * 1000;
+    const pollIntervalMs = 2500;
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const status = await this.requestJson<any>(`/videos/${encodeURIComponent(requestId)}`, {
+        method: 'GET'
+      });
+
+      const state = String(status?.status || '').toLowerCase();
+      if (state === 'done') {
+        const video = status.video || {};
+        const url = video.url;
+        if (!url || typeof url !== 'string') {
+          throw new Error('xAI video generation completed without a URL');
+        }
+
+        return {
+          url,
+          model: status.model || payload.model?.toString(),
+          duration: typeof video.duration === 'number' ? video.duration : undefined,
+          moderationPassed:
+            typeof video.respect_moderation === 'boolean' ? video.respect_moderation : true
+        };
+      }
+
+      if (state === 'failed') {
+        throw new Error(status?.error?.message || 'xAI video generation failed');
+      }
+
+      if (state === 'expired') {
+        throw new Error('xAI video generation request expired');
+      }
+
+      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+    }
+
+    throw new Error('xAI video generation timed out');
   }
 
   async analyzeImage(
