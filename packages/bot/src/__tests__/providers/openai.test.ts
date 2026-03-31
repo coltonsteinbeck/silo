@@ -1,5 +1,27 @@
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
-import { OpenAIProvider } from '../../providers/openai';
+import { OpenAIProvider, toOpenAIImageSize } from '../../providers/openai';
+
+describe('toOpenAIImageSize', () => {
+  test('returns each valid size unchanged', () => {
+    const validSizes = [
+      '256x256',
+      '512x512',
+      '1024x1024',
+      '1024x1536',
+      '1536x1024',
+      'auto'
+    ] as const;
+
+    for (const size of validSizes) {
+      expect(toOpenAIImageSize(size)).toBe(size);
+    }
+  });
+
+  test('returns default size for invalid/undefined inputs', () => {
+    expect(toOpenAIImageSize(undefined)).toBe('1024x1024');
+    expect(toOpenAIImageSize('bad-size')).toBe('1024x1024');
+  });
+});
 
 describe('OpenAIProvider capabilities', () => {
   test('exposes expected vision capabilities', () => {
@@ -137,7 +159,9 @@ describe('OpenAIProvider.generateImage reference image path', () => {
 
     await expect(
       provider.generateImage('draw cat', { referenceImages: ['https://example.com/ref.png'] })
-    ).rejects.toThrow('OpenAI image generation failed: No image output from OpenAI response tool call');
+    ).rejects.toThrow(
+      'OpenAI image generation failed: No image output from OpenAI response tool call'
+    );
   });
 
   test('throws when image_generation_call has no result', async () => {
@@ -153,6 +177,8 @@ describe('OpenAIProvider.generateImage reference image path', () => {
 
     await expect(
       provider.generateImage('draw cat', { referenceImages: ['https://example.com/ref.png'] })
-    ).rejects.toThrow('OpenAI image generation failed: No image output from OpenAI response tool call');
+    ).rejects.toThrow(
+      'OpenAI image generation failed: No image output from OpenAI response tool call'
+    );
   });
 });

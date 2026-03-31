@@ -317,7 +317,9 @@ async function main() {
     if (interaction.isButton()) {
       if (drawCommand instanceof DrawCommand) {
         try {
-          const handled = await drawCommand.handleButtonInteraction(interaction as ButtonInteraction);
+          const handled = await drawCommand.handleButtonInteraction(
+            interaction as ButtonInteraction
+          );
           if (handled) {
             return;
           }
