@@ -24,10 +24,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_migration_022_role_tier_quota_backup
 INSERT INTO migration_022_guild_quota_backup (guild_scope, guild_id, daily_video_tokens, updated_at)
 SELECT COALESCE(gq.guild_id, '__global__'), gq.guild_id, gq.daily_video_tokens, gq.updated_at
 FROM guild_quotas gq
-ON CONFLICT (guild_scope) DO UPDATE
-SET guild_id = EXCLUDED.guild_id,
-    daily_video_tokens = EXCLUDED.daily_video_tokens,
-    updated_at = EXCLUDED.updated_at;
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM migration_022_guild_quota_backup b
+  WHERE b.guild_scope = COALESCE(gq.guild_id, '__global__')
+);
 
 INSERT INTO migration_022_role_tier_quota_backup (guild_id, role_tier, video_tokens, updated_at)
 SELECT rtq.guild_id, rtq.role_tier, rtq.video_tokens, rtq.updated_at
