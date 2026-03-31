@@ -14,6 +14,37 @@ import type {
   ImageAnalysisResponse
 } from '@silo/core';
 
+interface XAIErrorResponse {
+  error?: string | { message?: string };
+  message?: string;
+  detail?: string;
+}
+
+interface XAIImageEntry {
+  url?: string;
+  revised_prompt?: string;
+  model?: string;
+  respect_moderation?: boolean;
+}
+
+interface XAIImageResponse {
+  data?: XAIImageEntry[];
+  images?: XAIImageEntry[];
+  image?: XAIImageEntry;
+  url?: string;
+}
+
+interface XAIVideoStatusResponse {
+  status?: string;
+  model?: string;
+  video?: {
+    url?: string;
+    duration?: number;
+    respect_moderation?: boolean;
+  };
+  error?: string | { message?: string };
+}
+
 /**
  * xAI/Grok provider using OpenAI-compatible API
  * https://docs.x.ai/api
@@ -117,16 +148,15 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider {
     if (!response.ok) {
       const body = await response.text();
 
-      let parsedBody: any;
+      let parsedBody: XAIErrorResponse | undefined;
       try {
-        parsedBody = JSON.parse(body);
+        parsedBody = JSON.parse(body) as XAIErrorResponse;
       } catch {
         parsedBody = undefined;
       }
 
       const parsedError =
-        parsedBody?.error?.message ||
-        parsedBody?.error ||
+        (typeof parsedBody?.error === 'string' ? parsedBody.error : parsedBody?.error?.message) ||
         parsedBody?.message ||
         parsedBody?.detail;
 
@@ -158,7 +188,15 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider {
   ): Promise<ImageGenerationResponse> {
     const references = options?.referenceImages || [];
 
-    const payload: Record<string, unknown> = {
+    const payload: {
+      model: string;
+      prompt: string;
+      image_format: 'url';
+      aspect_ratio?: string;
+      resolution?: string;
+      image_url?: string;
+      image_urls?: string[];
+    } = {
       model: options?.model || this.defaultImageModel,
       prompt,
       image_format: 'url'
@@ -177,13 +215,14 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider {
       payload.image_urls = references;
     }
 
-    const response = await this.requestJson<any>('/images/generations', {
+    const response = await this.requestJson<XAIImageResponse>('/images/generations', {
       method: 'POST',
       body: JSON.stringify(payload)
     });
 
-    const imageEntry = response?.data?.[0] || response?.images?.[0] || response?.image || response;
-    const url = imageEntry?.url || response?.url;
+    const imageEntry: XAIImageEntry | undefined =
+      response.data?.[0] || response.images?.[0] || response.image;
+    const url = imageEntry?.url || response.url;
 
     if (!url || typeof url !== 'string') {
       throw new Error('xAI image generation returned no URL');
@@ -192,9 +231,8 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider {
     return {
       url,
       revisedPrompt: imageEntry?.revised_prompt,
-      model: imageEntry?.model || payload.model?.toString(),
-      moderationPassed:
-        typeof imageEntry?.respect_moderation === 'boolean' ? imageEntry.respect_moderation : true
+      model: imageEntry?.model || payload.model,
+      moderationPassed: imageEntry?.respect_moderation ?? true
     };
   }
 
@@ -202,7 +240,15 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider {
     prompt: string,
     options?: VideoGenerationOptions
   ): Promise<VideoGenerationResponse> {
-    const payload: Record<string, unknown> = {
+    const payload: {
+      model: string;
+      prompt: string;
+      duration: number;
+      aspect_ratio?: string;
+      resolution?: string;
+      image_url?: string;
+      reference_image_urls?: string[];
+    } = {
       model: options?.model || this.defaultVideoModel,
       prompt,
       duration: options?.duration ?? 8
@@ -237,9 +283,12 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider {
     const startedAt = Date.now();
 
     while (Date.now() - startedAt < timeoutMs) {
-      const status = await this.requestJson<any>(`/videos/${encodeURIComponent(requestId)}`, {
-        method: 'GET'
-      });
+      const status = await this.requestJson<XAIVideoStatusResponse>(
+        `/videos/${encodeURIComponent(requestId)}`,
+        {
+          method: 'GET'
+        }
+      );
 
       const state = String(status?.status || '').toLowerCase();
       if (state === 'done') {
@@ -251,15 +300,15 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider {
 
         return {
           url,
-          model: status.model || payload.model?.toString(),
+          model: status.model || payload.model,
           duration: typeof video.duration === 'number' ? video.duration : undefined,
-          moderationPassed:
-            typeof video.respect_moderation === 'boolean' ? video.respect_moderation : true
+          moderationPassed: video.respect_moderation ?? true
         };
       }
 
       if (state === 'failed') {
-        throw new Error(status?.error?.message || 'xAI video generation failed');
+        const message = typeof status.error === 'string' ? status.error : status.error?.message;
+        throw new Error(message || 'xAI video generation failed');
       }
 
       if (state === 'expired') {
