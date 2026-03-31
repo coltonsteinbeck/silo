@@ -5,6 +5,7 @@ export const ProviderConfigSchema = z.object({
     .object({
       apiKey: z.string().optional(),
       model: z.string().default('gpt-4o-mini'),
+      imageModel: z.string().default('gpt-image-1.5'),
       baseURL: z.string().url().optional()
     })
     .optional(),
@@ -18,6 +19,8 @@ export const ProviderConfigSchema = z.object({
     .object({
       apiKey: z.string().optional(),
       model: z.string().default('grok-4-1-fast-non-reasoning'),
+      imageModel: z.string().default('grok-imagine-image'),
+      videoModel: z.string().default('grok-imagine-video'),
       baseURL: z.string().url().default('https://api.x.ai/v1')
     })
     .optional(),
@@ -31,7 +34,7 @@ export const ProviderConfigSchema = z.object({
   google: z
     .object({
       apiKey: z.string().optional(),
-      model: z.string().default('gemini-2.0-flash-exp')
+      model: z.string().default('gemini-3.1-flash-image-preview')
     })
     .optional()
 });
@@ -81,7 +84,16 @@ export const MLServiceConfigSchema = z.object({
 export const SecurityConfigSchema = z.object({
   healthCheckSecret: z.string().min(32).optional().or(z.literal('')),
   alertWebhookUrl: z.string().url().optional().or(z.literal('')),
-  enableMonitoring: z.boolean().default(false)
+  enableMonitoring: z.boolean().default(false),
+  urlPolicy: z
+    .object({
+      denylistDomains: z.array(z.string().min(1)).default([]),
+      allowlistDomains: z.array(z.string().min(1)).default([]),
+      enforceAllowlist: z.boolean().default(false),
+      blockKnownShorteners: z.boolean().default(true),
+      safeBrowsingApiKey: z.string().optional().or(z.literal(''))
+    })
+    .default({})
 });
 
 export const ConfigSchema = z.object({

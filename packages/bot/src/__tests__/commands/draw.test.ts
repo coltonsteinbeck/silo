@@ -25,7 +25,7 @@ describe('DrawCommand', () => {
     });
 
     test('has correct description', () => {
-      expect(command.data.description).toBe('Generate an image with AI');
+      expect(command.data.description).toBe('Generate or edit images with multiple image models');
     });
   });
 
@@ -40,6 +40,48 @@ describe('DrawCommand', () => {
       await command.execute(interaction as any);
 
       expect(interaction.deferReply).toHaveBeenCalled();
+    });
+
+    test('logs blocked reference URL screening events', async () => {
+      const logUrlSecurityEvent = mock(async () => {});
+      const security = {
+        policy: {
+          blockKnownShorteners: true
+        },
+        adminDb: {
+          logUrlSecurityEvent
+        }
+      };
+      command = new DrawCommand(mockRegistry, undefined, security as any);
+
+      const interaction = createMockInteraction({
+        options: {
+          prompt: 'Use this reference'
+        },
+        guildId: 'guild-1',
+        channelId: 'channel-1'
+      }) as any;
+
+      interaction.user = { id: 'user-1' };
+
+      interaction.options.getAttachment = mock((name: string) => {
+        if (name === 'reference1') {
+          return {
+            contentType: 'image/png',
+            url: 'https://bit.ly/example-ref'
+          };
+        }
+        return null;
+      });
+
+      await command.execute(interaction);
+
+      expect(logUrlSecurityEvent).toHaveBeenCalled();
+      const calls = (logUrlSecurityEvent as any).mock.calls as any[];
+      const event = calls[0]?.[0] as { action?: string; reason?: string };
+      expect(event.action).toBe('blocked');
+      expect(event.reason).toContain('shortener');
+      expect(interaction.reply).toHaveBeenCalled();
     });
 
     test('generates image with prompt', async () => {
@@ -161,7 +203,7 @@ describe('DrawCommand', () => {
       await command.execute(interaction as any);
 
       const reply = interaction._getReplies()[0];
-      expect(reply).toContain('Error:');
+      expect(reply).toContain('Error generating image:');
       expect(reply).toContain('API rate limit exceeded');
     });
 

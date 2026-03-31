@@ -8,7 +8,8 @@ describe('OpenAIProvider capabilities', () => {
     expect(provider.capabilities).toBeDefined();
     expect(provider.capabilities).toStrictEqual({
       vision: true,
-      maxImagesPerRequest: 1
+      maxImagesPerRequest: 1,
+      maxImageReferences: 5
     });
   });
 });

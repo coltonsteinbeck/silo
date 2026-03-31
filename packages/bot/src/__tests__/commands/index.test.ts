@@ -87,6 +87,7 @@ describe('createCommands', () => {
       'server-memory-set',
       'memory-clear',
       'draw',
+      'video',
       'thread',
       'digest',
       'admin',
@@ -95,7 +96,8 @@ describe('createCommands', () => {
       'analytics',
       'speak',
       'stopspeaking',
-      'feedback'
+      'feedback',
+      'prompt'
     ];
 
     for (const cmdName of expectedCommands) {

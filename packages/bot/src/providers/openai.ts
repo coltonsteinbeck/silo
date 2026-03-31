@@ -20,7 +20,7 @@ function redactSecrets(value: string): string {
 
 export class OpenAIProvider implements TextProvider, ImageProvider {
   name = 'openai';
-  capabilities = { vision: true, maxImagesPerRequest: 1 };
+  capabilities = { vision: true, maxImagesPerRequest: 1, maxImageReferences: 5 };
   private client: OpenAI | null = null;
   private defaultModel: string;
   private defaultImageModel: string;
@@ -83,6 +83,51 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
     }
 
     try {
+      const references = options?.referenceImages || [];
+
+      if (references.length > 0) {
+        const tool: Record<string, unknown> = {
+          type: 'image_generation',
+          size: options?.size || '1024x1024',
+          quality: options?.quality || 'auto',
+          action: options?.action || 'edit'
+        };
+
+        if (options?.inputFidelity) {
+          tool.input_fidelity = options.inputFidelity;
+        }
+
+        const response = await this.client.responses.create({
+          model: options?.model || this.defaultImageModel,
+          input: [
+            {
+              role: 'user',
+              content: [
+                { type: 'input_text', text: prompt },
+                ...references.map(imageUrl => ({
+                  type: 'input_image',
+                  image_url: imageUrl
+                }))
+              ]
+            }
+          ],
+          tools: [tool]
+        } as any);
+
+        const output = (response as any).output || [];
+        const imageCall = output.find((item: any) => item.type === 'image_generation_call');
+        if (!imageCall?.result) {
+          throw new Error('No image output from OpenAI response tool call');
+        }
+
+        return {
+          url: `data:image/png;base64,${imageCall.result}`,
+          revisedPrompt: imageCall.revised_prompt,
+          model: options?.model || this.defaultImageModel,
+          moderationPassed: imageCall.status === 'completed'
+        };
+      }
+
       console.log('[OpenAI] Generating image:', {
         model: options?.model || this.defaultImageModel,
         prompt: prompt.substring(0, 100),
@@ -94,7 +139,7 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
         model: options?.model || this.defaultImageModel,
         prompt,
         n: 1,
-        size: (options?.size as '1024x1024' | '1792x1024' | '1024x1792') || '1024x1024',
+        size: (options?.size as any) || '1024x1024',
         quality: (options?.quality as 'auto' | 'high' | 'medium' | 'low') || 'auto'
       });
 
@@ -113,7 +158,9 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
       if (image.b64_json) {
         return {
           url: `data:image/png;base64,${image.b64_json}`,
-          revisedPrompt: image.revised_prompt
+          revisedPrompt: image.revised_prompt,
+          model: options?.model || this.defaultImageModel,
+          moderationPassed: true
         };
       }
 
@@ -124,7 +171,9 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
 
       return {
         url: image.url,
-        revisedPrompt: image.revised_prompt
+        revisedPrompt: image.revised_prompt,
+        model: options?.model || this.defaultImageModel,
+        moderationPassed: true
       };
     } catch (error) {
       const message = redactSecrets(error instanceof Error ? error.message : String(error));

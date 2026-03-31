@@ -174,6 +174,19 @@ const LEETSPEAK_CHAR_MAP: Record<string, string> = {
   '+': 't'
 };
 
+const PROMPT_INJECTION_PATTERNS = [
+  /ignore\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|rules?)/i,
+  /disregard\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|rules?)/i,
+  /forget\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|rules?)/i,
+  /system\s*:\s*override/i,
+  /developer\s*:\s*override/i,
+  /jailbreak/i,
+  /do\s+anything\s+now/i,
+  /reveal\s+(the\s+)?system\s+prompt/i,
+  /print\s+(the\s+)?(hidden|internal)\s+instructions?/i,
+  /act\s+as\s+(?:the\s+)?system/i
+];
+
 const EXPLICIT_SEX_TOPIC_PATTERN =
   /\b(porn|pornography|nsfw|xxx|sext(?:ing)?|sexual\s+roleplay|erp|fetish|blowjob|handjob|deepthroat|cum(?:ming)?|anal)\b/i;
 
@@ -190,12 +203,38 @@ const ILLICIT_DRUG_HOWTO_PATTERN =
   /\b(how\s+to|steps?|instructions?)\b.{0,80}\b(make|cook|synthesi[sz]e|buy|get|sell)\b.{0,80}\b(cocaine|meth(?:amphetamine)?|heroin|fentanyl|mdma|ecstasy|lsd|acid|crack|molly)\b/i;
 
 function normalizeTokenForEvasionDetection(content: string): string {
-  return content
+  const normalized = content
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .split('')
+    .map(char => {
+      const code = char.codePointAt(0);
+      if (!code) return char;
+
+      // Full-width digits and letters
+      if (code >= 0xff10 && code <= 0xff19) return String.fromCharCode(code - 0xff10 + 0x30);
+      if (code >= 0xff21 && code <= 0xff3a) return String.fromCharCode(code - 0xff21 + 0x41);
+      if (code >= 0xff41 && code <= 0xff5a) return String.fromCharCode(code - 0xff41 + 0x61);
+
+      // Circled letters
+      if (code >= 0x24b6 && code <= 0x24cf) return String.fromCharCode(code - 0x24b6 + 0x41);
+      if (code >= 0x24d0 && code <= 0x24e9) return String.fromCharCode(code - 0x24d0 + 0x61);
+
+      return char;
+    })
+    .join('');
+
+  return normalized
     .toLowerCase()
     .split('')
     .map(char => LEETSPEAK_CHAR_MAP[char] || char)
     .join('')
     .replace(/[^a-z]/g, '');
+}
+
+export function hasPromptInjectionPattern(content: string): boolean {
+  const normalized = content.normalize('NFKC').replace(/\s+/g, ' ').trim();
+  return PROMPT_INJECTION_PATTERNS.some(pattern => pattern.test(normalized));
 }
 
 function extractNormalizedTokens(content: string): string[] {

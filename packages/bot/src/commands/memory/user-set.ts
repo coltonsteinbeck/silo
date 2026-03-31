@@ -2,6 +2,10 @@ import { ChatInputCommandInteraction, MessageFlags, SlashCommandBuilder } from '
 import { Command } from '../types';
 import { DatabaseAdapter, UserMemory, logger } from '@silo/core';
 import { ProviderRegistry } from '../../providers/registry';
+import {
+  detectDeterministicIllicitContent,
+  hasPromptInjectionPattern
+} from '../../security/content-sanitizer';
 
 function extractLoreEntities(content: string): string[] {
   const matches = content.match(/\b[A-Z][A-Za-z0-9_-]{2,}\b/g) || [];
@@ -72,6 +76,21 @@ export class UserMemorySetCommand implements Command {
     const content = interaction.options.getString('content', true);
     const contextType = interaction.options.getString('type', true) as UserMemory['contextType'];
     const expiresInHours = interaction.options.getInteger('expires-in-hours');
+
+    const deterministicViolations = detectDeterministicIllicitContent(content);
+    if (deterministicViolations.length > 0) {
+      await interaction.editReply(
+        'Memory was rejected by safety policy. Please remove unsafe content and try again.'
+      );
+      return;
+    }
+
+    if (hasPromptInjectionPattern(content)) {
+      await interaction.editReply(
+        'Memory looks like instruction override text. Please store factual context instead of control instructions.'
+      );
+      return;
+    }
 
     let expiresAt: Date | undefined;
     if (expiresInHours) {
