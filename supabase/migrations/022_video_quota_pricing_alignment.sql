@@ -3,7 +3,8 @@
 
 -- Backup current values so this migration can be reversed.
 CREATE TABLE IF NOT EXISTS migration_022_guild_quota_backup (
-  guild_id TEXT PRIMARY KEY,
+  guild_scope TEXT PRIMARY KEY,
+  guild_id TEXT,
   daily_video_tokens INTEGER,
   updated_at TIMESTAMPTZ,
   captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -20,10 +21,13 @@ CREATE TABLE IF NOT EXISTS migration_022_role_tier_quota_backup (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_migration_022_role_tier_quota_backup
   ON migration_022_role_tier_quota_backup (COALESCE(guild_id, '__global__'), role_tier);
 
-INSERT INTO migration_022_guild_quota_backup (guild_id, daily_video_tokens, updated_at)
-SELECT gq.guild_id, gq.daily_video_tokens, gq.updated_at
+INSERT INTO migration_022_guild_quota_backup (guild_scope, guild_id, daily_video_tokens, updated_at)
+SELECT COALESCE(gq.guild_id, '__global__'), gq.guild_id, gq.daily_video_tokens, gq.updated_at
 FROM guild_quotas gq
-ON CONFLICT (guild_id) DO NOTHING;
+ON CONFLICT (guild_scope) DO UPDATE
+SET guild_id = EXCLUDED.guild_id,
+    daily_video_tokens = EXCLUDED.daily_video_tokens,
+    updated_at = EXCLUDED.updated_at;
 
 INSERT INTO migration_022_role_tier_quota_backup (guild_id, role_tier, video_tokens, updated_at)
 SELECT rtq.guild_id, rtq.role_tier, rtq.video_tokens, rtq.updated_at
@@ -185,7 +189,7 @@ $$ LANGUAGE plpgsql;
 -- SET daily_video_tokens = b.daily_video_tokens,
 --     updated_at = COALESCE(b.updated_at, gq.updated_at)
 -- FROM migration_022_guild_quota_backup b
--- WHERE gq.guild_id = b.guild_id;
+-- WHERE gq.guild_id IS NOT DISTINCT FROM b.guild_id;
 --
 -- UPDATE role_tier_quotas rtq
 -- SET video_tokens = b.video_tokens,
