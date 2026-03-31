@@ -194,7 +194,6 @@ export class PostgresAdapter implements DatabaseAdapter {
 
       client = await this.pool.connect();
       await client.query('SELECT pg_advisory_lock($1)', [PostgresAdapter.MIGRATION_LOCK_ID]);
-      await client.query('SET search_path TO public');
 
       await client.query(`
         CREATE TABLE IF NOT EXISTS public.schema_migrations (

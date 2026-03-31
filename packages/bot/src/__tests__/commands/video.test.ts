@@ -20,7 +20,7 @@ describe('VideoCommand', () => {
     expect(optionNames).not.toContain('videos');
   });
 
-  test('always sends fixed output count of one to provider', async () => {
+  test('does not send a count option to provider', async () => {
     const generateVideo = mock(async () => ({
       url: 'https://example.com/video.mp4',
       model: 'grok-imagine-video',
@@ -46,7 +46,7 @@ describe('VideoCommand', () => {
     expect(generateVideo).toHaveBeenCalled();
     const calls = (generateVideo as any).mock.calls as any[];
     const options = (calls[0]?.[1] || {}) as { count?: number };
-    expect(options.count).toBe(1);
+    expect(options.count).toBeUndefined();
   });
 
   test('logs blocked reference URL screening events', async () => {

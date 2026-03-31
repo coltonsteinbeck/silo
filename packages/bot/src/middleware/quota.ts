@@ -492,7 +492,7 @@ export class QuotaMiddleware {
       },
       videoTokens: {
         used: usage?.videoTokens || 0,
-        max: quota?.videoTokensMax || GUILD_MAX_QUOTAS.video_tokens
+        max: quota?.videoTokensMax ?? GUILD_MAX_QUOTAS.video_tokens
       }
     };
   }

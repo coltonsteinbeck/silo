@@ -45,7 +45,6 @@ export interface VideoGenerationOptions {
   aspectRatio?: string;
   resolution?: string;
   referenceImages?: string[];
-  count?: number;
 }
 
 export interface VideoGenerationResponse {

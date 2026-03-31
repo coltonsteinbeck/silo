@@ -289,8 +289,7 @@ export class VideoCommand implements Command {
         duration,
         resolution: effectiveResolution,
         aspectRatio,
-        referenceImages: references,
-        count: FIXED_VIDEO_OUTPUT_COUNT
+        referenceImages: references
       });
 
       const embed = new EmbedBuilder()

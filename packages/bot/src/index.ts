@@ -279,11 +279,32 @@ async function main() {
 
   // Handle slash command interactions
   client.on(Events.InteractionCreate, async interaction => {
+    const sendInteractionErrorReply = async (
+      target: ButtonInteraction | ModalSubmitInteraction,
+      message: string
+    ): Promise<void> => {
+      const reply = { content: message, ephemeral: true };
+      if (target.replied || target.deferred) {
+        await target.followUp(reply);
+      } else {
+        await target.reply(reply);
+      }
+    };
+
     // Handle modal submissions (like system prompt editor)
     if (interaction.isModalSubmit()) {
       if (drawCommand instanceof DrawCommand) {
-        const handled = await drawCommand.handleModalSubmit(interaction);
-        if (handled) {
+        try {
+          const handled = await drawCommand.handleModalSubmit(interaction);
+          if (handled) {
+            return;
+          }
+        } catch (error) {
+          logger.error('Error handling draw modal interaction:', error);
+          await sendInteractionErrorReply(
+            interaction,
+            'An error occurred while handling this draw interaction.'
+          );
           return;
         }
       }
@@ -295,8 +316,17 @@ async function main() {
     // Handle button interactions for waitlist
     if (interaction.isButton()) {
       if (drawCommand instanceof DrawCommand) {
-        const handled = await drawCommand.handleButtonInteraction(interaction as ButtonInteraction);
-        if (handled) {
+        try {
+          const handled = await drawCommand.handleButtonInteraction(interaction as ButtonInteraction);
+          if (handled) {
+            return;
+          }
+        } catch (error) {
+          logger.error('Error handling draw button interaction:', error);
+          await sendInteractionErrorReply(
+            interaction,
+            'An error occurred while handling this draw interaction.'
+          );
           return;
         }
       }
