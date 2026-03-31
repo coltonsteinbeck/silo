@@ -36,7 +36,7 @@ const GUILD_MAX_QUOTAS = {
   images: 5,
   voice_minutes: 15,
   vision_tokens: 20000,
-  video_tokens: 20
+  video_tokens: 500
 } as const;
 
 // Estimate tuning constants

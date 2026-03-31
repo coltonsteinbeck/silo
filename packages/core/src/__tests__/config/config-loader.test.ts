@@ -323,6 +323,8 @@ describe('ConfigLoader', () => {
         DEV_DB_IDENTIFIER: 'https://bad host',
         SUPABASE_DEV_PW: 'pw',
         DATABASE_URL: undefined,
+        DATABASE_DEV_URL: undefined,
+        DATABASE_LOCAL_URL: undefined,
         DISCORD_TOKEN: 'a'.repeat(60),
         DISCORD_CLIENT_ID: '123456789012345678',
         REDIS_URL: 'redis://localhost:6379'

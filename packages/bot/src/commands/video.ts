@@ -1,4 +1,5 @@
 import {
+  AttachmentBuilder,
   ChatInputCommandInteraction,
   EmbedBuilder,
   GuildMember,
@@ -10,8 +11,17 @@ import { QuotaMiddleware } from '../middleware/quota';
 import { AdminAdapter } from '../database/admin-adapter';
 import { screenExternalUrl, type UrlPolicyOptions } from '../services/url-context';
 
-const VIDEO_MODEL = 'grok-imagine-video';
+const XAI_VIDEO_MODEL = 'grok-imagine-video';
 const FIXED_VIDEO_OUTPUT_COUNT = 1;
+
+// Pricing basis from xAI: 1 quota token ~= one image-input unit ($0.002).
+const IMAGE_INPUT_UNIT_PRICE_USD = 0.002;
+const VIDEO_OUTPUT_PRICE_USD: Record<'480p' | '720p', number> = {
+  '480p': 0.05,
+  '720p': 0.07
+};
+const BASE_VIDEO_DURATION_SECONDS = 5;
+const MAX_INLINE_VIDEO_BYTES = 24 * 1024 * 1024;
 
 interface VideoUrlSecurityOptions {
   policy?: UrlPolicyOptions;
@@ -23,11 +33,15 @@ function calculateVideoQuotaCost(
   resolution: string,
   referenceCount: number
 ): number {
-  const base = 2;
-  const durationBoost = duration >= 10 ? 2 : duration >= 8 ? 1 : 0;
-  const resolutionBoost = resolution === '720p' ? 1 : 0;
-  const referenceBoost = Math.min(referenceCount, 2);
-  return base + durationBoost + resolutionBoost + referenceBoost;
+  const normalizedResolution: '480p' | '720p' = resolution === '720p' ? '720p' : '480p';
+  const safeDuration = Math.max(1, duration);
+  const outputUsd =
+    VIDEO_OUTPUT_PRICE_USD[normalizedResolution] * (safeDuration / BASE_VIDEO_DURATION_SECONDS);
+  const referenceUsd = Math.max(0, referenceCount) * IMAGE_INPUT_UNIT_PRICE_USD;
+  const totalUsd = outputUsd + referenceUsd;
+
+  // Convert USD-estimated media cost to internal token units.
+  return Math.max(1, Math.ceil(totalUsd / IMAGE_INPUT_UNIT_PRICE_USD));
 }
 
 export class VideoCommand implements Command {
@@ -78,6 +92,72 @@ export class VideoCommand implements Command {
     private quotaMiddleware?: QuotaMiddleware,
     private urlSecurity?: VideoUrlSecurityOptions
   ) {}
+
+  private inferVideoExtension(url: string, contentType?: string): string {
+    const lowerType = (contentType || '').toLowerCase();
+    if (lowerType.includes('mp4')) return 'mp4';
+    if (lowerType.includes('webm')) return 'webm';
+    if (lowerType.includes('quicktime')) return 'mov';
+
+    const pathPart = url.split('?')[0] || '';
+    const ext = pathPart.split('.').pop()?.toLowerCase();
+    if (ext && ['mp4', 'webm', 'mov', 'm4v'].includes(ext)) {
+      return ext;
+    }
+
+    return 'mp4';
+  }
+
+  private async buildInlineVideoAttachment(url: string): Promise<{
+    attachment: AttachmentBuilder | null;
+    reason?: string;
+  }> {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        return {
+          attachment: null,
+          reason: `video fetch failed (${response.status})`
+        };
+      }
+
+      const contentLengthHeader = response.headers.get('content-length');
+      const contentLength = contentLengthHeader ? Number(contentLengthHeader) : NaN;
+      if (Number.isFinite(contentLength) && contentLength > MAX_INLINE_VIDEO_BYTES) {
+        return {
+          attachment: null,
+          reason: 'video file is too large for inline upload'
+        };
+      }
+
+      const contentType = response.headers.get('content-type') || undefined;
+      const buffer = Buffer.from(await response.arrayBuffer());
+      if (buffer.byteLength === 0) {
+        return {
+          attachment: null,
+          reason: 'video download returned empty content'
+        };
+      }
+
+      if (buffer.byteLength > MAX_INLINE_VIDEO_BYTES) {
+        return {
+          attachment: null,
+          reason: 'video file is too large for inline upload'
+        };
+      }
+
+      const extension = this.inferVideoExtension(url, contentType);
+      const fileName = `video-${Date.now()}.${extension}`;
+      return {
+        attachment: new AttachmentBuilder(buffer, { name: fileName })
+      };
+    } catch (error) {
+      return {
+        attachment: null,
+        reason: error instanceof Error ? error.message : 'unknown download error'
+      };
+    }
+  }
 
   private async logUrlScreening(
     interaction: ChatInputCommandInteraction,
@@ -172,7 +252,9 @@ export class VideoCommand implements Command {
     }
 
     const references = refsResult.references;
-    const quotaCost = calculateVideoQuotaCost(duration, resolution, references.length);
+    const effectiveResolution = resolution;
+    const quotaReferenceCount = references.length;
+    const quotaCost = calculateVideoQuotaCost(duration, effectiveResolution, quotaReferenceCount);
 
     if (this.quotaMiddleware && interaction.guildId) {
       const member = interaction.member as GuildMember;
@@ -203,9 +285,9 @@ export class VideoCommand implements Command {
       }
 
       const result = await provider.generateVideo(prompt, {
-        model: VIDEO_MODEL,
+        model: XAI_VIDEO_MODEL,
         duration,
-        resolution,
+        resolution: effectiveResolution,
         aspectRatio,
         referenceImages: references,
         count: FIXED_VIDEO_OUTPUT_COUNT
@@ -216,12 +298,12 @@ export class VideoCommand implements Command {
         .setDescription(
           [
             `Prompt: ${prompt}`,
-            `Model: ${result.model || VIDEO_MODEL}`,
+            `Model: ${result.model || XAI_VIDEO_MODEL}`,
             `Duration: ${result.duration || duration}s`,
-            `Resolution: ${resolution}`,
+            `Resolution: ${effectiveResolution}`,
             `References: ${references.length}`,
-            `Outputs: ${FIXED_VIDEO_OUTPUT_COUNT} (fixed)`,
-            `URL: ${result.url}`
+            `Quota Cost: ${quotaCost} video tokens`,
+            `Outputs: ${FIXED_VIDEO_OUTPUT_COUNT} (fixed)`
           ].join('\n')
         )
         .setURL(result.url)
@@ -230,10 +312,23 @@ export class VideoCommand implements Command {
         })
         .setTimestamp();
 
-      await interaction.editReply({
-        content: result.url,
-        embeds: [embed]
-      });
+      const inlineVideo = await this.buildInlineVideoAttachment(result.url);
+      if (inlineVideo.attachment) {
+        await interaction.editReply({
+          embeds: [embed],
+          files: [inlineVideo.attachment]
+        });
+      } else {
+        const fallbackEmbed = EmbedBuilder.from(embed).addFields({
+          name: 'Video Link',
+          value: result.url
+        });
+
+        await interaction.editReply({
+          content: `Unable to upload video inline (${inlineVideo.reason || 'unknown reason'}).`,
+          embeds: [fallbackEmbed]
+        });
+      }
 
       if (this.quotaMiddleware && interaction.guildId) {
         await this.quotaMiddleware.recordUsage(

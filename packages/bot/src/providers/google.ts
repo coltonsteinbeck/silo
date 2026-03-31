@@ -52,7 +52,11 @@ async function fetchReferenceImageAsInlineData(url: string): Promise<InlineImage
 
 export class GoogleImageProvider implements ImageProvider {
   name = 'google';
-  capabilities = { vision: false, maxImagesPerRequest: 1, maxImageReferences: 3 };
+  capabilities = {
+    vision: false,
+    maxImagesPerRequest: 1,
+    maxImageReferences: 3
+  };
 
   private apiKey: string | null = null;
   private defaultModel: string;

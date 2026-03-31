@@ -304,6 +304,8 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Extend stats helper with video token usage
+DROP FUNCTION IF EXISTS get_guild_quota_stats(TEXT);
+
 CREATE OR REPLACE FUNCTION get_guild_quota_stats(p_guild_id TEXT)
 RETURNS TABLE(
   text_tokens_used BIGINT,
