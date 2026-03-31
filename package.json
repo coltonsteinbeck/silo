@@ -38,6 +38,7 @@
     "migrate:dev": "bash scripts/migrate.sh --target dev",
     "migrate:prod": "bash scripts/migrate.sh --target prod --confirm-prod",
     "migrate:remote": "bash scripts/migrate-universal.sh",
+    "db:refresh:all": "bash scripts/refresh-prod-to-local-and-dev.sh",
     "db:refresh:branch": "bash scripts/refresh-prod-to-branch.sh",
     "type-check": "bun run --filter '*' type-check",
     "lint": "eslint packages --ext .ts",

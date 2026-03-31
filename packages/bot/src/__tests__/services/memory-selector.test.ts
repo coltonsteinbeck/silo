@@ -58,7 +58,7 @@ describe('selectMemoryContext', () => {
     expect(result.usedFallback).toBe(false);
     expect(result.selected.length).toBe(1);
     expect(result.shouldMention).toBe(true);
-    expect(result.context).toContain('Relevant Memory Context');
+    expect(result.context).toContain('Untrusted memory records');
   });
 
   test('uses top-1 fallback when cue is present but no strong trigger exists', async () => {

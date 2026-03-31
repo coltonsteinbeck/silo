@@ -252,6 +252,7 @@ export function createMockAdminAdapter() {
 export function createMockProviderRegistry(): {
   getTextProvider: ReturnType<typeof mock>;
   getImageProvider: ReturnType<typeof mock>;
+  getVideoProvider: ReturnType<typeof mock>;
   getAvailableProviders: ReturnType<typeof mock>;
 } {
   return {
@@ -274,9 +275,20 @@ export function createMockProviderRegistry(): {
       }))
     })),
 
+    getVideoProvider: mock((name?: string) => ({
+      name: name ?? 'xai',
+      isConfigured: () => true,
+      generateVideo: mock(async () => ({
+        url: 'https://example.com/video.mp4',
+        model: 'grok-imagine-video',
+        duration: 8
+      }))
+    })),
+
     getAvailableProviders: mock(() => ({
       text: ['openai', 'anthropic'],
-      image: ['openai']
+      image: ['openai', 'xai', 'google'],
+      video: ['xai']
     }))
   };
 }

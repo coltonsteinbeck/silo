@@ -7,6 +7,7 @@
 
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
 import { createMockInteraction, createMockProviderRegistry } from '@silo/core/test-setup';
+import { logger } from '@silo/core';
 import { DrawCommand } from '../../commands/draw';
 
 describe('DrawCommand', () => {
@@ -25,7 +26,7 @@ describe('DrawCommand', () => {
     });
 
     test('has correct description', () => {
-      expect(command.data.description).toBe('Generate an image with AI');
+      expect(command.data.description).toBe('Generate or edit images with multiple image models');
     });
   });
 
@@ -40,6 +41,48 @@ describe('DrawCommand', () => {
       await command.execute(interaction as any);
 
       expect(interaction.deferReply).toHaveBeenCalled();
+    });
+
+    test('logs blocked reference URL screening events', async () => {
+      const logUrlSecurityEvent = mock(async () => {});
+      const security = {
+        policy: {
+          blockKnownShorteners: true
+        },
+        adminDb: {
+          logUrlSecurityEvent
+        }
+      };
+      command = new DrawCommand(mockRegistry, undefined, security as any);
+
+      const interaction = createMockInteraction({
+        options: {
+          prompt: 'Use this reference'
+        },
+        guildId: 'guild-1',
+        channelId: 'channel-1'
+      }) as any;
+
+      interaction.user = { id: 'user-1' };
+
+      interaction.options.getAttachment = mock((name: string) => {
+        if (name === 'reference1') {
+          return {
+            contentType: 'image/png',
+            url: 'https://bit.ly/example-ref'
+          };
+        }
+        return null;
+      });
+
+      await command.execute(interaction);
+
+      expect(logUrlSecurityEvent).toHaveBeenCalled();
+      const calls = (logUrlSecurityEvent as any).mock.calls as any[];
+      const event = calls[0]?.[0] as { action?: string; reason?: string };
+      expect(event.action).toBe('blocked');
+      expect(event.reason).toContain('shortener');
+      expect(interaction.reply).toHaveBeenCalled();
     });
 
     test('generates image with prompt', async () => {
@@ -161,7 +204,7 @@ describe('DrawCommand', () => {
       await command.execute(interaction as any);
 
       const reply = interaction._getReplies()[0];
-      expect(reply).toContain('Error:');
+      expect(reply).toContain('Error generating image:');
       expect(reply).toContain('API rate limit exceeded');
     });
 
@@ -210,6 +253,81 @@ describe('DrawCommand', () => {
       const reply = interaction._getReplies()[0] as { embeds: any[] };
       expect(reply.embeds).toBeDefined();
       expect(reply.embeds[0].data.description).toContain('sunset');
+    });
+  });
+
+  describe('handleModalSubmit', () => {
+    test('continues when original message edit fails and logs warning context', async () => {
+      const sessionId = 'session-1';
+      const messageId = 'message-1';
+      const editError = new Error('message no longer editable');
+
+      const warnMock = mock(() => {});
+      const originalWarn = logger.warn;
+      (logger as any).warn = warnMock;
+
+      const commandAny = command as any;
+      commandAny.generateImage = mock(async () => ({
+        embed: { data: { description: 'updated' } },
+        files: []
+      }));
+      commandAny.createControls = mock(() => []);
+
+      commandAny.sessions.set(sessionId, {
+        id: sessionId,
+        userId: '111222333',
+        channelId: 'channel-1',
+        messageId,
+        createdAt: Date.now(),
+        prompt: 'before',
+        model: 'gpt-image-1',
+        size: '1024x1024',
+        quality: 'auto',
+        aspectRatio: '1:1',
+        resolution: '1k',
+        references: [],
+        quotaCost: 1
+      });
+
+      const interaction = createMockInteraction({
+        userId: '111222333',
+        guildId: 'guild-1',
+        channelId: 'channel-1'
+      }) as any;
+
+      interaction.customId = `draw_modal:${sessionId}`;
+      interaction.fields = {
+        getTextInputValue: mock(() => 'after')
+      };
+
+      interaction.channel = {
+        messages: {
+          fetch: mock(async () => ({
+            edit: mock(async () => {
+              throw editError;
+            })
+          }))
+        }
+      };
+
+      try {
+        await expect(command.handleModalSubmit(interaction)).resolves.toBe(true);
+
+        expect(warnMock).toHaveBeenCalled();
+        const warnCall = (warnMock as any).mock.calls[0];
+        expect(warnCall?.[0]).toContain('Failed to edit original draw message');
+        expect(warnCall?.[1]).toMatchObject({
+          sessionId,
+          messageId,
+          error: editError
+        });
+
+        expect(interaction.editReply).toHaveBeenCalledWith({
+          content: 'Image updated successfully.'
+        });
+      } finally {
+        (logger as any).warn = originalWarn;
+      }
     });
   });
 });

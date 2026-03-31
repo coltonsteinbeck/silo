@@ -17,7 +17,7 @@ function createVisionProvider(): ImageProvider {
 }
 
 describe('vision routing integration seam', () => {
-  test('hard-fails when reply/image context exists without a vision provider', () => {
+  test('does not require vision provider for reply-history images by default', () => {
     const context = assembleConversationContext({
       processedContent: 'what is he talking about?',
       currentImageUrls: [],
@@ -41,7 +41,7 @@ describe('vision routing integration seam', () => {
 
     expect(decision.useVision).toBe(false);
     expect(decision.estimatedVisionTokens).toBe(0);
-    expect(decision.errorMessage).toBe(VISION_PROVIDER_REQUIRED_MESSAGE);
+    expect(decision.errorMessage).toBeNull();
   });
 
   test('precheck sends handler reply payload for missing vision provider', async () => {
