@@ -116,10 +116,40 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider {
 
     if (!response.ok) {
       const body = await response.text();
+
+      let parsedBody: any;
+      try {
+        parsedBody = JSON.parse(body);
+      } catch {
+        parsedBody = undefined;
+      }
+
+      const parsedError =
+        parsedBody?.error?.message ||
+        parsedBody?.error ||
+        parsedBody?.message ||
+        parsedBody?.detail;
+
+      if (typeof parsedError === 'string') {
+        const lowered = parsedError.toLowerCase();
+        if (lowered.includes('content moderation') || lowered.includes('moderation')) {
+          throw new Error(
+            'xAI rejected this image request due to content moderation. Try a safer, less explicit prompt or edit instruction.'
+          );
+        }
+
+        throw new Error(`xAI API error (${response.status}): ${parsedError}`);
+      }
+
       throw new Error(`xAI API error (${response.status}): ${body.slice(0, 300)}`);
     }
 
     return (await response.json()) as T;
+  }
+
+  private normalizeResolution(resolution: string): string {
+    const normalized = resolution.trim().toLowerCase();
+    return normalized;
   }
 
   async generateImage(
@@ -138,7 +168,7 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider {
       payload.aspect_ratio = options.aspectRatio;
     }
     if (options?.resolution) {
-      payload.resolution = options.resolution;
+      payload.resolution = this.normalizeResolution(options.resolution);
     }
 
     if (references.length === 1) {
@@ -182,7 +212,7 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider {
       payload.aspect_ratio = options.aspectRatio;
     }
     if (options?.resolution) {
-      payload.resolution = options.resolution;
+      payload.resolution = this.normalizeResolution(options.resolution);
     }
 
     const references = options?.referenceImages || [];

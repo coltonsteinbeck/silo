@@ -20,7 +20,7 @@ import { AdminAdapter } from '../database/admin-adapter';
 import { screenExternalUrl, type UrlPolicyOptions } from '../services/url-context';
 
 const DRAW_MODEL_CONFIG = {
-  'gpt-image-1.5': {
+  'gpt-image-1': {
     provider: 'openai',
     maxReferences: 2,
     supportsQuality: true,
@@ -91,7 +91,7 @@ export class DrawCommand implements Command {
         .setDescription('Image model')
         .setRequired(false)
         .addChoices(
-          { name: 'OpenAI GPT Image 1.5', value: 'gpt-image-1.5' },
+          { name: 'OpenAI GPT Image 1', value: 'gpt-image-1' },
           { name: 'xAI Grok Imagine Image', value: 'grok-imagine-image' },
           { name: 'Google Nano Banana', value: 'gemini-3.1-flash-image-preview' }
         )
@@ -139,7 +139,7 @@ export class DrawCommand implements Command {
         .setName('resolution')
         .setDescription('Resolution (xAI / Google)')
         .setRequired(false)
-        .addChoices({ name: '1K', value: '1K' }, { name: '2K', value: '2K' })
+        .addChoices({ name: '1K', value: '1k' }, { name: '2K', value: '2k' })
     )
     .addAttachmentOption(option =>
       option.setName('reference1').setDescription('Reference image 1').setRequired(false)
@@ -205,16 +205,35 @@ export class DrawCommand implements Command {
     );
   }
 
+  private formatImageError(
+    error: unknown,
+    context: 'generation' | 'regeneration' | 'edit'
+  ): string {
+    const rawMessage = error instanceof Error ? error.message : 'Unknown error';
+    const lowered = rawMessage.toLowerCase();
+
+    if (lowered.includes('content moderation') || lowered.includes('moderation')) {
+      return `xAI blocked this ${context} due to content moderation. Try rephrasing with safer wording and fewer sensitive details.`;
+    }
+
+    return rawMessage;
+  }
+
   private resolveModel(raw: string | null): DrawModelName {
     if (!raw) {
-      return 'gpt-image-1.5';
+      return 'gpt-image-1';
+    }
+
+    // Backward compatibility for older command payloads/sessions.
+    if (raw === 'gpt-image-1.5') {
+      return 'gpt-image-1';
     }
 
     if (raw in DRAW_MODEL_CONFIG) {
       return raw as DrawModelName;
     }
 
-    return 'gpt-image-1.5';
+    return 'gpt-image-1';
   }
 
   private calculateQuotaCost(args: {
@@ -223,9 +242,9 @@ export class DrawCommand implements Command {
     resolution: string;
     referenceCount: number;
   }): number {
-    const base = args.model === 'gpt-image-1.5' ? 1 : 2;
+    const base = args.model === 'gpt-image-1' ? 1 : 2;
     const qualityBoost = args.quality === 'high' ? 1 : 0;
-    const resolutionBoost = args.resolution.toUpperCase() === '2K' ? 1 : 0;
+    const resolutionBoost = args.resolution.toLowerCase() === '2k' ? 1 : 0;
     const referenceBoost = Math.min(args.referenceCount, 2);
     return base + qualityBoost + resolutionBoost + referenceBoost;
   }
@@ -281,7 +300,19 @@ export class DrawCommand implements Command {
         continue;
       }
 
-      if (!attachment.contentType?.startsWith('image/')) {
+      const hasImageContentType = attachment.contentType?.startsWith('image/') === true;
+      let hasImageExtension = false;
+
+      if (!hasImageContentType) {
+        try {
+          const pathname = new URL(attachment.url).pathname.toLowerCase();
+          hasImageExtension = /\.(png|jpe?g|webp|gif|bmp|tiff?)$/.test(pathname);
+        } catch {
+          hasImageExtension = /\.(png|jpe?g|webp|gif|bmp|tiff?)$/i.test(attachment.url);
+        }
+      }
+
+      if (!hasImageContentType && !hasImageExtension) {
         continue;
       }
 
@@ -344,7 +375,7 @@ export class DrawCommand implements Command {
             ? `References: ${session.references.length}`
             : 'References: none',
           modelConfig.supportsResolution
-            ? `Resolution: ${session.resolution}`
+            ? `Resolution: ${session.resolution.toUpperCase()}`
             : `Size: ${session.size}`
         ].join('\n')
       )
@@ -365,7 +396,7 @@ export class DrawCommand implements Command {
     const size = interaction.options.getString('size') || '1024x1024';
     const quality = interaction.options.getString('quality') || 'auto';
     const aspectRatio = interaction.options.getString('aspect-ratio') || '1:1';
-    const resolution = interaction.options.getString('resolution') || '1K';
+    const resolution = interaction.options.getString('resolution') || '1k';
     const references = this.collectReferenceImages(interaction);
 
     const referenceValidation = await this.validateReferences(references, model, interaction);
@@ -451,7 +482,7 @@ export class DrawCommand implements Command {
       }
     } catch (error) {
       await interaction.editReply(
-        `Error generating image: ${error instanceof Error ? error.message : 'Unknown error'}`
+        `Error generating image: ${this.formatImageError(error, 'generation')}`
       );
     }
   }
@@ -558,7 +589,7 @@ export class DrawCommand implements Command {
       }
     } catch (error) {
       await interaction.followUp({
-        content: `Regeneration failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        content: `Regeneration failed: ${this.formatImageError(error, 'regeneration')}`,
         ephemeral: true
       });
     }
@@ -624,12 +655,8 @@ export class DrawCommand implements Command {
     await interaction.deferReply({ ephemeral: true });
 
     try {
-      session.prompt = updatedPrompt;
-      session.createdAt = Date.now();
-      this.sessions.set(session.id, session);
-
       const generation = await this.generateImage({
-        prompt: session.prompt,
+        prompt: updatedPrompt,
         model: session.model,
         size: session.size,
         quality: session.quality,
@@ -637,6 +664,10 @@ export class DrawCommand implements Command {
         resolution: session.resolution,
         references: session.references
       });
+
+      session.prompt = updatedPrompt;
+      session.createdAt = Date.now();
+      this.sessions.set(session.id, session);
 
       const channel = interaction.channel;
       if (channel && 'messages' in channel) {
@@ -660,7 +691,7 @@ export class DrawCommand implements Command {
       await interaction.editReply({ content: 'Image updated successfully.' });
     } catch (error) {
       await interaction.editReply({
-        content: `Image edit failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+        content: `Image edit failed: ${this.formatImageError(error, 'edit')}`
       });
     }
 

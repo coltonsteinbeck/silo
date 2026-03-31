@@ -5,7 +5,7 @@ export const ProviderConfigSchema = z.object({
     .object({
       apiKey: z.string().optional(),
       model: z.string().default('gpt-4o-mini'),
-      imageModel: z.string().default('gpt-image-1.5'),
+      imageModel: z.string().default('gpt-image-1'),
       baseURL: z.string().url().optional()
     })
     .optional(),

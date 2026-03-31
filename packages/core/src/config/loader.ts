@@ -1,4 +1,72 @@
 import { ConfigSchema, type Config } from './schema';
+import fs from 'node:fs';
+import path from 'node:path';
+
+let envLoaded = false;
+
+function findEnvFile(startDir: string): string | undefined {
+  let current = path.resolve(startDir);
+
+  while (true) {
+    const candidate = path.join(current, '.env');
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return undefined;
+    }
+    current = parent;
+  }
+}
+
+function stripWrappingQuotes(value: string): string {
+  if (value.length >= 2) {
+    const first = value[0];
+    const last = value[value.length - 1];
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      return value.slice(1, -1);
+    }
+  }
+  return value;
+}
+
+function loadEnvFileIfNeeded(): void {
+  if (envLoaded) {
+    return;
+  }
+
+  const envFile = findEnvFile(process.cwd());
+  if (!envFile) {
+    envLoaded = true;
+    return;
+  }
+
+  const content = fs.readFileSync(envFile, 'utf8');
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) {
+      continue;
+    }
+
+    const lineWithoutExport = line.startsWith('export ') ? line.slice(7).trim() : line;
+    const equalIndex = lineWithoutExport.indexOf('=');
+    if (equalIndex <= 0) {
+      continue;
+    }
+
+    const key = lineWithoutExport.slice(0, equalIndex).trim();
+    if (!key || process.env[key] !== undefined) {
+      continue;
+    }
+
+    const rawValue = lineWithoutExport.slice(equalIndex + 1).trim();
+    process.env[key] = stripWrappingQuotes(rawValue);
+  }
+
+  envLoaded = true;
+}
 
 function parseOptionalNumber(value: string | undefined): number | undefined {
   if (!value) {
@@ -44,7 +112,7 @@ function normalizeSupabaseHost(identifierOrHost: string): string {
 }
 
 function buildDatabaseUrl(): string {
-  // Honor explicit override first
+  // Global explicit override first
   if (process.env.DATABASE_URL) {
     return process.env.DATABASE_URL;
   }
@@ -52,6 +120,10 @@ function buildDatabaseUrl(): string {
   const mode = process.env.DEPLOYMENT_MODE?.toLowerCase();
 
   if (mode === 'production') {
+    if (process.env.DATABASE_PROD_URL) {
+      return process.env.DATABASE_PROD_URL;
+    }
+
     const identifier = process.env.HOSTED_DB_IDENTIFIER;
     const password = process.env.SUPABASE_PW;
     if (!identifier || !password) {
@@ -68,6 +140,14 @@ function buildDatabaseUrl(): string {
   }
 
   if (mode === 'development') {
+    if (process.env.DATABASE_DEV_URL) {
+      return process.env.DATABASE_DEV_URL;
+    }
+
+    if (process.env.DATABASE_LOCAL_URL) {
+      return process.env.DATABASE_LOCAL_URL;
+    }
+
     const identifier = process.env.DEV_DB_IDENTIFIER;
     const password = process.env.SUPABASE_DEV_PW;
     if (identifier && password) {
@@ -83,6 +163,8 @@ function buildDatabaseUrl(): string {
 
 export class ConfigLoader {
   static load(): Config {
+    loadEnvFileIfNeeded();
+
     const rawConfig = {
       discord: {
         token: process.env.DISCORD_TOKEN,
@@ -94,7 +176,7 @@ export class ConfigLoader {
           ? {
               apiKey: process.env.OPENAI_API_KEY,
               model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
-              imageModel: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-1.5'
+              imageModel: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-1'
             }
           : undefined,
         anthropic: process.env.ANTHROPIC_API_KEY

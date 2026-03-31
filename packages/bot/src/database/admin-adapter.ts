@@ -655,7 +655,7 @@ export class AdminAdapter {
       imagesMax: row.daily_images ?? row.images_max ?? 5,
       voiceMinutesMax: row.daily_voice_minutes ?? row.voice_minutes_max ?? 15,
       visionTokensMax: row.daily_vision_tokens ?? 20000,
-      videoTokensMax: row.daily_video_tokens ?? 20
+      videoTokensMax: row.daily_video_tokens ?? 500
     };
   }
 
@@ -712,7 +712,7 @@ export class AdminAdapter {
           WHEN 'images' THEN COALESCE(daily_images, 5)
           WHEN 'voice_minutes' THEN COALESCE(daily_voice_minutes, 15)
           WHEN 'vision_tokens' THEN COALESCE(daily_vision_tokens, 20000)
-          WHEN 'video_tokens' THEN COALESCE(daily_video_tokens, 20)
+          WHEN 'video_tokens' THEN COALESCE(daily_video_tokens, 500)
         END as quota_limit
       FROM guild_quotas WHERE guild_id = $1`,
       [guildId, usageType]
@@ -728,7 +728,7 @@ export class AdminAdapter {
             ? 15
             : usageType === 'vision_tokens'
               ? 20000
-              : 20);
+              : 500);
     const quotaLimit = Number(rawQuotaLimit) || 0;
 
     // Get current usage for today
@@ -852,7 +852,7 @@ export class AdminAdapter {
          COALESCE(daily_text_tokens, 50000) as text_tokens,
          COALESCE(daily_images, 5) as images,
          COALESCE(daily_voice_minutes, 15) as voice_minutes,
-         COALESCE(daily_video_tokens, 20) as video_tokens
+         COALESCE(daily_video_tokens, 500) as video_tokens
        FROM guild_quotas
        WHERE guild_id = $1`,
       [guildId]
@@ -863,7 +863,7 @@ export class AdminAdapter {
         textTokens: 50000,
         images: 5,
         voiceMinutes: 15,
-        videoTokens: 20
+        videoTokens: 500
       };
     }
 
@@ -872,7 +872,7 @@ export class AdminAdapter {
       textTokens: parseInt(row.text_tokens) || 50000,
       images: parseInt(row.images) || 5,
       voiceMinutes: parseInt(row.voice_minutes) || 15,
-      videoTokens: parseInt(row.video_tokens) || 20
+      videoTokens: parseInt(row.video_tokens) || 500
     };
   }
 
@@ -916,28 +916,28 @@ export class AdminAdapter {
           images: 5,
           voiceMinutes: 15,
           visionTokens: 10000,
-          videoTokens: 20
+          videoTokens: 500
         },
         moderator: {
           textTokens: 20000,
           images: 3,
           voiceMinutes: 10,
           visionTokens: 5000,
-          videoTokens: 12
+          videoTokens: 300
         },
         trusted: {
           textTokens: 13000,
           images: 2,
           voiceMinutes: 5,
           visionTokens: 4000,
-          videoTokens: 8
+          videoTokens: 200
         },
         member: {
           textTokens: 7000,
           images: 1,
           voiceMinutes: 0,
           visionTokens: 1500,
-          videoTokens: 4
+          videoTokens: 100
         },
         restricted: { textTokens: 0, images: 0, voiceMinutes: 0, visionTokens: 0, videoTokens: 0 }
       };
@@ -946,7 +946,7 @@ export class AdminAdapter {
         images: 1,
         voiceMinutes: 0,
         visionTokens: 1500,
-        videoTokens: 4
+        videoTokens: 100
       };
       return defaults[roleTier] ?? defaultMember;
     }
