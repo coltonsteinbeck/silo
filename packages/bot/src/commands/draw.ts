@@ -13,6 +13,7 @@ import {
   TextInputBuilder,
   TextInputStyle
 } from 'discord.js';
+import { logger } from '@silo/core';
 import { Command } from './types';
 import { ProviderRegistry } from '../providers/registry';
 import { QuotaMiddleware } from '../middleware/quota';
@@ -671,12 +672,20 @@ export class DrawCommand implements Command {
 
       const channel = interaction.channel;
       if (channel && 'messages' in channel) {
-        const originalMessage = await channel.messages.fetch(session.messageId);
-        await originalMessage.edit({
-          embeds: [generation.embed],
-          files: generation.files,
-          components: [this.createControls(session.id)]
-        });
+        try {
+          const originalMessage = await channel.messages.fetch(session.messageId);
+          await originalMessage.edit({
+            embeds: [generation.embed],
+            files: generation.files,
+            components: [this.createControls(session.id)]
+          });
+        } catch (error) {
+          logger.warn('Failed to edit original draw message after modal submit; continuing', {
+            sessionId: session.id,
+            messageId: session.messageId,
+            error
+          });
+        }
       }
 
       if (this.quotaMiddleware && interaction.guildId) {

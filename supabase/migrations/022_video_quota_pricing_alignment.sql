@@ -1,6 +1,40 @@
 -- Migration 022: Align video token quotas with media pricing units.
 -- Unit definition: 1 video token ~= one image-input unit ($0.002).
 
+-- Backup current values so this migration can be reversed.
+CREATE TABLE IF NOT EXISTS migration_022_guild_quota_backup (
+  guild_id TEXT PRIMARY KEY,
+  daily_video_tokens INTEGER,
+  updated_at TIMESTAMPTZ,
+  captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS migration_022_role_tier_quota_backup (
+  guild_id TEXT,
+  role_tier TEXT NOT NULL,
+  video_tokens INTEGER,
+  updated_at TIMESTAMPTZ,
+  captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_migration_022_role_tier_quota_backup
+  ON migration_022_role_tier_quota_backup (COALESCE(guild_id, '__global__'), role_tier);
+
+INSERT INTO migration_022_guild_quota_backup (guild_id, daily_video_tokens, updated_at)
+SELECT gq.guild_id, gq.daily_video_tokens, gq.updated_at
+FROM guild_quotas gq
+ON CONFLICT (guild_id) DO NOTHING;
+
+INSERT INTO migration_022_role_tier_quota_backup (guild_id, role_tier, video_tokens, updated_at)
+SELECT rtq.guild_id, rtq.role_tier, rtq.video_tokens, rtq.updated_at
+FROM role_tier_quotas rtq
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM migration_022_role_tier_quota_backup b
+  WHERE b.role_tier = rtq.role_tier
+    AND b.guild_id IS NOT DISTINCT FROM rtq.guild_id
+);
+
 -- Raise default guild ceiling from "count-like" units to pricing units.
 ALTER TABLE guild_quotas
   ALTER COLUMN daily_video_tokens SET DEFAULT 500;
@@ -139,3 +173,23 @@ BEGIN
   RETURN (current_usage + p_amount) <= quota_limit;
 END;
 $$ LANGUAGE plpgsql;
+
+-- ============================================================================
+-- DOWN MIGRATION (uncomment to rollback)
+-- ============================================================================
+
+-- ALTER TABLE guild_quotas
+--   ALTER COLUMN daily_video_tokens SET DEFAULT 20;
+--
+-- UPDATE guild_quotas gq
+-- SET daily_video_tokens = b.daily_video_tokens,
+--     updated_at = COALESCE(b.updated_at, gq.updated_at)
+-- FROM migration_022_guild_quota_backup b
+-- WHERE gq.guild_id = b.guild_id;
+--
+-- UPDATE role_tier_quotas rtq
+-- SET video_tokens = b.video_tokens,
+--     updated_at = COALESCE(b.updated_at, rtq.updated_at)
+-- FROM migration_022_role_tier_quota_backup b
+-- WHERE rtq.role_tier = b.role_tier
+--   AND rtq.guild_id IS NOT DISTINCT FROM b.guild_id;
