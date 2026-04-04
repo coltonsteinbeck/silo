@@ -71,17 +71,25 @@ export function evaluateModerationDecision(
 ): ModerationDecision {
   let action: ModerationAction = 'allowed';
   let allowed = true;
+  const warnThreshold = SCORE_THRESHOLD * 0.8;
 
   const shouldBlock = flaggedCategories.some(
     cat => BLOCK_CATEGORIES.includes(cat) && scores[cat] && scores[cat] >= SCORE_THRESHOLD
   );
 
-  if (shouldBlock) {
+  const shouldBlockWarnClass = flaggedCategories.some(
+    cat =>
+      WARN_BLOCK_CATEGORIES.includes(cat) &&
+      typeof scores[cat] === 'number' &&
+      scores[cat] >= warnThreshold
+  );
+
+  if (shouldBlock || shouldBlockWarnClass) {
     action = 'blocked';
     allowed = false;
   } else if (flaggedCategories.length > 0) {
     const shouldWarn = flaggedCategories.some(
-      cat => WARN_CATEGORIES.includes(cat) && scores[cat] && scores[cat] >= SCORE_THRESHOLD * 0.8
+      cat => WARN_CATEGORIES.includes(cat) && scores[cat] && scores[cat] >= warnThreshold
     );
 
     if (shouldWarn) {
@@ -130,6 +138,8 @@ const WARN_CATEGORIES = [
   'harassment',
   'harassment/threatening'
 ];
+
+const WARN_BLOCK_CATEGORIES = ['sexual', 'harassment', 'harassment/threatening'];
 
 // Threshold for category scores to trigger action (0.0 - 1.0)
 const SCORE_THRESHOLD = 0.7;
@@ -201,6 +211,18 @@ const ILLICIT_DRUG_INTENT_PATTERN =
 
 const ILLICIT_DRUG_HOWTO_PATTERN =
   /\b(how\s+to|steps?|instructions?)\b.{0,80}\b(make|cook|synthesi[sz]e|buy|get|sell)\b.{0,80}\b(cocaine|meth(?:amphetamine)?|heroin|fentanyl|mdma|ecstasy|lsd|acid|crack|molly)\b/i;
+
+const SEXUAL_ANATOMY_REFERENCE_PATTERN =
+  /\b(male\s+genitalia|genitalia|penis|dick|cock|shaft|balls?|testicles?|phallus)\b/i;
+
+const SEXUAL_FIXATION_LANGUAGE_PATTERN =
+  /\b(obsessed|hands?\s+on|find\s+joy\s+in|stop\s+at\s+nothing|research(?:ing)?\s+male\s+genitalia)\b/i;
+
+export function hasUnsafeSexualContext(content: string): boolean {
+  return (
+    SEXUAL_ANATOMY_REFERENCE_PATTERN.test(content) && SEXUAL_FIXATION_LANGUAGE_PATTERN.test(content)
+  );
+}
 
 function normalizeTokenForEvasionDetection(content: string): string {
   const normalized = content
@@ -340,11 +362,14 @@ function detectDeterministicDrugIntent(content: string): string[] {
 }
 
 export function detectDeterministicIllicitContent(content: string): string[] {
+  const unsafeSexualContext = hasUnsafeSexualContext(content) ? ['sexual/unsafe_context'] : [];
+
   return [
     ...new Set([
       ...detectDeterministicHateEvasion(content),
       ...detectDeterministicExplicitSex(content),
-      ...detectDeterministicDrugIntent(content)
+      ...detectDeterministicDrugIntent(content),
+      ...unsafeSexualContext
     ])
   ];
 }

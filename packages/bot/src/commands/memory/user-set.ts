@@ -4,6 +4,7 @@ import { DatabaseAdapter, UserMemory, logger } from '@silo/core';
 import { ProviderRegistry } from '../../providers/registry';
 import {
   detectDeterministicIllicitContent,
+  hasUnsafeSexualContext,
   hasPromptInjectionPattern
 } from '../../security/content-sanitizer';
 
@@ -81,6 +82,13 @@ export class UserMemorySetCommand implements Command {
     if (deterministicViolations.length > 0) {
       await interaction.editReply(
         'Memory was rejected by safety policy. Please remove unsafe content and try again.'
+      );
+      return;
+    }
+
+    if (hasUnsafeSexualContext(content)) {
+      await interaction.editReply(
+        'Memory was rejected by safety policy. Please remove unsafe sexual content and try again.'
       );
       return;
     }

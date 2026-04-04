@@ -47,6 +47,21 @@ describe('prompt-policy', () => {
     expect(result.customPromptHash).toHaveLength(16);
   });
 
+  test('rejects custom prompt when allowlist is required but not configured', () => {
+    const defaultPrompt = 'default prompt';
+    const result = resolvePromptPolicy({
+      customPrompt: 'custom prompt',
+      defaultPrompt,
+      requireCustomPromptAllowlist: true
+    });
+
+    expect(result.effectivePrompt).toBe(defaultPrompt);
+    expect(result.promptHash).toBe(hashPrompt(defaultPrompt));
+    expect(result.usedCustomPrompt).toBe(false);
+    expect(result.rejectedCustomPrompt).toBe(true);
+    expect(result.customPromptHash).toHaveLength(16);
+  });
+
   test('accepts custom prompt when hash is in allowlist', () => {
     const precomputed = resolvePromptPolicy({
       customPrompt: 'custom prompt',

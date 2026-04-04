@@ -91,4 +91,65 @@ describe('VideoCommand', () => {
     expect(event.reason).toContain('shortener');
     expect(interaction.reply).toHaveBeenCalled();
   });
+
+  test('blocks video prompt via moderation preflight before provider call', async () => {
+    const generateVideo = mock(async () => ({
+      url: 'https://example.com/video.mp4',
+      model: 'grok-imagine-video',
+      duration: 8
+    }));
+
+    registry.getVideoProvider = mock(() => ({
+      name: 'xai',
+      isConfigured: () => true,
+      generateVideo
+    }));
+
+    const blockedGuard = mock(async () => ({
+      allowed: false,
+      processedPrompt: '',
+      userMessage: '⚠️ Prompt blocked by content policy. Please rephrase with safer wording.'
+    }));
+
+    command = new VideoCommand(registry, undefined, undefined, blockedGuard as any);
+
+    const interaction = createMockInteraction({
+      options: {
+        prompt: 'unsafe prompt'
+      }
+    }) as any;
+
+    interaction.options.getAttachment = mock(() => null);
+
+    await command.execute(interaction);
+
+    expect(generateVideo).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalled();
+  });
+
+  test('redacts provider errors from user-facing video failures', async () => {
+    const generateVideo = mock(async () => {
+      throw new Error('xAI internal provider trace with sensitive details');
+    });
+
+    registry.getVideoProvider = mock(() => ({
+      name: 'xai',
+      isConfigured: () => true,
+      generateVideo
+    }));
+
+    const interaction = createMockInteraction({
+      options: {
+        prompt: 'safe prompt'
+      }
+    }) as any;
+
+    interaction.options.getAttachment = mock(() => null);
+
+    await command.execute(interaction);
+
+    const reply = interaction._getReplies()[0] as string;
+    expect(reply).toContain('Video generation failed. Please try again in a moment.');
+    expect(reply).not.toContain('internal provider trace');
+  });
 });
