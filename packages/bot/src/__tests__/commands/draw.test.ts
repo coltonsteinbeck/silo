@@ -83,7 +83,7 @@ describe('DrawCommand', () => {
       const event = calls[0]?.[0] as { action?: string; reason?: string };
       expect(event.action).toBe('blocked');
       expect(event.reason).toContain('shortener');
-      expect(interaction.reply).toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalled();
     });
 
     test('generates image with prompt', async () => {
@@ -238,7 +238,7 @@ describe('DrawCommand', () => {
       await command.execute(interaction as any);
 
       expect(mockProvider.generateImage).not.toHaveBeenCalled();
-      expect(interaction.reply).toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalled();
     });
 
     test('uses moderation processedPrompt when provider generation is allowed', async () => {
@@ -295,12 +295,11 @@ describe('DrawCommand', () => {
       });
 
       await expect(command.execute(interaction as any)).resolves.toBeUndefined();
-      expect(interaction.reply).toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalled();
       expect(mockProvider.generateImage).not.toHaveBeenCalled();
 
-      const replyPayload = (interaction.reply as any).mock.calls[0]?.[0];
+      const replyPayload = (interaction.editReply as any).mock.calls[0]?.[0];
       expect(replyPayload?.content).toContain('Prompt validation is temporarily unavailable');
-      expect(replyPayload?.ephemeral).toBe(true);
     });
 
     test('includes revised prompt in response when available', async () => {
