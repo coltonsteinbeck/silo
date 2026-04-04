@@ -405,6 +405,8 @@ export class DrawCommand implements Command {
     const resolution = interaction.options.getString('resolution') || '1k';
     const references = this.collectReferenceImages(interaction);
 
+    await interaction.deferReply();
+
     let promptDecision: Awaited<ReturnType<PromptModerationGuard>>;
     try {
       promptDecision = await this.promptGuard({
@@ -420,17 +422,15 @@ export class DrawCommand implements Command {
         userId: interaction.user.id,
         error
       });
-      await interaction.reply({
-        content: '⚠️ Prompt validation is temporarily unavailable. Please try again in a moment.',
-        ephemeral: true
+      await interaction.editReply({
+        content: '⚠️ Prompt validation is temporarily unavailable. Please try again in a moment.'
       });
       return;
     }
 
     if (!promptDecision.allowed) {
-      await interaction.reply({
-        content: promptDecision.userMessage || '⚠️ Prompt blocked by content policy.',
-        ephemeral: true
+      await interaction.editReply({
+        content: promptDecision.userMessage || '⚠️ Prompt blocked by content policy.'
       });
       return;
     }
@@ -439,9 +439,8 @@ export class DrawCommand implements Command {
 
     const referenceValidation = await this.validateReferences(references, model, interaction);
     if (!referenceValidation.valid) {
-      await interaction.reply({
-        content: `Unable to process references: ${referenceValidation.reason}`,
-        ephemeral: true
+      await interaction.editReply({
+        content: `Unable to process references: ${referenceValidation.reason}`
       });
       return;
     }
@@ -464,15 +463,12 @@ export class DrawCommand implements Command {
       );
 
       if (!quotaCheck.allowed) {
-        await interaction.reply({
-          content: `⚠️ ${quotaCheck.reason}`,
-          ephemeral: true
+        await interaction.editReply({
+          content: `⚠️ ${quotaCheck.reason}`
         });
         return;
       }
     }
-
-    await interaction.deferReply();
 
     try {
       const generation = await this.generateImage({

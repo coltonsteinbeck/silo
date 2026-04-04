@@ -193,4 +193,30 @@ describe('openai-guardrails adapter', () => {
     expect(failOpen.allowed).toBe(true);
     expect(failOpen.executionFailed).toBe(true);
   });
+
+  test('applies failClosedOnError override to runGuardrails raise-errors flag', async () => {
+    cleanup = withEnv({
+      OPENAI_GUARDRAILS_ENABLED: 'true',
+      OPENAI_API_KEY: 'test-key',
+      OPENAI_GUARDRAILS_STRICT: 'true'
+    });
+
+    const runGuardrails = mock(async () => [
+      {
+        tripwireTriggered: false,
+        executionFailed: false,
+        info: {}
+      }
+    ]);
+
+    setGuardrailsRuntimeForTests({ module: { runGuardrails } as any });
+
+    await evaluateUserPromptGuardrails('safe input', { failClosedOnError: true });
+    await evaluateUserPromptGuardrails('safe input', { failClosedOnError: false });
+
+    const calls = (runGuardrails as any).mock.calls as any[];
+    expect(calls.length).toBe(2);
+    expect(calls[0]?.[3]).toBe(false);
+    expect(calls[1]?.[3]).toBe(true);
+  });
 });

@@ -345,6 +345,7 @@ async function evaluateWithPipeline(
 
   try {
     const [module, client] = await Promise.all([getGuardrailsModule(), getGuardrailLlmClient()]);
+    const raiseGuardrailErrors = shouldRaiseGuardrailErrors() && !failClosed;
 
     const context = {
       guardrailLlm: client,
@@ -355,7 +356,7 @@ async function evaluateWithPipeline(
       text,
       getGuardrailBundle(pipeline),
       context,
-      shouldRaiseGuardrailErrors()
+      raiseGuardrailErrors
     );
 
     const triggeredResult = results.find(result => result.tripwireTriggered);
