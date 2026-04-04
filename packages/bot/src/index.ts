@@ -86,37 +86,31 @@ async function handleModalSubmit(interaction: ModalSubmitInteraction, adminDb: A
         return;
       }
 
-      // Validate prompt (sanitize for basic injection attempts)
-      if (prompt) {
-        // Check for suspicious patterns that might try to override behavior
-        const suspiciousPatterns = [
-          /ignore\s+(all\s+)?previous/i,
-          /disregard\s+(all\s+)?instructions/i,
-          /you\s+are\s+now\s+(a\s+)?jailbreak/i,
-          /system:\s*override/i
-        ];
+      const validation = systemPromptManager.validatePrompt(prompt);
+      if (!validation.valid) {
+        await interaction.reply({
+          content: `⚠️ The system prompt was rejected: ${validation.errors[0] || 'Invalid content.'}`,
+          ephemeral: true
+        });
+        return;
+      }
 
-        for (const pattern of suspiciousPatterns) {
-          if (pattern.test(prompt)) {
-            await interaction.reply({
-              content:
-                '⚠️ The system prompt contains potentially problematic phrases. Please revise.',
-              ephemeral: true
-            });
-            return;
-          }
-        }
+      const sanitizedPrompt = validation.sanitizedPrompt || '';
+      if (validation.warnings.length > 0) {
+        logger.warn(
+          `System prompt modal validation warnings for guild ${interaction.guildId}: ${validation.warnings.join(', ')}`
+        );
       }
 
       // Save the prompt (empty string = null)
-      await adminDb.setSystemPrompt(interaction.guildId, prompt || null, {
+      await adminDb.setSystemPrompt(interaction.guildId, sanitizedPrompt || null, {
         forVoice,
         enabled: true
       });
 
-      if (prompt) {
+      if (sanitizedPrompt) {
         await interaction.reply({
-          content: `✅ ${typeLabel} system prompt saved! (${prompt.length} characters)\n\nThe AI will now use this prompt when responding.`,
+          content: `✅ ${typeLabel} system prompt saved! (${sanitizedPrompt.length} characters)\n\nThe AI will now use this prompt when responding.`,
           ephemeral: true
         });
       } else {
@@ -574,7 +568,8 @@ async function main() {
       const promptPolicy = resolvePromptPolicy({
         customPrompt: promptConfig.prompt,
         defaultPrompt,
-        allowedPromptHashesRaw: process.env.SAFETY_ALLOWED_PROMPT_HASHES
+        allowedPromptHashesRaw: process.env.SAFETY_ALLOWED_PROMPT_HASHES,
+        requireCustomPromptAllowlist: deploymentDetector.getConfig().isProduction
       });
       const systemPrompt = composeSystemPromptWithSafety(promptPolicy.effectivePrompt);
       const conciseResponseInstruction =
