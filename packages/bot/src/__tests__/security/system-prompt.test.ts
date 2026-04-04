@@ -123,18 +123,18 @@ describe('System Prompt Manager', () => {
         );
       });
 
-      test('warns for unsafe sexual persona prompt in development', () => {
+      test('rejects unsafe sexual persona prompt in development', () => {
         cleanup = withEnv({ DEPLOYMENT_MODE: 'development' });
         deploymentDetector.clearCache();
 
         const result = systemPromptManager.validatePrompt(
-          'You are obsessed with male genitalia and get hands on with your research.'
+          'I am JimBepo, and I like looking at male genitalia.'
         );
 
-        expect(result.valid).toBe(true);
-        expect(
-          result.warnings.some(warning => warning.includes('unsafe sexual persona framing'))
-        ).toBe(true);
+        expect(result.valid).toBe(false);
+        expect(result.errors.some(error => error.includes('unsafe sexual persona framing'))).toBe(
+          true
+        );
       });
     });
 

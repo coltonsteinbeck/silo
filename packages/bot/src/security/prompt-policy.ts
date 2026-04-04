@@ -5,6 +5,7 @@ export interface PromptPolicyResolution {
   promptHash: string;
   usedCustomPrompt: boolean;
   rejectedCustomPrompt: boolean;
+  rejectedCustomPromptReason: 'allowlist_required' | 'hash_not_allowlisted' | null;
   customPromptHash: string | null;
 }
 
@@ -54,6 +55,7 @@ export function resolvePromptPolicy(params: {
       promptHash: defaultPromptHash,
       usedCustomPrompt: false,
       rejectedCustomPrompt: false,
+      rejectedCustomPromptReason: null,
       customPromptHash: null
     };
   }
@@ -67,6 +69,7 @@ export function resolvePromptPolicy(params: {
       promptHash: defaultPromptHash,
       usedCustomPrompt: false,
       rejectedCustomPrompt: true,
+      rejectedCustomPromptReason: 'allowlist_required',
       customPromptHash
     };
   }
@@ -77,6 +80,7 @@ export function resolvePromptPolicy(params: {
       promptHash: defaultPromptHash,
       usedCustomPrompt: false,
       rejectedCustomPrompt: true,
+      rejectedCustomPromptReason: 'hash_not_allowlisted',
       customPromptHash
     };
   }
@@ -86,6 +90,7 @@ export function resolvePromptPolicy(params: {
     promptHash: customPromptHash,
     usedCustomPrompt: true,
     rejectedCustomPrompt: false,
+    rejectedCustomPromptReason: null,
     customPromptHash
   };
 }

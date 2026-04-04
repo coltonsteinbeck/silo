@@ -25,6 +25,8 @@ import {
   Events,
   REST,
   Routes,
+  MessageFlags,
+  InteractionReplyOptions,
   ButtonInteraction,
   ModalSubmitInteraction
 } from 'discord.js';
@@ -43,6 +45,9 @@ import {
   inactivityScheduler,
   deploymentDetector,
   systemPromptManager,
+  evaluateCustomSystemPromptGuardrails,
+  evaluateAssistantOutputGuardrails,
+  buildUserMessageForBlockedInput,
   composeSystemPromptWithSafety,
   resolvePromptPolicy,
   safetyMonitor
@@ -58,6 +63,66 @@ import {
 import { resolveReplyContext } from './services/reply-context';
 import { fetchUrlContextBlock } from './services/url-context';
 import { decideVisionRouting, enforceVisionRoutingPrecheck } from './services/vision-routing';
+
+const PROMPT_FALLBACK_NOTICE_COOLDOWN_MS = 30 * 60 * 1000;
+const promptFallbackNoticeByGuild = new Map<
+  string,
+  { emittedAt: number; reason: PromptFallbackNoticeReason }
+>();
+const promptFallbackAuditLoggedByGuild = new Set<string>();
+type PromptFallbackNoticeReason =
+  | 'allowlist_required'
+  | 'hash_not_allowlisted'
+  | 'validation_rejected'
+  | 'guardrails_rejected';
+
+function shouldEmitPromptFallbackNotice(
+  guildId: string,
+  reason: PromptFallbackNoticeReason
+): boolean {
+  const now = Date.now();
+  const lastNotice = promptFallbackNoticeByGuild.get(guildId);
+
+  if (
+    lastNotice &&
+    lastNotice.reason === reason &&
+    now - lastNotice.emittedAt < PROMPT_FALLBACK_NOTICE_COOLDOWN_MS
+  ) {
+    return false;
+  }
+
+  promptFallbackNoticeByGuild.set(guildId, { emittedAt: now, reason });
+  return true;
+}
+
+function buildPromptFallbackNotice(reason: PromptFallbackNoticeReason): string {
+  if (reason === 'allowlist_required') {
+    return 'Note: The server custom system prompt is not active because this deployment requires allowlisted prompt hashes. Using base prompt defaults.';
+  }
+
+  if (reason === 'hash_not_allowlisted') {
+    return 'Note: The server custom system prompt is not active because it failed prompt safety checks. Using base prompt defaults.';
+  }
+
+  if (reason === 'validation_rejected') {
+    return 'Note: The server custom system prompt violated safety guidelines and is not active. Update it with /config system-prompt action:Set/Edit. Using base prompt defaults.';
+  }
+
+  if (reason === 'guardrails_rejected') {
+    return 'Note: The server custom system prompt was blocked by jailbreak safety checks and is not active. Using base prompt defaults.';
+  }
+
+  return 'Note: The server custom system prompt is not active. Using base prompt defaults.';
+}
+
+function shouldEmitPromptFallbackStartupAudit(guildId: string): boolean {
+  if (promptFallbackAuditLoggedByGuild.has(guildId)) {
+    return false;
+  }
+
+  promptFallbackAuditLoggedByGuild.add(guildId);
+  return true;
+}
 
 // Global error handlers to prevent silent crashes
 process.on('uncaughtException', error => {
@@ -82,15 +147,23 @@ async function handleModalSubmit(interaction: ModalSubmitInteraction, adminDb: A
       const typeLabel = forVoice ? 'Voice' : 'Text';
 
       if (!interaction.guildId) {
-        await interaction.reply({ content: 'This can only be used in a server.', ephemeral: true });
+        await interaction.reply({
+          content: 'This can only be used in a server.',
+          flags: MessageFlags.Ephemeral
+        });
         return;
       }
 
       const validation = systemPromptManager.validatePrompt(prompt);
       if (!validation.valid) {
+        logger.warn('System prompt rejected by validation', {
+          guildId: interaction.guildId,
+          forVoice,
+          error: validation.errors[0] || 'Invalid content'
+        });
         await interaction.reply({
           content: `⚠️ The system prompt was rejected: ${validation.errors[0] || 'Invalid content.'}`,
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -102,6 +175,32 @@ async function handleModalSubmit(interaction: ModalSubmitInteraction, adminDb: A
         );
       }
 
+      const customPromptGuardrails = await evaluateCustomSystemPromptGuardrails(sanitizedPrompt, {
+        failClosedOnError: deploymentDetector.getConfig().isProduction
+      });
+
+      if (!customPromptGuardrails.allowed) {
+        logger.warn('System prompt blocked by guardrails', {
+          guildId: interaction.guildId,
+          forVoice,
+          category: customPromptGuardrails.category || 'unknown',
+          reason: customPromptGuardrails.reason || 'none',
+          executionFailed: customPromptGuardrails.executionFailed || false
+        });
+        const reasonSuffix = customPromptGuardrails.reason
+          ? ` (${customPromptGuardrails.reason})`
+          : '';
+        const blockedMessage =
+          customPromptGuardrails.category === 'guardrails/api_error_fail_closed'
+            ? '⚠️ The system prompt could not be validated because safety systems are unavailable. Please try again shortly.'
+            : `⚠️ The system prompt was blocked by safety checks${reasonSuffix}. Remove policy-override or unsafe instructions and try again.`;
+        await interaction.reply({
+          content: blockedMessage,
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+
       // Save the prompt (empty string = null)
       await adminDb.setSystemPrompt(interaction.guildId, sanitizedPrompt || null, {
         forVoice,
@@ -111,23 +210,29 @@ async function handleModalSubmit(interaction: ModalSubmitInteraction, adminDb: A
       if (sanitizedPrompt) {
         await interaction.reply({
           content: `✅ ${typeLabel} system prompt saved! (${sanitizedPrompt.length} characters)\n\nThe AI will now use this prompt when responding.`,
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       } else {
         await interaction.reply({
           content: `🗑️ ${typeLabel} system prompt cleared.`,
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
       return;
     }
 
     // Unknown modal
-    await interaction.reply({ content: 'Unknown modal submission.', ephemeral: true });
+    await interaction.reply({
+      content: 'Unknown modal submission.',
+      flags: MessageFlags.Ephemeral
+    });
   } catch (error) {
     logger.error('Error handling modal submit:', error);
     if (!interaction.replied) {
-      await interaction.reply({ content: 'An error occurred.', ephemeral: true });
+      await interaction.reply({
+        content: 'An error occurred.',
+        flags: MessageFlags.Ephemeral
+      });
     }
   }
 }
@@ -277,7 +382,10 @@ async function main() {
       target: ButtonInteraction | ModalSubmitInteraction,
       message: string
     ): Promise<void> => {
-      const reply = { content: message, ephemeral: true };
+      const reply: InteractionReplyOptions = {
+        content: message,
+        flags: MessageFlags.Ephemeral
+      };
       if (target.replied || target.deferred) {
         await target.followUp(reply);
       } else {
@@ -350,7 +458,10 @@ async function main() {
       await command.execute(interaction);
     } catch (error) {
       logger.error(`Error executing ${interaction.commandName}:`, error);
-      const reply = { content: 'An error occurred while executing this command.', ephemeral: true };
+      const reply: InteractionReplyOptions = {
+        content: 'An error occurred while executing this command.',
+        flags: MessageFlags.Ephemeral
+      };
 
       if (interaction.replied || interaction.deferred) {
         await interaction.followUp(reply);
@@ -427,6 +538,14 @@ async function main() {
       const { processedContent, moderation } = moderationResult;
 
       if (!moderation.allowed) {
+        logger.warn('User message blocked by safety policy', {
+          guildId: message.guildId,
+          userId: message.author.id,
+          action: moderation.action,
+          categories: moderation.flaggedCategories,
+          contentHash: moderation.contentHash
+        });
+
         const decision = safetyMonitor.recordIncident({
           guildId: message.guildId,
           incidentType: 'input_blocked',
@@ -445,7 +564,10 @@ async function main() {
         }
 
         await message.reply({
-          content: '⚠️ Your message was blocked due to content policy violations.',
+          content: buildUserMessageForBlockedInput({
+            action: moderation.action,
+            flaggedCategories: moderation.flaggedCategories
+          }),
           allowedMentions: { repliedUser: false }
         });
         return;
@@ -565,8 +687,23 @@ async function main() {
       const defaultPrompt =
         providerPrompts[textProvider.name] ||
         'You are a helpful Discord bot assistant. Be helpful, friendly, and conversational.';
+
+      let runtimeCustomPrompt = promptConfig.prompt;
+      if (runtimeCustomPrompt) {
+        const promptGuardrails = await evaluateCustomSystemPromptGuardrails(runtimeCustomPrompt, {
+          failClosedOnError: deploymentDetector.getConfig().isProduction
+        });
+
+        if (!promptGuardrails.allowed) {
+          logger.warn(
+            `Configured custom prompt blocked by guardrails for guild ${message.guildId}; falling back to default prompt.`
+          );
+          runtimeCustomPrompt = null;
+        }
+      }
+
       const promptPolicy = resolvePromptPolicy({
-        customPrompt: promptConfig.prompt,
+        customPrompt: runtimeCustomPrompt,
         defaultPrompt,
         allowedPromptHashesRaw: process.env.SAFETY_ALLOWED_PROMPT_HASHES,
         requireCustomPromptAllowlist: deploymentDetector.getConfig().isProduction
@@ -584,6 +721,27 @@ async function main() {
         : '\n\nFormatting rule: Use plain text by default. Avoid markdown styling (bold/italics/lists) and avoid emojis unless the user explicitly asks for them.';
 
       const promptHash = promptPolicy.promptHash;
+      const hasConfiguredGuildPrompt = Boolean(dbPrompt && promptEnabled);
+      const guardrailsRejectedPrompt =
+        hasConfiguredGuildPrompt && Boolean(promptConfig.prompt) && !runtimeCustomPrompt;
+      const validationRejectedPrompt =
+        hasConfiguredGuildPrompt &&
+        !promptPolicy.usedCustomPrompt &&
+        !guardrailsRejectedPrompt &&
+        !promptPolicy.rejectedCustomPrompt &&
+        promptConfig.source !== 'database' &&
+        promptConfig.warnings.length > 0;
+
+      const promptFallbackReason: PromptFallbackNoticeReason | null =
+        promptPolicy.rejectedCustomPromptReason ||
+        (validationRejectedPrompt ? 'validation_rejected' : null) ||
+        (guardrailsRejectedPrompt ? 'guardrails_rejected' : null);
+
+      const promptFallbackNotice =
+        promptFallbackReason &&
+        shouldEmitPromptFallbackNotice(message.guildId, promptFallbackReason)
+          ? buildPromptFallbackNotice(promptFallbackReason)
+          : null;
 
       logger.info(
         `Prompt context for guild ${message.guildId}: promptHash=${promptHash}, source=${promptPolicy.usedCustomPrompt ? 'custom' : 'default'}, customPromptHash=${promptPolicy.customPromptHash || 'none'}`
@@ -591,7 +749,35 @@ async function main() {
 
       if (promptPolicy.rejectedCustomPrompt) {
         logger.warn(
-          `Rejected custom prompt hash for guild ${message.guildId}: ${promptPolicy.customPromptHash}. Falling back to default prompt policy.`
+          `Rejected custom prompt hash for guild ${message.guildId}: ${promptPolicy.customPromptHash}. Falling back to default prompt policy (${promptPolicy.rejectedCustomPromptReason || 'unknown_reason'}).`
+        );
+      }
+
+      if (validationRejectedPrompt) {
+        logger.warn(
+          `Configured system prompt rejected by validation for guild ${message.guildId}. Falling back to default prompt source.`
+        );
+      }
+
+      if (guardrailsRejectedPrompt) {
+        logger.warn(
+          `Configured system prompt blocked by guardrails for guild ${message.guildId}. Falling back to default prompt source.`
+        );
+      }
+
+      if (promptFallbackNotice) {
+        logger.info(
+          `Emitting prompt fallback notice for guild ${message.guildId}: reason=${promptFallbackReason || 'unknown_reason'}`
+        );
+      }
+
+      if (
+        promptFallbackReason &&
+        hasConfiguredGuildPrompt &&
+        shouldEmitPromptFallbackStartupAudit(message.guildId)
+      ) {
+        logger.warn(
+          `Startup prompt audit: configured custom prompt is inactive for guild ${message.guildId}; using base/default prompt (reason=${promptFallbackReason}, source=${promptConfig.source}).`
         );
       }
 
@@ -679,9 +865,22 @@ async function main() {
       }));
 
       const memoryContext = memorySelection.context;
-      const hasLoreMemorySelected = memorySelection.selected.some(
-        memory => memory.contextType === 'lore'
-      );
+      const selectedLoreMemories = memorySelection.selected.filter(memory => {
+        const memoryType = (memory.contextType || '').toLowerCase();
+        return memoryType === 'lore' || memoryType === 'persona';
+      });
+      const hasLoreMemorySelected = selectedLoreMemories.length > 0;
+      const loreMemoryFactsBlock = hasLoreMemorySelected
+        ? `\n\nCanonical lore facts for this server (apply unless they conflict with immutable safety rules):\n${selectedLoreMemories
+            .slice(0, 4)
+            .map(
+              memory =>
+                `- ${(memory.memoryContent || '').replace(/\s+/g, ' ').trim().slice(0, 240)}`
+            )
+            .join(
+              '\n'
+            )}\nWhen asked directly about these facts (identity, role, backstory), answer consistently with them.`
+        : '';
       const memoryMentionInstruction = memorySelection.shouldMention
         ? hasLoreMemorySelected
           ? '\n\nMemory usage rule: If lore memory context is relevant, prioritize it as canonical and answer consistently with it. Do not contradict the provided lore.'
@@ -759,7 +958,7 @@ async function main() {
         [
           {
             role: 'system',
-            content: `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${memoryMentionInstruction}${memoryConflictInstruction}${externalContextInstruction}${memoryContext}`
+            content: `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${memoryMentionInstruction}${loreMemoryFactsBlock}${memoryConflictInstruction}${externalContextInstruction}${memoryContext}`
           },
           ...messages,
           {
@@ -781,13 +980,38 @@ async function main() {
       const MAX_MESSAGE_LENGTH = 2000;
       let responseContent = response.content;
 
-      const assistantModeration = await contentSanitizer.moderateContent(
-        response.content,
-        message.guildId,
-        message.author.id,
-        'message',
-        { failClosedOnError: true }
-      );
+      const outputGuardrailsDecision = await evaluateAssistantOutputGuardrails(response.content, {
+        failClosedOnError: true
+      });
+
+      const assistantModeration = outputGuardrailsDecision.allowed
+        ? await contentSanitizer.moderateContent(
+            response.content,
+            message.guildId,
+            message.author.id,
+            'message',
+            { failClosedOnError: true }
+          )
+        : {
+            allowed: false,
+            action:
+              outputGuardrailsDecision.category === 'guardrails/api_error_fail_closed'
+                ? ('api_error_fail_closed' as const)
+                : ('blocked' as const),
+            flaggedCategories: [
+              outputGuardrailsDecision.category === 'guardrails/api_error_fail_closed'
+                ? 'api_error_fail_closed'
+                : outputGuardrailsDecision.category || 'guardrails/output_blocked'
+            ],
+            scores: {},
+            contentHash: contentSanitizer.hashContent(response.content)
+          };
+
+      if (!outputGuardrailsDecision.allowed) {
+        logger.warn(
+          `Assistant output blocked by guardrails for guild ${message.guildId}, user ${message.author.id}: ${assistantModeration.flaggedCategories.join(', ')}`
+        );
+      }
 
       if (!assistantModeration.allowed) {
         const incidentType = assistantModeration.flaggedCategories.includes('api_error_fail_closed')
@@ -845,6 +1069,10 @@ async function main() {
 
       if (!responseContent.trim()) {
         responseContent = 'Sorry, I could not generate a valid response. Please try again.';
+      }
+
+      if (promptFallbackNotice) {
+        responseContent = `${promptFallbackNotice}\n\n${responseContent}`;
       }
 
       if (responseContent.length > MAX_MESSAGE_LENGTH) {
@@ -1034,7 +1262,7 @@ async function handleButtonInteraction(interaction: ButtonInteraction): Promise<
       if (!interaction.guildId) {
         await interaction.reply({
           content: 'This button only works in a server.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -1044,19 +1272,19 @@ async function handleButtonInteraction(interaction: ButtonInteraction): Promise<
       if (position === null) {
         await interaction.reply({
           content: "✅ This server is not on the waitlist - you're already active!",
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       } else {
         await interaction.reply({
           content: `📊 Your current waitlist position: **#${position}**\n\nWe'll notify you when a spot opens up!`,
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
     } else if (customId === 'waitlist_activate') {
       if (!interaction.guildId) {
         await interaction.reply({
           content: 'This button only works in a server.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -1065,13 +1293,12 @@ async function handleButtonInteraction(interaction: ButtonInteraction): Promise<
 
       if (success) {
         await interaction.reply({
-          content: '🎉 **Activated!** Your server is now using Silo. Try `/help` to get started!',
-          ephemeral: false
+          content: '🎉 **Activated!** Your server is now using Silo. Try `/help` to get started!'
         });
       } else {
         await interaction.reply({
           content: '⚠️ Unable to activate. Your slot may have expired or already been claimed.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
     }
@@ -1081,7 +1308,7 @@ async function handleButtonInteraction(interaction: ButtonInteraction): Promise<
     if (!interaction.replied && !interaction.deferred) {
       await interaction.reply({
         content: 'An error occurred processing your request.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
   }
