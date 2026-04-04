@@ -6,6 +6,11 @@ import {
   logger
 } from '@silo/core';
 import type { ProviderRegistry } from '../providers/registry';
+import {
+  detectDeterministicIllicitContent,
+  hasPromptInjectionPattern,
+  hasUnsafeSexualContext
+} from '../security/content-sanitizer';
 
 type MemoryType = ServerMemory | UserMemory;
 
@@ -328,6 +333,23 @@ function buildMemoryContext(memories: MemoryType[]): string {
   return context;
 }
 
+function isSafeForPromptContext(memory: MemoryType): boolean {
+  const content = memory.memoryContent || '';
+  if (!content.trim()) {
+    return false;
+  }
+
+  if (hasPromptInjectionPattern(content)) {
+    return false;
+  }
+
+  if (hasUnsafeSexualContext(content)) {
+    return false;
+  }
+
+  return detectDeterministicIllicitContent(content).length === 0;
+}
+
 async function loadSemanticCandidates(
   db: DatabaseAdapter,
   registry: ProviderRegistry,
@@ -426,6 +448,10 @@ export async function selectMemoryContext(params: {
   const scored: CandidateScore[] = [];
   const nowMs = Date.now();
   for (const memory of candidateMap.values()) {
+    if (!isSafeForPromptContext(memory)) {
+      continue;
+    }
+
     if (isIdentityQuery) {
       if (getMemoryScope(memory) !== 'server') {
         continue;
@@ -554,8 +580,12 @@ export async function selectMemoryContext(params: {
     ? [
         ...(await db.getServerMemories(serverId, 'lore', memoryConfig.fallbackLimit)),
         ...(await db.getServerMemories(serverId, 'persona', memoryConfig.fallbackLimit))
-      ].slice(0, memoryConfig.fallbackLimit)
-    : await db.getServerMemories(serverId, undefined, memoryConfig.fallbackLimit);
+      ]
+        .filter(isSafeForPromptContext)
+        .slice(0, memoryConfig.fallbackLimit)
+    : (await db.getServerMemories(serverId, undefined, memoryConfig.fallbackLimit)).filter(
+        isSafeForPromptContext
+      );
   const latestFallbackHasLore = latestFallback.some(memory => memory.contextType === 'lore');
   if (latestFallback.length > 0) {
     logger.info(

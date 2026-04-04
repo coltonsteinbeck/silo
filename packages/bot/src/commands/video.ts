@@ -5,11 +5,16 @@ import {
   GuildMember,
   SlashCommandBuilder
 } from 'discord.js';
+import { logger } from '@silo/core';
 import { Command } from './types';
 import { ProviderRegistry } from '../providers/registry';
 import { QuotaMiddleware } from '../middleware/quota';
 import { AdminAdapter } from '../database/admin-adapter';
 import { screenExternalUrl, type UrlPolicyOptions } from '../services/url-context';
+import {
+  moderateCommandPrompt,
+  type PromptModerationGuard
+} from '../security/command-prompt-moderation';
 
 const XAI_VIDEO_MODEL = 'grok-imagine-video';
 const FIXED_VIDEO_OUTPUT_COUNT = 1;
@@ -90,7 +95,8 @@ export class VideoCommand implements Command {
   constructor(
     private registry: ProviderRegistry,
     private quotaMiddleware?: QuotaMiddleware,
-    private urlSecurity?: VideoUrlSecurityOptions
+    private urlSecurity?: VideoUrlSecurityOptions,
+    private promptGuard: PromptModerationGuard = moderateCommandPrompt
   ) {}
 
   private inferVideoExtension(url: string, contentType?: string): string {
@@ -242,6 +248,24 @@ export class VideoCommand implements Command {
     const resolution = interaction.options.getString('resolution') || '480p';
     const aspectRatio = interaction.options.getString('aspect-ratio') || '16:9';
 
+    const promptDecision = await this.promptGuard({
+      prompt,
+      guildId: interaction.guildId,
+      userId: interaction.user.id,
+      command: 'video',
+      phase: 'generate'
+    });
+
+    if (!promptDecision.allowed) {
+      await interaction.reply({
+        content: promptDecision.userMessage || '⚠️ Prompt blocked by content policy.',
+        ephemeral: true
+      });
+      return;
+    }
+
+    const effectivePrompt = promptDecision.processedPrompt;
+
     const refsResult = await this.collectReferenceImages(interaction);
     if (!refsResult.valid) {
       await interaction.reply({
@@ -284,7 +308,7 @@ export class VideoCommand implements Command {
         return;
       }
 
-      const result = await provider.generateVideo(prompt, {
+      const result = await provider.generateVideo(effectivePrompt, {
         model: XAI_VIDEO_MODEL,
         duration,
         resolution: effectiveResolution,
@@ -296,7 +320,7 @@ export class VideoCommand implements Command {
         .setTitle('Video Generated')
         .setDescription(
           [
-            `Prompt: ${prompt}`,
+            `Prompt: ${effectivePrompt}`,
             `Model: ${result.model || XAI_VIDEO_MODEL}`,
             `Duration: ${result.duration || duration}s`,
             `Resolution: ${effectiveResolution}`,
@@ -318,13 +342,18 @@ export class VideoCommand implements Command {
           files: [inlineVideo.attachment]
         });
       } else {
+        logger.warn('Video inline upload unavailable', {
+          guildId: interaction.guildId,
+          userId: interaction.user.id,
+          reason: inlineVideo.reason
+        });
         const fallbackEmbed = EmbedBuilder.from(embed).addFields({
           name: 'Video Link',
           value: result.url
         });
 
         await interaction.editReply({
-          content: `Unable to upload video inline (${inlineVideo.reason || 'unknown reason'}).`,
+          content: 'Unable to upload video inline. Use the link below to view the result.',
           embeds: [fallbackEmbed]
         });
       }
@@ -338,9 +367,12 @@ export class VideoCommand implements Command {
         );
       }
     } catch (error) {
-      await interaction.editReply(
-        `Error generating video: ${error instanceof Error ? error.message : 'Unknown error'}`
-      );
+      logger.error('Video generation failed', {
+        guildId: interaction.guildId,
+        userId: interaction.user.id,
+        error
+      });
+      await interaction.editReply('Video generation failed. Please try again in a moment.');
     }
   }
 }

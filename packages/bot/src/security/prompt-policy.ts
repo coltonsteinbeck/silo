@@ -41,8 +41,10 @@ export function resolvePromptPolicy(params: {
   customPrompt: string | null;
   defaultPrompt: string;
   allowedPromptHashesRaw?: string;
+  requireCustomPromptAllowlist?: boolean;
 }): PromptPolicyResolution {
-  const { customPrompt, defaultPrompt, allowedPromptHashesRaw } = params;
+  const { customPrompt, defaultPrompt, allowedPromptHashesRaw, requireCustomPromptAllowlist } =
+    params;
   const normalizedCustomPrompt = customPrompt?.trim() || null;
   const defaultPromptHash = hashPrompt(defaultPrompt);
 
@@ -58,6 +60,16 @@ export function resolvePromptPolicy(params: {
 
   const customPromptHash = hashPrompt(normalizedCustomPrompt);
   const allowedPromptHashes = parseAllowedPromptHashes(allowedPromptHashesRaw);
+
+  if (requireCustomPromptAllowlist && allowedPromptHashes.size === 0) {
+    return {
+      effectivePrompt: defaultPrompt,
+      promptHash: defaultPromptHash,
+      usedCustomPrompt: false,
+      rejectedCustomPrompt: true,
+      customPromptHash
+    };
+  }
 
   if (allowedPromptHashes.size > 0 && !allowedPromptHashes.has(customPromptHash)) {
     return {

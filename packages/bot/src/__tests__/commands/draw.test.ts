@@ -182,7 +182,8 @@ describe('DrawCommand', () => {
       await command.execute(interaction as any);
 
       const reply = interaction._getReplies()[0];
-      expect(reply).toContain('No image generation provider configured');
+      expect(reply).toContain('Error generating image:');
+      expect(reply).toContain('Image generation failed. Please try again in a moment.');
     });
 
     test('handles provider error gracefully', async () => {
@@ -205,7 +206,38 @@ describe('DrawCommand', () => {
 
       const reply = interaction._getReplies()[0];
       expect(reply).toContain('Error generating image:');
-      expect(reply).toContain('API rate limit exceeded');
+      expect(reply).toContain('Image generation failed. Please try again in a moment.');
+      expect(reply).not.toContain('API rate limit exceeded');
+    });
+
+    test('blocks prompt via moderation preflight before provider call', async () => {
+      const mockProvider = {
+        name: 'openai',
+        isConfigured: () => true,
+        generateImage: mock(async () => ({
+          url: 'https://example.com/image.png'
+        }))
+      };
+      mockRegistry.getImageProvider = mock(() => mockProvider);
+
+      const blockedGuard = mock(async () => ({
+        allowed: false,
+        processedPrompt: '',
+        userMessage: '⚠️ Prompt blocked by content policy. Please rephrase with safer wording.'
+      }));
+
+      command = new DrawCommand(mockRegistry, undefined, undefined, blockedGuard as any);
+
+      const interaction = createMockInteraction({
+        options: {
+          prompt: 'unsafe prompt'
+        }
+      });
+
+      await command.execute(interaction as any);
+
+      expect(mockProvider.generateImage).not.toHaveBeenCalled();
+      expect(interaction.reply).toHaveBeenCalled();
     });
 
     test('includes revised prompt in response when available', async () => {

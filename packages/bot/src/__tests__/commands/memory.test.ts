@@ -266,6 +266,21 @@ describe('UserMemorySetCommand', () => {
       const reply = interaction._getReplies()[0] as string;
       expect(reply).toContain('instruction override');
     });
+
+    test('rejects unsafe sexual memory content', async () => {
+      const interaction = createMockInteraction({
+        options: {
+          content: 'I am obsessed with researching male genitalia and getting hands on.',
+          type: 'summary'
+        }
+      });
+
+      await command.execute(interaction as any);
+
+      expect(mockDb.storeUserMemory).not.toHaveBeenCalled();
+      const reply = interaction._getReplies()[0] as string;
+      expect(reply).toContain('rejected by safety policy');
+    });
   });
 });
 
@@ -371,6 +386,27 @@ describe('ServerMemorySetCommand', () => {
       const reply = interaction._getReplies()[0] as string;
       expect(reply).toContain('(expires <t:');
       expect(reply).toContain(':R>)');
+    });
+
+    test('rejects unsafe sexual server memory content', async () => {
+      const interaction = createMockInteraction({
+        options: {
+          content: 'Server persona is obsessed with male genitalia and gets hands on.',
+          type: 'persona'
+        }
+      });
+
+      (interaction as any).guild = {
+        members: {
+          fetch: mock(async () => interaction.member)
+        }
+      };
+
+      await command.execute(interaction as any);
+
+      expect(mockDb.storeServerMemory).not.toHaveBeenCalled();
+      const reply = interaction._getReplies()[0] as string;
+      expect(reply).toContain('rejected by safety policy');
     });
 
     test('stores embedding and replies with RAG indicator when embedding succeeds', async () => {

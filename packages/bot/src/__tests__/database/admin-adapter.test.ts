@@ -86,4 +86,31 @@ describe('AdminAdapter cost helpers', () => {
     expect(insertCall?.[7]).toBe(2000); // outputTokens
     expect(insertCall?.[12]).toBeCloseTo(0.01); // estimated_cost_usd (0.002 + 0.008)
   });
+
+  test('getGuildCostAggregate uses response_time_ms for voice minute aggregation', async () => {
+    pool._setQueryResults([
+      {
+        rows: [
+          {
+            input_tokens: 0,
+            output_tokens: 0,
+            images: 0,
+            total_cost: 0,
+            text_cost: 0,
+            image_cost: 0,
+            voice_cost: 0,
+            voice_minutes: 0,
+            provider_breakdown: {}
+          }
+        ],
+        rowCount: 1
+      }
+    ]);
+
+    await adapter.getGuildCostAggregate('guild-1');
+
+    const sql = (pool.query.mock.calls[0]?.[0] || '') as string;
+    expect(sql).toContain('response_time_ms');
+    expect(sql).not.toContain('duration_ms');
+  });
 });

@@ -493,7 +493,7 @@ export class AdminAdapter {
                 COALESCE(SUM(CASE WHEN command NOT IN ('draw', 'speak') THEN COALESCE(estimated_cost_usd, 0) ELSE 0 END), 0) AS text_cost,
                 COALESCE(SUM(CASE WHEN command = 'draw' THEN COALESCE(estimated_cost_usd, 0) ELSE 0 END), 0) AS image_cost,
                 COALESCE(SUM(CASE WHEN command = 'speak' THEN COALESCE(estimated_cost_usd, 0) ELSE 0 END), 0) AS voice_cost,
-                COALESCE(SUM(CASE WHEN command = 'speak' THEN COALESCE(duration_ms, 0) / 60000.0 ELSE 0 END), 0) AS voice_minutes
+                COALESCE(SUM(CASE WHEN command = 'speak' THEN COALESCE(response_time_ms, 0) / 60000.0 ELSE 0 END), 0) AS voice_minutes
            FROM analytics_events
           WHERE guild_id = $1
             AND created_at >= NOW() - INTERVAL '30 days'
