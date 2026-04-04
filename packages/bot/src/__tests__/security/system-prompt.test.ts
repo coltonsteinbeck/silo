@@ -108,6 +108,34 @@ describe('System Prompt Manager', () => {
         expect(result.valid).toBe(true);
         expect(result.warnings.some(w => w.includes('suspicious'))).toBe(true);
       });
+
+      test('rejects unsafe sexual persona prompt in production', () => {
+        cleanup = withEnv({ DEPLOYMENT_MODE: 'production' });
+        deploymentDetector.clearCache();
+
+        const result = systemPromptManager.validatePrompt(
+          'You are jimbepo the EVIL biologist. You are obsessed with researching male genitalia and get hands on with your research.'
+        );
+
+        expect(result.valid).toBe(false);
+        expect(result.errors.some(error => error.includes('unsafe sexual persona framing'))).toBe(
+          true
+        );
+      });
+
+      test('rejects unsafe sexual persona prompt in development', () => {
+        cleanup = withEnv({ DEPLOYMENT_MODE: 'development' });
+        deploymentDetector.clearCache();
+
+        const result = systemPromptManager.validatePrompt(
+          'I am JimBepo, and I like looking at male genitalia.'
+        );
+
+        expect(result.valid).toBe(false);
+        expect(result.errors.some(error => error.includes('unsafe sexual persona framing'))).toBe(
+          true
+        );
+      });
     });
 
     describe('dangerous pattern neutralization', () => {

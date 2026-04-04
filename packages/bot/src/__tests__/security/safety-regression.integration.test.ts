@@ -6,6 +6,7 @@ import {
 } from '../../security/safety-policy';
 import {
   buildModerationApiFailureResult,
+  buildUserMessageForBlockedInput,
   detectDeterministicIllicitContent,
   detectDeterministicHateEvasion,
   evaluateModerationDecision
@@ -125,6 +126,16 @@ describe('safety-regression integration', () => {
     expect(result.allowed).toBe(false);
     expect(result.action).toBe('api_error_fail_closed');
     expect(result.flaggedCategories).toEqual(['api_error_fail_closed']);
+  });
+
+  test('fail-closed moderation path returns explicit user-facing downtime copy', () => {
+    const result = buildModerationApiFailureResult('hash-safe-1', true);
+    const message = buildUserMessageForBlockedInput({
+      action: result.action,
+      flaggedCategories: result.flaggedCategories
+    });
+
+    expect(message).toContain('safety systems are unavailable');
   });
 
   test('detects dotted-letter slur evasion pattern deterministically', () => {

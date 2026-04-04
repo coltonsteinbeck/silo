@@ -6,6 +6,11 @@ import {
   logger
 } from '@silo/core';
 import type { ProviderRegistry } from '../providers/registry';
+import {
+  detectDeterministicIllicitContent,
+  hasPromptInjectionPattern,
+  hasUnsafeSexualContext
+} from '../security/content-sanitizer';
 
 type MemoryType = ServerMemory | UserMemory;
 
@@ -266,6 +271,53 @@ function calculateRecencyScore(memory: MemoryType, nowMs: number): number {
   return clamp01(Math.exp(-ageDays / 60));
 }
 
+function calculateMentionConfidence(candidate: CandidateScore): number {
+  return clamp01(
+    Math.max(
+      candidate.keywordScore,
+      candidate.totalScore,
+      candidate.semanticScore * 0.95,
+      candidate.entityScore * 0.8 + candidate.semanticScore * 0.2
+    )
+  );
+}
+
+function shouldMentionCandidate(
+  candidate: CandidateScore,
+  memoryConfig: Config['memory'],
+  options?: { isFallback?: boolean }
+): boolean {
+  const isFallback = options?.isFallback === true;
+  const mentionThreshold =
+    typeof memoryConfig.keywordMentionThreshold === 'number' &&
+    Number.isFinite(memoryConfig.keywordMentionThreshold)
+      ? clamp01(memoryConfig.keywordMentionThreshold)
+      : 0.24;
+  const mentionConfidence = calculateMentionConfidence(candidate);
+
+  if (mentionConfidence >= mentionThreshold) {
+    return true;
+  }
+
+  // Balanced strategy: require stronger semantic/entity evidence for fallback recalls,
+  // while still allowing natural mentions on adjacent high-signal matches.
+  const adjacentSemanticThreshold = isFallback
+    ? Math.max(0.6, memoryConfig.semanticMinSimilarity + 0.02)
+    : Math.max(0.56, memoryConfig.semanticMinSimilarity - 0.02);
+  if (candidate.semanticScore >= adjacentSemanticThreshold) {
+    return true;
+  }
+
+  if (isFallback) {
+    return candidate.entityScore >= 0.5 && candidate.keywordScore >= 0.3;
+  }
+
+  return (
+    candidate.entityScore >= 0.34 &&
+    (candidate.semanticScore >= 0.42 || candidate.keywordScore >= 0.24)
+  );
+}
+
 function compareCandidates(a: CandidateScore, b: CandidateScore): number {
   return (
     b.arbitratedScore - a.arbitratedScore ||
@@ -326,6 +378,23 @@ function buildMemoryContext(memories: MemoryType[]): string {
   }
 
   return context;
+}
+
+function isSafeForPromptContext(memory: MemoryType): boolean {
+  const content = memory.memoryContent || '';
+  if (!content.trim()) {
+    return false;
+  }
+
+  if (hasPromptInjectionPattern(content)) {
+    return false;
+  }
+
+  if (hasUnsafeSexualContext(content)) {
+    return false;
+  }
+
+  return detectDeterministicIllicitContent(content).length === 0;
 }
 
 async function loadSemanticCandidates(
@@ -426,6 +495,10 @@ export async function selectMemoryContext(params: {
   const scored: CandidateScore[] = [];
   const nowMs = Date.now();
   for (const memory of candidateMap.values()) {
+    if (!isSafeForPromptContext(memory)) {
+      continue;
+    }
+
     if (isIdentityQuery) {
       if (getMemoryScope(memory) !== 'server') {
         continue;
@@ -503,7 +576,8 @@ export async function selectMemoryContext(params: {
     const arbitrated = arbitrateConflicts(strongMatches);
     const selected = arbitrated.selected.slice(0, retrievalLimit).map(item => item.memory);
     const top = arbitrated.selected[0]!;
-    const selectedHasLore = selected.some(memory => memory.contextType === 'lore');
+    const mentionConfidence = calculateMentionConfidence(top);
+    const selectedHasLore = selected.some(memory => isLoreOrPersona(memory));
     logger.info(
       `Memory strong match selected for guild=${serverId}, user=${userId}: ${selected.map(summarizeMemory).join(', ')} (conflictsResolved=${arbitrated.conflictsResolved})`
     );
@@ -512,30 +586,31 @@ export async function selectMemoryContext(params: {
       context: buildMemoryContext(selected),
       selected,
       shouldMention:
-        top.keywordScore >= memoryConfig.keywordMentionThreshold ||
+        shouldMentionCandidate(top, memoryConfig, { isFallback: false }) ||
         (isIdentityQuery && selectedHasLore),
-      mentionConfidence: top.keywordScore,
+      mentionConfidence,
       usedFallback: false
     };
   }
 
-  const fallbackSelectedFromScores = allowFallback
-    ? arbitrateConflicts(scored)
-        .selected.slice(0, memoryConfig.fallbackLimit)
-        .map(item => item.memory)
+  const fallbackScoredSelection = allowFallback
+    ? arbitrateConflicts(scored).selected.slice(0, memoryConfig.fallbackLimit)
     : [];
+  const fallbackSelectedFromScores = fallbackScoredSelection.map(item => item.memory);
   if (fallbackSelectedFromScores.length > 0) {
-    const fallbackHasLore = fallbackSelectedFromScores.some(
-      memory => memory.contextType === 'lore'
-    );
+    const fallbackTop = fallbackScoredSelection[0]!;
+    const mentionConfidence = calculateMentionConfidence(fallbackTop);
+    const fallbackHasLore = fallbackSelectedFromScores.some(memory => isLoreOrPersona(memory));
     logger.info(
       `Memory score fallback selected for guild=${serverId}, user=${userId}: ${fallbackSelectedFromScores.map(summarizeMemory).join(', ')}`
     );
     return {
       context: buildMemoryContext(fallbackSelectedFromScores),
       selected: fallbackSelectedFromScores,
-      shouldMention: isIdentityQuery && fallbackHasLore,
-      mentionConfidence: 0,
+      shouldMention:
+        shouldMentionCandidate(fallbackTop, memoryConfig, { isFallback: true }) ||
+        (isIdentityQuery && fallbackHasLore),
+      mentionConfidence,
       usedFallback: true
     };
   }
@@ -554,9 +629,13 @@ export async function selectMemoryContext(params: {
     ? [
         ...(await db.getServerMemories(serverId, 'lore', memoryConfig.fallbackLimit)),
         ...(await db.getServerMemories(serverId, 'persona', memoryConfig.fallbackLimit))
-      ].slice(0, memoryConfig.fallbackLimit)
-    : await db.getServerMemories(serverId, undefined, memoryConfig.fallbackLimit);
-  const latestFallbackHasLore = latestFallback.some(memory => memory.contextType === 'lore');
+      ]
+        .filter(isSafeForPromptContext)
+        .slice(0, memoryConfig.fallbackLimit)
+    : (await db.getServerMemories(serverId, undefined, memoryConfig.fallbackLimit)).filter(
+        isSafeForPromptContext
+      );
+  const latestFallbackHasLore = latestFallback.some(memory => isLoreOrPersona(memory));
   if (latestFallback.length > 0) {
     logger.info(
       `Memory latest fallback selected for guild=${serverId}, user=${userId}: ${latestFallback.map(summarizeMemory).join(', ')}`

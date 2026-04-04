@@ -93,3 +93,12 @@ Use GitHub Actions workflow:
 - Never run branch refresh without explicit confirmation.
 - Do not store credentials in scripts.
 - Keep `.env` and local scripts out of git.
+
+## Migration Notes
+
+- Migration `022_video_quota_pricing_alignment.sql` created temporary rollback snapshot tables:
+  - `migration_022_guild_quota_backup`
+  - `migration_022_role_tier_quota_backup`
+- These snapshot tables are non-runtime artifacts. Runtime quota logic uses canonical tables such as `guild_quotas`, `role_tier_quotas`, and `usage_tracking`.
+- Migration `023_drop_migration_022_backup_tables.sql` removes the snapshot tables after rollout stabilization.
+- If rollback is ever required after migration 023, use database backups rather than migration-022 snapshot tables.

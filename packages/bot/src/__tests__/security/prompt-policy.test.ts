@@ -17,6 +17,7 @@ describe('prompt-policy', () => {
     expect(result.promptHash).toBe(hashPrompt(defaultPrompt));
     expect(result.usedCustomPrompt).toBe(false);
     expect(result.rejectedCustomPrompt).toBe(false);
+    expect(result.rejectedCustomPromptReason).toBeNull();
     expect(result.customPromptHash).toBeNull();
   });
 
@@ -30,6 +31,7 @@ describe('prompt-policy', () => {
     expect(result.promptHash).toHaveLength(16);
     expect(result.usedCustomPrompt).toBe(true);
     expect(result.rejectedCustomPrompt).toBe(false);
+    expect(result.rejectedCustomPromptReason).toBeNull();
   });
 
   test('rejects custom prompt when hash is not in allowlist', () => {
@@ -44,6 +46,23 @@ describe('prompt-policy', () => {
     expect(result.promptHash).toBe(hashPrompt(defaultPrompt));
     expect(result.usedCustomPrompt).toBe(false);
     expect(result.rejectedCustomPrompt).toBe(true);
+    expect(result.rejectedCustomPromptReason).toBe('hash_not_allowlisted');
+    expect(result.customPromptHash).toHaveLength(16);
+  });
+
+  test('rejects custom prompt when allowlist is required but not configured', () => {
+    const defaultPrompt = 'default prompt';
+    const result = resolvePromptPolicy({
+      customPrompt: 'custom prompt',
+      defaultPrompt,
+      requireCustomPromptAllowlist: true
+    });
+
+    expect(result.effectivePrompt).toBe(defaultPrompt);
+    expect(result.promptHash).toBe(hashPrompt(defaultPrompt));
+    expect(result.usedCustomPrompt).toBe(false);
+    expect(result.rejectedCustomPrompt).toBe(true);
+    expect(result.rejectedCustomPromptReason).toBe('allowlist_required');
     expect(result.customPromptHash).toHaveLength(16);
   });
 
@@ -63,6 +82,7 @@ describe('prompt-policy', () => {
     expect(result.promptHash).toBe(precomputed.promptHash);
     expect(result.usedCustomPrompt).toBe(true);
     expect(result.rejectedCustomPrompt).toBe(false);
+    expect(result.rejectedCustomPromptReason).toBeNull();
   });
 
   test('normalizes empty and whitespace-only custom prompt to default', () => {
@@ -123,6 +143,7 @@ describe('prompt-policy', () => {
     expect(accepted.usedCustomPrompt).toBe(true);
     expect(rejected.usedCustomPrompt).toBe(false);
     expect(rejected.rejectedCustomPrompt).toBe(true);
+    expect(rejected.rejectedCustomPromptReason).toBe('hash_not_allowlisted');
   });
 
   test('parseAllowedPromptHashes normalizes valid hashes to lowercase', () => {
@@ -149,6 +170,7 @@ describe('prompt-policy', () => {
 
     expect(result.usedCustomPrompt).toBe(true);
     expect(result.rejectedCustomPrompt).toBe(false);
+    expect(result.rejectedCustomPromptReason).toBeNull();
   });
 
   test('throws when allowlist is configured but contains no valid hashes', () => {

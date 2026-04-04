@@ -5,6 +5,7 @@ export interface PromptPolicyResolution {
   promptHash: string;
   usedCustomPrompt: boolean;
   rejectedCustomPrompt: boolean;
+  rejectedCustomPromptReason: 'allowlist_required' | 'hash_not_allowlisted' | null;
   customPromptHash: string | null;
 }
 
@@ -41,8 +42,10 @@ export function resolvePromptPolicy(params: {
   customPrompt: string | null;
   defaultPrompt: string;
   allowedPromptHashesRaw?: string;
+  requireCustomPromptAllowlist?: boolean;
 }): PromptPolicyResolution {
-  const { customPrompt, defaultPrompt, allowedPromptHashesRaw } = params;
+  const { customPrompt, defaultPrompt, allowedPromptHashesRaw, requireCustomPromptAllowlist } =
+    params;
   const normalizedCustomPrompt = customPrompt?.trim() || null;
   const defaultPromptHash = hashPrompt(defaultPrompt);
 
@@ -52,6 +55,7 @@ export function resolvePromptPolicy(params: {
       promptHash: defaultPromptHash,
       usedCustomPrompt: false,
       rejectedCustomPrompt: false,
+      rejectedCustomPromptReason: null,
       customPromptHash: null
     };
   }
@@ -59,12 +63,24 @@ export function resolvePromptPolicy(params: {
   const customPromptHash = hashPrompt(normalizedCustomPrompt);
   const allowedPromptHashes = parseAllowedPromptHashes(allowedPromptHashesRaw);
 
+  if (requireCustomPromptAllowlist && allowedPromptHashes.size === 0) {
+    return {
+      effectivePrompt: defaultPrompt,
+      promptHash: defaultPromptHash,
+      usedCustomPrompt: false,
+      rejectedCustomPrompt: true,
+      rejectedCustomPromptReason: 'allowlist_required',
+      customPromptHash
+    };
+  }
+
   if (allowedPromptHashes.size > 0 && !allowedPromptHashes.has(customPromptHash)) {
     return {
       effectivePrompt: defaultPrompt,
       promptHash: defaultPromptHash,
       usedCustomPrompt: false,
       rejectedCustomPrompt: true,
+      rejectedCustomPromptReason: 'hash_not_allowlisted',
       customPromptHash
     };
   }
@@ -74,6 +90,7 @@ export function resolvePromptPolicy(params: {
     promptHash: customPromptHash,
     usedCustomPrompt: true,
     rejectedCustomPrompt: false,
+    rejectedCustomPromptReason: null,
     customPromptHash
   };
 }
