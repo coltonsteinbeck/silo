@@ -19,6 +19,10 @@ import { ProviderRegistry } from '../providers/registry';
 import { QuotaMiddleware } from '../middleware/quota';
 import { AdminAdapter } from '../database/admin-adapter';
 import { screenExternalUrl, type UrlPolicyOptions } from '../services/url-context';
+import {
+  moderateCommandPrompt,
+  type PromptModerationGuard
+} from '../security/command-prompt-moderation';
 
 const DRAW_MODEL_CONFIG = {
   'gpt-image-1': {
@@ -155,7 +159,8 @@ export class DrawCommand implements Command {
   constructor(
     private registry: ProviderRegistry,
     private quotaMiddleware?: QuotaMiddleware,
-    private urlSecurity?: DrawUrlSecurityOptions
+    private urlSecurity?: DrawUrlSecurityOptions,
+    private promptGuard: PromptModerationGuard = moderateCommandPrompt
   ) {}
 
   private async logUrlScreening(
@@ -214,10 +219,10 @@ export class DrawCommand implements Command {
     const lowered = rawMessage.toLowerCase();
 
     if (lowered.includes('content moderation') || lowered.includes('moderation')) {
-      return `xAI blocked this ${context} due to content moderation. Try rephrasing with safer wording and fewer sensitive details.`;
+      return `Image ${context} was blocked by safety policy. Try safer wording and fewer sensitive details.`;
     }
 
-    return rawMessage;
+    return `Image ${context} failed. Please try again in a moment.`;
   }
 
   private resolveModel(raw: string | null): DrawModelName {
@@ -400,11 +405,42 @@ export class DrawCommand implements Command {
     const resolution = interaction.options.getString('resolution') || '1k';
     const references = this.collectReferenceImages(interaction);
 
+    await interaction.deferReply();
+
+    let promptDecision: Awaited<ReturnType<PromptModerationGuard>>;
+    try {
+      promptDecision = await this.promptGuard({
+        prompt,
+        guildId: interaction.guildId,
+        userId: interaction.user.id,
+        command: 'draw',
+        phase: 'generate'
+      });
+    } catch (error) {
+      logger.error('Draw prompt moderation failed', {
+        guildId: interaction.guildId,
+        userId: interaction.user.id,
+        error
+      });
+      await interaction.editReply({
+        content: '⚠️ Prompt validation is temporarily unavailable. Please try again in a moment.'
+      });
+      return;
+    }
+
+    if (!promptDecision.allowed) {
+      await interaction.editReply({
+        content: promptDecision.userMessage || '⚠️ Prompt blocked by content policy.'
+      });
+      return;
+    }
+
+    const effectivePrompt = promptDecision.processedPrompt;
+
     const referenceValidation = await this.validateReferences(references, model, interaction);
     if (!referenceValidation.valid) {
-      await interaction.reply({
-        content: `Unable to process references: ${referenceValidation.reason}`,
-        ephemeral: true
+      await interaction.editReply({
+        content: `Unable to process references: ${referenceValidation.reason}`
       });
       return;
     }
@@ -427,19 +463,16 @@ export class DrawCommand implements Command {
       );
 
       if (!quotaCheck.allowed) {
-        await interaction.reply({
-          content: `⚠️ ${quotaCheck.reason}`,
-          ephemeral: true
+        await interaction.editReply({
+          content: `⚠️ ${quotaCheck.reason}`
         });
         return;
       }
     }
 
-    await interaction.deferReply();
-
     try {
       const generation = await this.generateImage({
-        prompt,
+        prompt: effectivePrompt,
         model,
         size,
         quality,
@@ -463,7 +496,7 @@ export class DrawCommand implements Command {
         channelId: interaction.channelId,
         messageId: responseMessage.id,
         createdAt: Date.now(),
-        prompt,
+        prompt: effectivePrompt,
         model,
         size,
         quality,
@@ -482,6 +515,12 @@ export class DrawCommand implements Command {
         );
       }
     } catch (error) {
+      logger.error('Draw generation failed', {
+        guildId: interaction.guildId,
+        userId: interaction.user.id,
+        model,
+        error
+      });
       await interaction.editReply(
         `Error generating image: ${this.formatImageError(error, 'generation')}`
       );
@@ -542,6 +581,22 @@ export class DrawCommand implements Command {
     await interaction.deferUpdate();
 
     try {
+      const promptDecision = await this.promptGuard({
+        prompt: session.prompt,
+        guildId: interaction.guildId,
+        userId: interaction.user.id,
+        command: 'draw',
+        phase: 'regenerate'
+      });
+
+      if (!promptDecision.allowed) {
+        await interaction.followUp({
+          content: promptDecision.userMessage || '⚠️ Prompt blocked by content policy.',
+          ephemeral: true
+        });
+        return true;
+      }
+
       if (this.quotaMiddleware && interaction.guildId) {
         const member = interaction.member as GuildMember;
         const quotaCheck = await this.quotaMiddleware.checkQuota(
@@ -562,7 +617,7 @@ export class DrawCommand implements Command {
       }
 
       const generation = await this.generateImage({
-        prompt: session.prompt,
+        prompt: promptDecision.processedPrompt,
         model: session.model,
         size: session.size,
         quality: session.quality,
@@ -578,6 +633,7 @@ export class DrawCommand implements Command {
       });
 
       session.createdAt = Date.now();
+      session.prompt = promptDecision.processedPrompt;
       this.sessions.set(session.id, session);
 
       if (this.quotaMiddleware && interaction.guildId) {
@@ -589,6 +645,12 @@ export class DrawCommand implements Command {
         );
       }
     } catch (error) {
+      logger.error('Draw regeneration failed', {
+        guildId: interaction.guildId,
+        userId: interaction.user.id,
+        sessionId: session.id,
+        error
+      });
       await interaction.followUp({
         content: `Regeneration failed: ${this.formatImageError(error, 'regeneration')}`,
         ephemeral: true
@@ -634,6 +696,22 @@ export class DrawCommand implements Command {
       return true;
     }
 
+    const promptDecision = await this.promptGuard({
+      prompt: updatedPrompt,
+      guildId: interaction.guildId,
+      userId: interaction.user.id,
+      command: 'draw',
+      phase: 'modal_edit'
+    });
+
+    if (!promptDecision.allowed) {
+      await interaction.reply({
+        content: promptDecision.userMessage || '⚠️ Prompt blocked by content policy.',
+        ephemeral: true
+      });
+      return true;
+    }
+
     if (this.quotaMiddleware && interaction.guildId) {
       const member = interaction.member as GuildMember;
       const quotaCheck = await this.quotaMiddleware.checkQuota(
@@ -657,7 +735,7 @@ export class DrawCommand implements Command {
 
     try {
       const generation = await this.generateImage({
-        prompt: updatedPrompt,
+        prompt: promptDecision.processedPrompt,
         model: session.model,
         size: session.size,
         quality: session.quality,
@@ -666,7 +744,7 @@ export class DrawCommand implements Command {
         references: session.references
       });
 
-      session.prompt = updatedPrompt;
+      session.prompt = promptDecision.processedPrompt;
       session.createdAt = Date.now();
       this.sessions.set(session.id, session);
 
@@ -699,6 +777,12 @@ export class DrawCommand implements Command {
 
       await interaction.editReply({ content: 'Image updated successfully.' });
     } catch (error) {
+      logger.error('Draw modal edit failed', {
+        guildId: interaction.guildId,
+        userId: interaction.user.id,
+        sessionId: session.id,
+        error
+      });
       await interaction.editReply({
         content: `Image edit failed: ${this.formatImageError(error, 'edit')}`
       });

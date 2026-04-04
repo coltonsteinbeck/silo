@@ -9,6 +9,7 @@ import { createHash } from 'crypto';
 import OpenAI from 'openai';
 import { Pool } from 'pg';
 import { logger } from '@silo/core';
+import { evaluateUserPromptGuardrails } from './openai-guardrails';
 
 // Lazy-initialized OpenAI client (avoids error at module load time)
 let openai: OpenAI | null = null;
@@ -42,6 +43,20 @@ export interface ModerationDecision {
   allowed: boolean;
 }
 
+export function buildUserMessageForBlockedInput(params: {
+  action: ModerationAction;
+  flaggedCategories: string[];
+}): string {
+  if (
+    params.action === 'api_error_fail_closed' ||
+    params.flaggedCategories.includes('api_error_fail_closed')
+  ) {
+    return '⚠️ Your message was temporarily blocked because safety systems are unavailable. Please try again in a moment.';
+  }
+
+  return '⚠️ Your message was blocked by safety policy. Please rephrase with safer wording and avoid harmful, explicit, or policy-bypassing requests.';
+}
+
 export function buildModerationApiFailureResult(
   contentHash: string,
   failClosedOnError: boolean
@@ -71,17 +86,25 @@ export function evaluateModerationDecision(
 ): ModerationDecision {
   let action: ModerationAction = 'allowed';
   let allowed = true;
+  const warnThreshold = SCORE_THRESHOLD * 0.8;
 
   const shouldBlock = flaggedCategories.some(
     cat => BLOCK_CATEGORIES.includes(cat) && scores[cat] && scores[cat] >= SCORE_THRESHOLD
   );
 
-  if (shouldBlock) {
+  const shouldBlockWarnClass = flaggedCategories.some(
+    cat =>
+      WARN_BLOCK_CATEGORIES.includes(cat) &&
+      typeof scores[cat] === 'number' &&
+      scores[cat] >= warnThreshold
+  );
+
+  if (shouldBlock || shouldBlockWarnClass) {
     action = 'blocked';
     allowed = false;
   } else if (flaggedCategories.length > 0) {
     const shouldWarn = flaggedCategories.some(
-      cat => WARN_CATEGORIES.includes(cat) && scores[cat] && scores[cat] >= SCORE_THRESHOLD * 0.8
+      cat => WARN_CATEGORIES.includes(cat) && scores[cat] && scores[cat] >= warnThreshold
     );
 
     if (shouldWarn) {
@@ -130,6 +153,8 @@ const WARN_CATEGORIES = [
   'harassment',
   'harassment/threatening'
 ];
+
+const WARN_BLOCK_CATEGORIES = ['sexual', 'harassment', 'harassment/threatening'];
 
 // Threshold for category scores to trigger action (0.0 - 1.0)
 const SCORE_THRESHOLD = 0.7;
@@ -202,42 +227,29 @@ const ILLICIT_DRUG_INTENT_PATTERN =
 const ILLICIT_DRUG_HOWTO_PATTERN =
   /\b(how\s+to|steps?|instructions?)\b.{0,80}\b(make|cook|synthesi[sz]e|buy|get|sell)\b.{0,80}\b(cocaine|meth(?:amphetamine)?|heroin|fentanyl|mdma|ecstasy|lsd|acid|crack|molly)\b/i;
 
+const SEXUAL_ANATOMY_REFERENCE_PATTERN =
+  /\b(male\s+genitalia|genitalia|penis|dick|cock|shaft|balls?|testicles?|phallus)\b/i;
+
+const SEXUAL_FIXATION_LANGUAGE_PATTERN =
+  /\b(obsessed|hands?\s+on|find\s+joy\s+in|stop\s+at\s+nothing|research(?:ing)?\s+male\s+genitalia|(?:like|likes|enjoy|enjoys)\s+(?:looking|staring)\s+at)\b/i;
+
+export function hasUnsafeSexualContext(content: string): boolean {
+  return (
+    SEXUAL_ANATOMY_REFERENCE_PATTERN.test(content) && SEXUAL_FIXATION_LANGUAGE_PATTERN.test(content)
+  );
+}
+
 function normalizeTokenForEvasionDetection(content: string): string {
-  const normalized = content
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .split('')
-    .map(char => {
-      const code = char.codePointAt(0);
-      if (!code) return char;
-
-      // Full-width digits and letters
-      if (code >= 0xff10 && code <= 0xff19) return String.fromCharCode(code - 0xff10 + 0x30);
-      if (code >= 0xff21 && code <= 0xff3a) return String.fromCharCode(code - 0xff21 + 0x41);
-      if (code >= 0xff41 && code <= 0xff5a) return String.fromCharCode(code - 0xff41 + 0x61);
-
-      // Circled letters
-      if (code >= 0x24b6 && code <= 0x24cf) return String.fromCharCode(code - 0x24b6 + 0x41);
-      if (code >= 0x24d0 && code <= 0x24e9) return String.fromCharCode(code - 0x24d0 + 0x61);
-
-      return char;
-    })
-    .join('');
-
-  return normalized
+  const normalized = normalizeCharactersForEvasion(content)
     .toLowerCase()
     .split('')
     .map(char => LEETSPEAK_CHAR_MAP[char] || char)
-    .join('')
-    .replace(/[^a-z]/g, '');
+    .join('');
+
+  return normalized.replace(/[^a-z]/g, '');
 }
 
-export function hasPromptInjectionPattern(content: string): boolean {
-  const normalized = normalizeContentForEvasionDetection(content);
-  return PROMPT_INJECTION_PATTERNS.some(pattern => pattern.test(normalized));
-}
-
-export function normalizeContentForEvasionDetection(content: string): string {
+function normalizeCharactersForEvasion(content: string): string {
   return content
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -257,7 +269,16 @@ export function normalizeContentForEvasionDetection(content: string): string {
 
       return char;
     })
-    .join('')
+    .join('');
+}
+
+export function hasPromptInjectionPattern(content: string): boolean {
+  const normalized = normalizeContentForEvasionDetection(content);
+  return PROMPT_INJECTION_PATTERNS.some(pattern => pattern.test(normalized));
+}
+
+export function normalizeContentForEvasionDetection(content: string): string {
+  return normalizeCharactersForEvasion(content)
     .toLowerCase()
     .split('')
     .map(char => LEETSPEAK_CHAR_MAP[char] || char)
@@ -340,11 +361,14 @@ function detectDeterministicDrugIntent(content: string): string[] {
 }
 
 export function detectDeterministicIllicitContent(content: string): string[] {
+  const unsafeSexualContext = hasUnsafeSexualContext(content) ? ['sexual/unsafe_context'] : [];
+
   return [
     ...new Set([
       ...detectDeterministicHateEvasion(content),
       ...detectDeterministicExplicitSex(content),
-      ...detectDeterministicDrugIntent(content)
+      ...detectDeterministicDrugIntent(content),
+      ...unsafeSexualContext
     ])
   ];
 }
@@ -694,6 +718,40 @@ class ContentSanitizer {
     processedContent: string;
     moderation: ModerationResult;
   }> {
+    const contentHash = this.hashContent(content);
+
+    const guardrailsDecision = await evaluateUserPromptGuardrails(content, {
+      failClosedOnError: options.failClosedOnError
+    });
+
+    if (!guardrailsDecision.allowed) {
+      const category = guardrailsDecision.category || 'guardrails/jailbreak';
+      const action: ModerationAction =
+        category === 'guardrails/api_error_fail_closed' ? 'api_error_fail_closed' : 'blocked';
+
+      await this.logModerationResult({
+        guildId,
+        userId,
+        contentType,
+        contentHash,
+        contentLength: content.length,
+        flaggedCategories: [category],
+        moderationScores: {},
+        actionTaken: action
+      });
+
+      return {
+        processedContent: '',
+        moderation: {
+          allowed: false,
+          action,
+          flaggedCategories: [category],
+          scores: {},
+          contentHash
+        }
+      };
+    }
+
     // Sanitize first
     const sanitized = this.sanitizePrompt(content);
 

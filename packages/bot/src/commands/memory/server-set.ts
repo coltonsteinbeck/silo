@@ -5,6 +5,7 @@ import { ProviderRegistry } from '../../providers/registry';
 import { PermissionManager } from '../../permissions/manager';
 import {
   detectDeterministicIllicitContent,
+  hasUnsafeSexualContext,
   hasPromptInjectionPattern
 } from '../../security/content-sanitizer';
 
@@ -114,6 +115,13 @@ export class ServerMemorySetCommand implements Command {
     if (deterministicViolations.length > 0) {
       await interaction.editReply(
         'Memory was rejected by safety policy. Please remove unsafe content and try again.'
+      );
+      return;
+    }
+
+    if (hasUnsafeSexualContext(content)) {
+      await interaction.editReply(
+        'Memory was rejected by safety policy. Please remove unsafe sexual content and try again.'
       );
       return;
     }
