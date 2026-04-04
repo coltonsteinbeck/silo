@@ -411,8 +411,8 @@ export class AdminAdapter {
       });
 
       await this.pool.query(
-        `INSERT INTO analytics_events (guild_id, user_id, event_type, command, provider, model, input_tokens, output_tokens, tokens_used, response_time_ms, success, metadata, estimated_cost_usd)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+        `INSERT INTO analytics_events (guild_id, user_id, event_type, command, provider, model, input_tokens, output_tokens, tokens_used, response_time_ms, duration_ms, success, metadata, estimated_cost_usd)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
         [
           event.guildId,
           event.userId,
@@ -424,6 +424,7 @@ export class AdminAdapter {
           event.outputTokens ?? 0,
           event.tokensUsed ?? 0,
           event.responseTimeMs ?? null,
+          event.durationMs ?? null,
           event.success,
           event.metadata ? JSON.stringify(event.metadata) : null,
           cost
@@ -451,6 +452,7 @@ export class AdminAdapter {
       inputTokens: row.input_tokens,
       outputTokens: row.output_tokens,
       tokensUsed: row.tokens_used,
+      durationMs: row.duration_ms,
       estimatedCostUsd: row.estimated_cost_usd,
       responseTimeMs: row.response_time_ms,
       success: row.success,

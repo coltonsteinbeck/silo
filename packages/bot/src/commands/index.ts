@@ -15,7 +15,6 @@ import { AnalyticsCommand } from './analytics';
 import { SpeakCommand } from './speak';
 import { StopSpeakingCommand } from './stopspeaking';
 import { FeedbackCommand } from './feedback';
-import { PromptCommand } from './prompt';
 import { DatabaseAdapter, Config } from '@silo/core';
 import { ProviderRegistry } from '../providers/registry';
 import { AdminAdapter } from '../database/admin-adapter';
@@ -84,9 +83,6 @@ export function createCommands(
   // Feedback command
   const feedback = new FeedbackCommand(adminDb);
   commands.set(feedback.data.name, feedback);
-
-  const prompt = new PromptCommand(adminDb);
-  commands.set(prompt.data.name, prompt);
 
   return commands;
 }

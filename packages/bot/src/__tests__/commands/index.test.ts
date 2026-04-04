@@ -96,8 +96,7 @@ describe('createCommands', () => {
       'analytics',
       'speak',
       'stopspeaking',
-      'feedback',
-      'prompt'
+      'feedback'
     ];
 
     for (const cmdName of expectedCommands) {

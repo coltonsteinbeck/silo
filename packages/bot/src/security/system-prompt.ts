@@ -14,6 +14,7 @@ import { readFileSync, existsSync, watchFile, unwatchFile } from 'fs';
 import { resolve } from 'path';
 import { logger } from '@silo/core';
 import { deploymentDetector } from './deployment';
+import { hasUnsafeSexualContext } from './content-sanitizer';
 
 // Maximum prompt length (characters)
 export const MAX_PROMPT_LENGTH = 4000;
@@ -177,6 +178,11 @@ class SystemPromptManager {
         warnings.push('Prompt contains suspicious patterns (allowed in non-production mode)');
         break;
       }
+    }
+
+    if (hasUnsafeSexualContext(prompt)) {
+      errors.push('Prompt contains unsafe sexual persona framing');
+      return { valid: false, sanitizedPrompt: null, warnings, errors };
     }
 
     // Neutralize dangerous patterns (escape them)
