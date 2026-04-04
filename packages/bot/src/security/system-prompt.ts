@@ -181,12 +181,8 @@ class SystemPromptManager {
     }
 
     if (hasUnsafeSexualContext(prompt)) {
-      const config = deploymentDetector.getConfig();
-      if (config.isProduction) {
-        errors.push('Prompt contains unsafe sexual persona framing');
-        return { valid: false, sanitizedPrompt: null, warnings, errors };
-      }
-      warnings.push('Prompt contains unsafe sexual persona framing (allowed in non-production)');
+      errors.push('Prompt contains unsafe sexual persona framing');
+      return { valid: false, sanitizedPrompt: null, warnings, errors };
     }
 
     // Neutralize dangerous patterns (escape them)

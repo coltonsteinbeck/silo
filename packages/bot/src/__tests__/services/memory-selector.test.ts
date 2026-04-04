@@ -278,6 +278,92 @@ describe('selectMemoryContext', () => {
     expect(result.context).not.toContain('verbose responses are mandatory');
   });
 
+  test('enables natural mention for strong semantic match on user memory', async () => {
+    const userMemory = {
+      id: 'usr-sem-1',
+      userId: 'user-1',
+      memoryContent: 'User prefers concise bullet points and direct summaries.',
+      contextType: 'preference',
+      metadata: { entities: ['formatting'] },
+      createdAt: new Date('2026-01-05T00:00:00Z'),
+      updatedAt: new Date('2026-01-05T00:00:00Z')
+    };
+
+    const db = {
+      searchServerMemoriesByEmbedding: mock(async () => []),
+      searchUserMemoriesByEmbedding: mock(async () => [{ ...userMemory, similarity: 0.76 }]),
+      searchServerMemories: mock(async () => []),
+      searchUserMemories: mock(async () => [userMemory]),
+      getServerMemories: mock(async () => []),
+      getUserMemories: mock(async () => [])
+    } as any;
+
+    const registry = {
+      hasEmbeddingProvider: () => true,
+      getEmbeddingProvider: () => ({
+        generateEmbeddings: async () => [[0.1, 0.2, 0.3]]
+      })
+    } as any;
+
+    const result = await selectMemoryContext({
+      db,
+      registry,
+      config: baseConfig,
+      serverId: 'guild-1',
+      userId: 'user-1',
+      content: 'Can you keep your responses tighter and more direct for me today?'
+    });
+
+    expect(result.usedFallback).toBe(false);
+    expect(result.selected[0]?.id).toBe('usr-sem-1');
+    expect(result.shouldMention).toBe(true);
+    expect(result.mentionConfidence).toBeGreaterThan(0.55);
+  });
+
+  test('allows mention on adjacent cue+entity fallback matches without forcing every memory mention', async () => {
+    const db = {
+      searchServerMemoriesByEmbedding: mock(async () => []),
+      searchUserMemoriesByEmbedding: mock(async () => []),
+      searchServerMemories: mock(async () => [
+        {
+          id: 'srv-adj-1',
+          serverId: 'guild-1',
+          userId: 'mod-1',
+          title: 'agent lore',
+          memoryContent: 'Agent oe285228 is a spy handling covert logistics.',
+          contextType: 'lore',
+          metadata: { entities: ['oe285228', 'spy'] },
+          createdAt: new Date('2026-01-04T00:00:00Z'),
+          updatedAt: new Date('2026-01-04T00:00:00Z')
+        }
+      ]),
+      searchUserMemories: mock(async () => []),
+      getServerMemories: mock(async () => []),
+      getUserMemories: mock(async () => [])
+    } as any;
+
+    const registry = {
+      hasEmbeddingProvider: () => false,
+      getEmbeddingProvider: () => {
+        throw new Error('unused');
+      }
+    } as any;
+
+    const result = await selectMemoryContext({
+      db,
+      registry,
+      config: baseConfig,
+      serverId: 'guild-1',
+      userId: 'user-1',
+      content: 'Remember oe285228 spy details for this thread'
+    });
+
+    expect(result.usedFallback).toBe(true);
+    expect(result.selected.length).toBe(1);
+    expect(result.shouldMention).toBe(true);
+    expect(result.mentionConfidence).toBeGreaterThan(0.5);
+  });
+
   test('filters unsafe legacy memories from prompt context', async () => {
     const db = {
       searchServerMemoriesByEmbedding: mock(async () => []),

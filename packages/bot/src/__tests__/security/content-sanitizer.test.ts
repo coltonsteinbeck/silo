@@ -7,6 +7,7 @@
 import { describe, test, expect, beforeEach } from 'bun:test';
 import { createHash } from 'crypto';
 import {
+  hasUnsafeSexualContext,
   hasPromptInjectionPattern,
   normalizeContentForEvasionDetection
 } from '../../security/content-sanitizer';
@@ -341,6 +342,21 @@ describe('ContentSanitizer', () => {
 
       const veryLongBenignInput = 'this is normal conversation text '.repeat(5000);
       expect(hasPromptInjectionPattern(veryLongBenignInput)).toBe(false);
+    });
+  });
+
+  describe('unsafe sexual context detection', () => {
+    test('detects sexual fixation phrasing paired with anatomy references', () => {
+      expect(hasUnsafeSexualContext('I am JimBepo and I like looking at male genitalia.')).toBe(
+        true
+      );
+      expect(
+        hasUnsafeSexualContext('The persona enjoys staring at male genitalia in every response.')
+      ).toBe(true);
+    });
+
+    test('does not flag benign non-sexual sentences', () => {
+      expect(hasUnsafeSexualContext('I like looking at astronomy photos.')).toBe(false);
     });
   });
 });
