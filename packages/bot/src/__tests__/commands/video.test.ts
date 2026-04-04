@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createMockInteraction, createMockProviderRegistry } from '@silo/core/test-setup';
 import { VideoCommand } from '../../commands/video';
+import type { PromptModerationGuard } from '../../security/command-prompt-moderation';
 
 describe('VideoCommand', () => {
   let registry: any;
@@ -125,6 +126,44 @@ describe('VideoCommand', () => {
 
     expect(generateVideo).not.toHaveBeenCalled();
     expect(interaction.reply).toHaveBeenCalled();
+  });
+
+  test('uses moderation processedPrompt when invoking video provider', async () => {
+    const generateVideo = mock(async () => ({
+      url: 'https://example.com/video.mp4',
+      model: 'grok-imagine-video',
+      duration: 8
+    }));
+
+    registry.getVideoProvider = mock(() => ({
+      name: 'xai',
+      isConfigured: () => true,
+      generateVideo
+    }));
+
+    const promptGuard: PromptModerationGuard = mock(async () => ({
+      allowed: true,
+      processedPrompt: 'processed text'
+    })) as unknown as PromptModerationGuard;
+
+    command = new VideoCommand(registry, undefined, undefined, promptGuard);
+
+    const interaction = createMockInteraction({
+      options: {
+        prompt: 'original prompt text'
+      }
+    }) as any;
+
+    interaction.options.getAttachment = mock(() => null);
+
+    await command.execute(interaction);
+
+    expect(generateVideo).toHaveBeenCalled();
+    const calls = (generateVideo as any).mock.calls as any[];
+    expect(calls[0]?.[0]).toBe('processed text');
+    expect(calls[0]?.[0]).not.toBe('original prompt text');
+    expect(interaction.deferReply).toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalled();
   });
 
   test('redacts provider errors from user-facing video failures', async () => {

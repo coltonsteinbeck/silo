@@ -405,13 +405,27 @@ export class DrawCommand implements Command {
     const resolution = interaction.options.getString('resolution') || '1k';
     const references = this.collectReferenceImages(interaction);
 
-    const promptDecision = await this.promptGuard({
-      prompt,
-      guildId: interaction.guildId,
-      userId: interaction.user.id,
-      command: 'draw',
-      phase: 'generate'
-    });
+    let promptDecision: Awaited<ReturnType<PromptModerationGuard>>;
+    try {
+      promptDecision = await this.promptGuard({
+        prompt,
+        guildId: interaction.guildId,
+        userId: interaction.user.id,
+        command: 'draw',
+        phase: 'generate'
+      });
+    } catch (error) {
+      logger.error('Draw prompt moderation failed', {
+        guildId: interaction.guildId,
+        userId: interaction.user.id,
+        error
+      });
+      await interaction.reply({
+        content: '⚠️ Prompt validation is temporarily unavailable. Please try again in a moment.',
+        ephemeral: true
+      });
+      return;
+    }
 
     if (!promptDecision.allowed) {
       await interaction.reply({

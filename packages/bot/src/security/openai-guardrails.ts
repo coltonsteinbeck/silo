@@ -3,6 +3,7 @@ import { logger } from '@silo/core';
 import { deploymentDetector } from './deployment';
 
 type GuardrailsModule = typeof import('@openai/guardrails');
+type GuardrailsRunner = Pick<GuardrailsModule, 'runGuardrails'>;
 
 type PipelineKey = 'user_prompt' | 'custom_prompt' | 'assistant_output';
 
@@ -48,12 +49,29 @@ const MODERATION_CATEGORIES = [
 ] as const;
 
 let warnedMissingApiKey = false;
-let guardrailsModulePromise: Promise<GuardrailsModule> | null = null;
+let guardrailsModulePromise: Promise<GuardrailsRunner> | null = null;
 let guardrailLlmClientPromise: Promise<OpenAI> | null = null;
 const guardrailBundleCache = new Map<
   PipelineKey,
   { version: number; guardrails: GuardrailSpec[] }
 >();
+
+export function resetGuardrailsRuntimeForTests(): void {
+  warnedMissingApiKey = false;
+  guardrailsModulePromise = null;
+  guardrailLlmClientPromise = null;
+  guardrailBundleCache.clear();
+}
+
+export function setGuardrailsRuntimeForTests(params: {
+  module?: GuardrailsRunner;
+  guardrailLlmClient?: OpenAI;
+}): void {
+  guardrailsModulePromise = params.module ? Promise.resolve(params.module) : null;
+  guardrailLlmClientPromise = params.guardrailLlmClient
+    ? Promise.resolve(params.guardrailLlmClient)
+    : null;
+}
 
 function parseThreshold(value: string | undefined, fallback: number): number {
   const parsed = value ? Number(value) : Number.NaN;
@@ -166,9 +184,11 @@ function getGuardrailBundle(pipeline: PipelineKey): {
   return bundle;
 }
 
-async function getGuardrailsModule(): Promise<GuardrailsModule> {
+async function getGuardrailsModule(): Promise<GuardrailsRunner> {
   if (!guardrailsModulePromise) {
-    guardrailsModulePromise = import('@openai/guardrails') as Promise<GuardrailsModule>;
+    guardrailsModulePromise = import('@openai/guardrails').then(module => ({
+      runGuardrails: module.runGuardrails
+    }));
   }
 
   return guardrailsModulePromise;
