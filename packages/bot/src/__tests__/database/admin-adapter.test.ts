@@ -52,7 +52,7 @@ describe('AdminAdapter cost helpers', () => {
             input_cost_per_1k: 0.002,
             output_cost_per_1k: 0.004,
             image_cost: 0,
-            voice_cost_per_minute: 0
+            voice_cost_per_minute: 0.05
           }
         ],
         rowCount: 1
@@ -70,6 +70,7 @@ describe('AdminAdapter cost helpers', () => {
       inputTokens: 1000,
       outputTokens: 2000,
       tokensUsed: 2000,
+      durationMs: 120000,
       success: true,
       metadata: null
     } as const;
@@ -84,10 +85,11 @@ describe('AdminAdapter cost helpers', () => {
     expect(insertCall?.[0]).toBe('guild1'); // guildId
     expect(insertCall?.[6]).toBe(1000); // inputTokens
     expect(insertCall?.[7]).toBe(2000); // outputTokens
-    expect(insertCall?.[12]).toBeCloseTo(0.01); // estimated_cost_usd (0.002 + 0.008)
+    expect(insertCall?.[10]).toBe(120000); // duration_ms
+    expect(insertCall?.[13]).toBeCloseTo(0.11); // estimated_cost_usd (0.002 + 0.008 + 0.1)
   });
 
-  test('getGuildCostAggregate uses response_time_ms for voice minute aggregation', async () => {
+  test('getGuildCostAggregate uses duration_ms for voice minute aggregation', async () => {
     pool._setQueryResults([
       {
         rows: [
@@ -110,7 +112,7 @@ describe('AdminAdapter cost helpers', () => {
     await adapter.getGuildCostAggregate('guild-1');
 
     const sql = (pool.query.mock.calls[0]?.[0] || '') as string;
-    expect(sql).toContain('response_time_ms');
-    expect(sql).not.toContain('duration_ms');
+    expect(sql).toContain('duration_ms');
+    expect(sql).not.toContain('response_time_ms');
   });
 });

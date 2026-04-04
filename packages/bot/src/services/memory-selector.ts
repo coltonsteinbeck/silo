@@ -288,7 +288,11 @@ function shouldMentionCandidate(
   options?: { isFallback?: boolean }
 ): boolean {
   const isFallback = options?.isFallback === true;
-  const mentionThreshold = memoryConfig.keywordMentionThreshold;
+  const mentionThreshold =
+    typeof memoryConfig.keywordMentionThreshold === 'number' &&
+    Number.isFinite(memoryConfig.keywordMentionThreshold)
+      ? clamp01(memoryConfig.keywordMentionThreshold)
+      : 0.24;
   const mentionConfidence = calculateMentionConfidence(candidate);
 
   if (mentionConfidence >= mentionThreshold) {
