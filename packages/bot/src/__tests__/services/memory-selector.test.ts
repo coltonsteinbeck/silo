@@ -417,4 +417,73 @@ describe('selectMemoryContext', () => {
     expect(result.context).not.toContain('obsessed with male genitalia');
     expect(result.selected.some(memory => memory.id === 'unsafe-1')).toBe(false);
   });
+
+  test('uses low-weight sentiment coherence to break near ties', async () => {
+    const memoryPositive = {
+      id: 'mood-pos-1',
+      userId: 'user-1',
+      memoryContent: 'User prefers upbeat guidance with momentum.',
+      contextType: 'mood',
+      metadata: {
+        trustScore: 0.7,
+        sourcePriority: 56,
+        sentimentScore: 0.7
+      },
+      createdAt: new Date('2026-01-05T00:00:00Z'),
+      updatedAt: new Date('2026-01-05T00:00:00Z')
+    };
+
+    const memoryNegative = {
+      id: 'mood-neg-1',
+      userId: 'user-1',
+      memoryContent: 'User prefers calm de-escalation when stressed.',
+      contextType: 'mood',
+      metadata: {
+        trustScore: 0.7,
+        sourcePriority: 56,
+        sentimentScore: -0.7
+      },
+      createdAt: new Date('2026-01-05T00:00:00Z'),
+      updatedAt: new Date('2026-01-05T00:00:00Z')
+    };
+
+    const db = {
+      searchServerMemoriesByEmbedding: mock(async () => []),
+      searchUserMemoriesByEmbedding: mock(async () => []),
+      searchServerMemories: mock(async () => []),
+      searchUserMemories: mock(async () => [memoryPositive, memoryNegative]),
+      getServerMemories: mock(async () => []),
+      getUserMemories: mock(async () => [])
+    } as any;
+
+    const registry = {
+      hasEmbeddingProvider: () => false,
+      getEmbeddingProvider: () => {
+        throw new Error('unused');
+      }
+    } as any;
+
+    const positiveResult = await selectMemoryContext({
+      db,
+      registry,
+      config: baseConfig,
+      serverId: 'guild-1',
+      userId: 'user-1',
+      content: 'Remember my preferred support tone',
+      sentimentScore: 0.8
+    });
+
+    const negativeResult = await selectMemoryContext({
+      db,
+      registry,
+      config: baseConfig,
+      serverId: 'guild-1',
+      userId: 'user-1',
+      content: 'Remember my preferred support tone',
+      sentimentScore: -0.8
+    });
+
+    expect(positiveResult.selected[0]?.id).toBe('mood-pos-1');
+    expect(negativeResult.selected[0]?.id).toBe('mood-neg-1');
+  });
 });

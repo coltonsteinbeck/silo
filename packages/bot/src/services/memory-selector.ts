@@ -20,6 +20,7 @@ type CandidateScore = {
   semanticScore: number;
   entityScore: number;
   cueScore: number;
+  sentimentScore: number;
   totalScore: number;
   trustScore: number;
   sourcePriority: number;
@@ -113,7 +114,7 @@ function summarizeMemory(memory: MemoryType): string {
 }
 
 function summarizeCandidate(candidate: CandidateScore): string {
-  return `${summarizeMemory(candidate.memory)}(arb=${candidate.arbitratedScore.toFixed(2)},total=${candidate.totalScore.toFixed(2)},trust=${candidate.trustScore.toFixed(2)},src=${candidate.sourcePriority},kw=${candidate.keywordScore.toFixed(2)},sem=${candidate.semanticScore.toFixed(2)},ent=${candidate.entityScore.toFixed(2)})`;
+  return `${summarizeMemory(candidate.memory)}(arb=${candidate.arbitratedScore.toFixed(2)},total=${candidate.totalScore.toFixed(2)},trust=${candidate.trustScore.toFixed(2)},src=${candidate.sourcePriority},kw=${candidate.keywordScore.toFixed(2)},sem=${candidate.semanticScore.toFixed(2)},ent=${candidate.entityScore.toFixed(2)},sent=${candidate.sentimentScore.toFixed(2)})`;
 }
 
 function isLoreOrPersona(memory: MemoryType): boolean {
@@ -437,8 +438,17 @@ export async function selectMemoryContext(params: {
   serverId: string;
   userId: string;
   content: string;
+  sentimentScore?: number | null;
 }): Promise<MemorySelectionResult> {
-  const { db, registry, config, serverId, userId, content } = params;
+  const {
+    db,
+    registry,
+    config,
+    serverId,
+    userId,
+    content,
+    sentimentScore: querySentimentScore
+  } = params;
   const memoryConfig = config.memory;
 
   const retrievalLimit = memoryConfig.retrievalLimit;
@@ -529,6 +539,14 @@ export async function selectMemoryContext(params: {
     const sourcePriority = resolveSourcePriority(memory);
     const sourcePriorityScore = clamp01(sourcePriority / 100);
     const recencyScore = calculateRecencyScore(memory, nowMs);
+    const memorySentiment = getMetadataNumber(memory.metadata, 'sentimentScore');
+    const sentimentScore =
+      typeof querySentimentScore === 'number' &&
+      Number.isFinite(querySentimentScore) &&
+      typeof memorySentiment === 'number' &&
+      Number.isFinite(memorySentiment)
+        ? clamp01(1 - Math.min(2, Math.abs(querySentimentScore - memorySentiment)) / 2)
+        : 0;
 
     const totalScore = clamp01(
       keywordScore * memoryConfig.keywordWeight +
@@ -538,7 +556,11 @@ export async function selectMemoryContext(params: {
     );
 
     const arbitratedScore = clamp01(
-      totalScore * 0.68 + trustScore * 0.2 + sourcePriorityScore * 0.08 + recencyScore * 0.04
+      totalScore * 0.63 +
+        trustScore * 0.2 +
+        sourcePriorityScore * 0.08 +
+        recencyScore * 0.04 +
+        sentimentScore * 0.05
     );
 
     scored.push({
@@ -547,6 +569,7 @@ export async function selectMemoryContext(params: {
       semanticScore,
       entityScore,
       cueScore,
+      sentimentScore,
       totalScore,
       trustScore,
       sourcePriority,

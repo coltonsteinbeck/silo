@@ -158,5 +158,57 @@ describe('AdminCommand', () => {
       expect(mockAdminDb.applyQuotaOverride).not.toHaveBeenCalled();
       expect(interaction._getReplies().length).toBeGreaterThanOrEqual(0);
     });
+
+    test('updates safety feature toggles', async () => {
+      mockPermissions.isAdmin = mock(async () => true);
+      mockAdminDb.getServerConfig = mock(async () => ({
+        featuresEnabled: {
+          existingFlag: true
+        }
+      }));
+      mockAdminDb.setServerConfig = mock(async () => ({}));
+
+      const interaction = createMockInteraction({
+        options: {
+          subcommand: 'safety-toggle',
+          'edgy-mode': true,
+          'deterministic-sentiment-review': false
+        }
+      });
+
+      await (command as any).handleSafetyToggle(interaction as any);
+
+      expect(mockAdminDb.setServerConfig).toHaveBeenCalledWith({
+        guildId: '123456789',
+        featuresEnabled: {
+          existingFlag: true,
+          edgyModeEnabled: true,
+          deterministicSentimentReviewEnabled: false
+        }
+      });
+      expect(interaction._getReplies().length).toBeGreaterThan(0);
+    });
+
+    test('reports safety feature toggle status', async () => {
+      mockPermissions.isAdmin = mock(async () => true);
+      mockAdminDb.getServerConfig = mock(async () => ({
+        featuresEnabled: {
+          edgyModeEnabled: true,
+          deterministicSentimentReviewEnabled: true
+        }
+      }));
+
+      const interaction = createMockInteraction({
+        options: {
+          subcommand: 'safety-status'
+        }
+      });
+
+      await (command as any).handleSafetyStatus(interaction as any);
+
+      const replies = interaction._getReplies();
+      expect(replies.length).toBeGreaterThan(0);
+      expect((replies[0] as { content: string }).content).toContain('Edgy input mode: enabled');
+    });
   });
 });
