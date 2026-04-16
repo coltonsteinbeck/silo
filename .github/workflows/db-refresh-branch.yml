@@ -1,0 +1,126 @@
+name: Refresh Dev Branch DB
+
+on:
+  workflow_dispatch:
+    inputs:
+      prod_schemas:
+        description: "Comma-separated schemas to export from prod"
+        required: false
+        default: "public"
+      include_tables:
+        description: "Optional include tables (schema.table, comma-separated)"
+        required: false
+        default: ""
+      exclude_tables:
+        description: "Optional exclude table data (schema.table, comma-separated)"
+        required: false
+        default: ""
+      truncate_target:
+        description: "Truncate target public tables before restore"
+        required: false
+        default: false
+        type: boolean
+      post_restore_analyze:
+        description: "Run ANALYZE after restore"
+        required: false
+        default: true
+        type: boolean
+      allow_migration_drift:
+        description: "Allow source/target migration mismatch"
+        required: false
+        default: false
+        type: boolean
+      smoke_sql:
+        description: "Optional smoke SQL query"
+        required: false
+        default: "SELECT NOW();"
+
+jobs:
+  refresh-dev-branch:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: 1.3.5
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Pre-check migration head (source vs target)
+        env:
+          HOSTED_DB_IDENTIFIER: ${{ secrets['HOSTED_DB_IDENTIFIER'] }}
+          SUPABASE_PW: ${{ secrets['SUPABASE_PW'] }}
+          DEV_DB_IDENTIFIER: ${{ secrets['DEV_DB_IDENTIFIER'] }}
+          SUPABASE_DEV_PW: ${{ secrets['SUPABASE_DEV_PW'] }}
+          DB_SSL: true
+        run: |
+          make_url() {
+            local identifier="$1"
+            local password="$2"
+            local ssl="$3"
+            local normalized="${identifier#db.}"
+            local encoded
+            encoded=$(bun -e "console.log(encodeURIComponent(process.argv[1]))" "$password")
+            if [ "$ssl" = "true" ]; then
+              echo "postgresql://postgres:${encoded}@db.${normalized}:5432/postgres?sslmode=require"
+            else
+              echo "postgresql://postgres:${encoded}@db.${normalized}:5432/postgres"
+            fi
+          }
+
+          latest_migration() {
+            psql "$1" -tA -v ON_ERROR_STOP=1 -c "SELECT COALESCE((SELECT filename FROM schema_migrations ORDER BY filename DESC LIMIT 1), '<none>') WHERE to_regclass('public.schema_migrations') IS NOT NULL UNION ALL SELECT '<none>' WHERE to_regclass('public.schema_migrations') IS NULL LIMIT 1;"
+          }
+
+          PROD_DB_URL=$(make_url "$HOSTED_DB_IDENTIFIER" "$SUPABASE_PW" "$DB_SSL")
+          BRANCH_DB_URL=$(make_url "$DEV_DB_IDENTIFIER" "$SUPABASE_DEV_PW" "$DB_SSL")
+          echo "Source latest migration: $(latest_migration "$PROD_DB_URL")"
+          echo "Target latest migration: $(latest_migration "$BRANCH_DB_URL")"
+
+      - name: Refresh persistent dev branch from production
+        env:
+          HOSTED_DB_IDENTIFIER: ${{ secrets['HOSTED_DB_IDENTIFIER'] }}
+          SUPABASE_PW: ${{ secrets['SUPABASE_PW'] }}
+          DEV_DB_IDENTIFIER: ${{ secrets['DEV_DB_IDENTIFIER'] }}
+          SUPABASE_DEV_PW: ${{ secrets['SUPABASE_DEV_PW'] }}
+          DB_SSL: true
+          PROD_SCHEMAS: ${{ github.event.inputs.prod_schemas }}
+          INCLUDE_TABLES: ${{ github.event.inputs.include_tables }}
+          EXCLUDE_TABLES: ${{ github.event.inputs.exclude_tables }}
+          TRUNCATE_TARGET: ${{ github.event.inputs.truncate_target }}
+          POST_RESTORE_ANALYZE: ${{ github.event.inputs.post_restore_analyze }}
+          ALLOW_MIGRATION_DRIFT: ${{ github.event.inputs.allow_migration_drift }}
+          CHECK_MIGRATION_COMPATIBILITY: true
+          SMOKE_SQL: ${{ github.event.inputs.smoke_sql }}
+          CONFIRM_REMOTE_RESTORE: true
+          BACKUP_DIR: backups
+        run: |
+          chmod +x scripts/refresh-prod-to-branch.sh
+          scripts/refresh-prod-to-branch.sh
+
+      - name: Post-check migration head (target)
+        if: success()
+        env:
+          DEV_DB_IDENTIFIER: ${{ secrets['DEV_DB_IDENTIFIER'] }}
+          SUPABASE_DEV_PW: ${{ secrets['SUPABASE_DEV_PW'] }}
+          DB_SSL: true
+        run: |
+          normalized="${DEV_DB_IDENTIFIER#db.}"
+          encoded=$(bun -e "console.log(encodeURIComponent(process.argv[1]))" "$SUPABASE_DEV_PW")
+          BRANCH_DB_URL="postgresql://postgres:${encoded}@db.${normalized}:5432/postgres?sslmode=require"
+          psql "$BRANCH_DB_URL" -tA -v ON_ERROR_STOP=1 -c "SELECT COALESCE((SELECT filename FROM schema_migrations ORDER BY filename DESC LIMIT 1), '<none>') AS latest_migration;"
+
+      - name: Upload refresh artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: db-refresh-artifacts
+          path: backups/
+          if-no-files-found: ignore

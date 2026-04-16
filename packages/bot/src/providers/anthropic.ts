@@ -44,13 +44,24 @@ export class AnthropicProvider implements TextProvider {
       max_tokens: options?.maxTokens || 2048
     });
 
-    const textContent = response.content.find(c => c.type === 'text');
-    if (!textContent || textContent.type !== 'text') {
+    const textSegments = response.content
+      .filter(
+        (
+          block
+        ): block is {
+          type: 'text';
+          text: string;
+        } => block.type === 'text' && typeof (block as { text?: unknown }).text === 'string'
+      )
+      .map(block => block.text.trim())
+      .filter(Boolean);
+
+    if (textSegments.length === 0) {
       throw new Error('No text response from Anthropic');
     }
 
     return {
-      content: textContent.text,
+      content: textSegments.join('\n\n'),
       usage: {
         promptTokens: response.usage.input_tokens,
         completionTokens: response.usage.output_tokens,

@@ -1,20 +1,29 @@
-import type { TextProvider, ImageProvider, EmbeddingProvider, Config } from '@silo/core';
+import type {
+  TextProvider,
+  ImageProvider,
+  VideoProvider,
+  EmbeddingProvider,
+  Config
+} from '@silo/core';
 import { OpenAIProvider } from './openai';
 import { AnthropicProvider } from './anthropic';
 import { XAIProvider } from './xai';
 import { LocalOpenAIProvider } from './local-openai';
 import { OpenAIEmbeddingsProvider } from './openai-embeddings';
+import { GoogleImageProvider } from './google';
 
 export class ProviderRegistry {
   private textProviders: TextProvider[] = [];
   private imageProviders: ImageProvider[] = [];
+  private videoProviders: VideoProvider[] = [];
   private embeddingProvider: EmbeddingProvider | null = null;
 
   constructor(config: Config) {
     if (config.providers.openai?.apiKey) {
       const provider = new OpenAIProvider(
         config.providers.openai.apiKey,
-        config.providers.openai.model
+        config.providers.openai.model,
+        config.providers.openai.imageModel
       );
       this.textProviders.push(provider);
       this.imageProviders.push(provider);
@@ -29,8 +38,24 @@ export class ProviderRegistry {
     }
 
     if (config.providers.xai?.apiKey) {
-      const provider = new XAIProvider(config.providers.xai.apiKey, config.providers.xai.model);
+      const provider = new XAIProvider(
+        config.providers.xai.apiKey,
+        config.providers.xai.model,
+        config.providers.xai.imageModel,
+        config.providers.xai.videoModel,
+        config.providers.xai.baseURL
+      );
       this.textProviders.push(provider);
+      this.imageProviders.push(provider);
+      this.videoProviders.push(provider);
+    }
+
+    if (config.providers.google?.apiKey) {
+      const provider = new GoogleImageProvider(
+        config.providers.google.apiKey,
+        config.providers.google.model
+      );
+      this.imageProviders.push(provider);
     }
 
     if (config.features.enableLocalModels && config.providers.local?.baseURL) {
@@ -74,10 +99,11 @@ export class ProviderRegistry {
     return configured;
   }
 
-  getAvailableProviders(): { text: string[]; image: string[] } {
+  getAvailableProviders(): { text: string[]; image: string[]; video: string[] } {
     return {
       text: this.textProviders.filter(p => p.isConfigured()).map(p => p.name),
-      image: this.imageProviders.filter(p => p.isConfigured()).map(p => p.name)
+      image: this.imageProviders.filter(p => p.isConfigured()).map(p => p.name),
+      video: this.videoProviders.filter(p => p.isConfigured()).map(p => p.name)
     };
   }
 
@@ -86,5 +112,35 @@ export class ProviderRegistry {
       throw new Error('No embedding provider configured. Enable RAG and add OpenAI API key');
     }
     return this.embeddingProvider;
+  }
+
+  hasEmbeddingProvider(): boolean {
+    return !!this.embeddingProvider && this.embeddingProvider.isConfigured();
+  }
+
+  getVisionProvider(name?: string): ImageProvider | null {
+    const candidates = name
+      ? this.imageProviders.filter(p => p.name === name)
+      : this.imageProviders;
+
+    for (const provider of candidates) {
+      if (provider.isConfigured() && provider.analyzeImage) {
+        return provider;
+      }
+    }
+
+    return null;
+  }
+
+  getVideoProvider(name?: string): VideoProvider | null {
+    if (name) {
+      const provider = this.videoProviders.find(p => p.name === name);
+      if (provider && provider.isConfigured()) {
+        return provider;
+      }
+      return null;
+    }
+
+    return this.videoProviders.find(p => p.isConfigured()) || null;
   }
 }

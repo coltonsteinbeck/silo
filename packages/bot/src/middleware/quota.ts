@@ -1,8 +1,14 @@
 import type { GuildMember } from 'discord.js';
 import type { AdminAdapter } from '../database/admin-adapter';
 import type { PermissionManager } from '../permissions/manager';
+import { logger } from '@silo/core';
 
-export type UsageType = 'text_tokens' | 'images' | 'voice_minutes';
+export type UsageType =
+  | 'text_tokens'
+  | 'images'
+  | 'voice_minutes'
+  | 'vision_tokens'
+  | 'video_tokens';
 export type RoleTier = 'admin' | 'moderator' | 'trusted' | 'member' | 'restricted';
 
 interface QuotaCheckResult {
@@ -12,41 +18,38 @@ interface QuotaCheckResult {
   reason?: string;
 }
 
-// Default quotas per role tier (daily limits)
-const DEFAULT_QUOTAS = {
-  text_tokens: {
-    member: 5000,
-    trusted: 10000,
-    moderator: 20000,
-    admin: 50000,
-    restricted: 0
-  },
-  images: {
-    member: 1,
-    trusted: 2,
-    moderator: 3,
-    admin: 5,
-    restricted: 0
-  },
-  voice_minutes: {
-    member: 0, // No voice for regular members
-    trusted: 5,
-    moderator: 10,
-    admin: 15,
-    restricted: 0
-  }
-} as const;
+interface AtomicRecordResult {
+  success: boolean;
+  newTotal: number;
+  remaining: number;
+}
+
+interface TokenUsageMetrics {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+}
 
 // Guild-level max quotas (cannot exceed these)
 const GUILD_MAX_QUOTAS = {
   text_tokens: 50000,
   images: 5,
-  voice_minutes: 15
+  voice_minutes: 15,
+  vision_tokens: 20000,
+  video_tokens: 500
 } as const;
+
+// Estimate tuning constants
+const DEFAULT_ESTIMATE_RATIO = 0.3; // Default: 0.3 tokens per input character
+const DEFAULT_BASE_TOKENS = 150; // Base tokens for response overhead
+const ESTIMATE_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour cache
 
 export class QuotaMiddleware {
   private adminDb: AdminAdapter;
   private permissions: PermissionManager;
+
+  // Cache for estimate multiplier (recalculated from 7-day data)
+  private estimateMultiplierCache: { value: number; timestamp: number } | null = null;
 
   constructor(adminDb: AdminAdapter, permissions: PermissionManager) {
     this.adminDb = adminDb;
@@ -54,7 +57,86 @@ export class QuotaMiddleware {
   }
 
   /**
+   * Get the estimate multiplier from 7-day accuracy data (cached for 1 hour)
+   */
+  private async getEstimateMultiplier(): Promise<number> {
+    const now = Date.now();
+
+    // Return cached value if still valid
+    if (
+      this.estimateMultiplierCache &&
+      now - this.estimateMultiplierCache.timestamp < ESTIMATE_CACHE_TTL_MS
+    ) {
+      return this.estimateMultiplierCache.value;
+    }
+
+    try {
+      const stats = await this.adminDb.getQuotaAccuracyStats(7);
+
+      if (stats.avgRatio && stats.sampleCount >= 10) {
+        // Use the average ratio from actual data
+        this.estimateMultiplierCache = {
+          value: stats.avgRatio,
+          timestamp: now
+        };
+        logger.debug('Estimate multiplier updated from accuracy data', {
+          avgRatio: stats.avgRatio,
+          sampleCount: stats.sampleCount,
+          stdDev: stats.stdDev
+        });
+        return stats.avgRatio;
+      }
+    } catch (error) {
+      logger.warn('Failed to get accuracy stats for estimate multiplier:', error);
+    }
+
+    // Fall back to default
+    this.estimateMultiplierCache = {
+      value: DEFAULT_ESTIMATE_RATIO,
+      timestamp: now
+    };
+    return DEFAULT_ESTIMATE_RATIO;
+  }
+
+  /**
+   * Estimate response tokens based on input length
+   * Uses 7-day rolling average from accuracy logs
+   */
+  async estimateResponseTokens(inputLength: number): Promise<number> {
+    return this.estimateResponseTokensWithCap(inputLength, 4000);
+  }
+
+  /**
+   * Estimate response tokens based on input length, capped to the caller's max output size.
+   */
+  async estimateResponseTokensWithCap(inputLength: number, maxTokens: number): Promise<number> {
+    const multiplier = await this.getEstimateMultiplier();
+    const estimated = Math.ceil(inputLength * multiplier) + DEFAULT_BASE_TOKENS;
+    const safeMaxTokens = Math.max(1, Math.floor(maxTokens));
+    const minimumEstimate = Math.min(50, safeMaxTokens);
+
+    return Math.max(minimumEstimate, Math.min(safeMaxTokens, estimated));
+  }
+
+  /**
+   * Bill text quotas against response tokens only, falling back conservatively if usage is missing.
+   */
+  getChargeableTextTokens(usage: TokenUsageMetrics | undefined, responseContent: string): number {
+    if (usage && Number.isFinite(usage.completionTokens) && (usage.completionTokens ?? 0) >= 0) {
+      return usage.completionTokens ?? 0;
+    }
+
+    if (usage && Number.isFinite(usage.totalTokens) && (usage.totalTokens ?? 0) >= 0) {
+      return usage.totalTokens ?? 0;
+    }
+
+    const fallbackEstimate = Math.ceil(responseContent.trim().length / 4);
+    return Math.max(1, fallbackEstimate);
+  }
+
+  /**
    * Check if a user can perform an action based on their quota
+   * Now uses database-driven quotas instead of hardcoded values
    */
   async checkQuota(
     guildId: string,
@@ -66,75 +148,278 @@ export class QuotaMiddleware {
     // Fast path: guild exemptions
     const exemptions = await this.adminDb.isGuildExempt(guildId);
     if (exemptions.quotaExempt) {
+      logger.debug('Quota check: guild exempt', { guildId, userId, type: usageType });
       return { allowed: true, remaining: Infinity, max: Infinity };
     }
 
-    // Get user's role tier
-    const tier = await this.permissions.getUserRoleTier(guildId, userId, member);
+    try {
+      // Get user's role tier
+      const tier = await this.permissions.getUserRoleTier(guildId, userId, member);
 
-    // Get user's quota limit based on role
-    const userLimit = DEFAULT_QUOTAS[usageType][tier];
+      // Get user's quota limit from database (guild-specific or global fallback)
+      const quotaLimits = await this.adminDb.getRoleTierQuota(guildId, tier);
+      const userLimit = this.getQuotaByType(quotaLimits, usageType);
 
-    // Special case: quota = 0 means no access
-    if (userLimit === 0) {
-      if (usageType === 'voice_minutes') {
+      if (!Number.isFinite(userLimit) || userLimit < 0) {
+        logger.error('Quota check failed closed due to invalid user limit', {
+          guildId,
+          userId,
+          tier,
+          type: usageType,
+          userLimit
+        });
         return {
           allowed: false,
           remaining: 0,
           max: 0,
-          reason: 'Voice features require Trusted role or higher. Ask an admin for access.'
+          reason: 'Quota data is temporarily unavailable. Please try again shortly.'
         };
       }
+
+      // Special case: quota = 0 means no access
+      if (userLimit === 0) {
+        logger.debug('Quota check: no access', { guildId, userId, tier, type: usageType });
+        if (usageType === 'voice_minutes') {
+          return {
+            allowed: false,
+            remaining: 0,
+            max: 0,
+            reason: 'Voice features require Trusted role or higher. Ask an admin for access.'
+          };
+        }
+        return {
+          allowed: false,
+          remaining: 0,
+          max: 0,
+          reason: `You don't have access to ${this.formatUsageType(usageType)}s.`
+        };
+      }
+
+      // Check guild quota first
+      const guildCheck = await this.adminDb.checkGuildQuota(guildId, usageType, amount);
+      if (!guildCheck.allowed) {
+        logger.warn('Quota check: guild limit reached', {
+          guildId,
+          type: usageType,
+          remaining: guildCheck.remaining,
+          max: guildCheck.max
+        });
+        return {
+          allowed: false,
+          remaining: guildCheck.remaining,
+          max: guildCheck.max,
+          reason: `Server has reached its daily ${this.formatUsageType(usageType)} limit.`
+        };
+      }
+
+      // Get user's current daily usage
+      const userUsage = await this.adminDb.getUserDailyUsage(guildId, userId);
+      const currentUsage = userUsage ? this.getUserUsageByType(userUsage, usageType) : 0;
+      const remaining = Math.max(0, userLimit - currentUsage);
+      const percentUsed = userLimit > 0 ? Math.round((currentUsage / userLimit) * 100) : 0;
+
+      // Log quota status
+      logger.debug('Quota check', {
+        guildId,
+        userId,
+        tier,
+        type: usageType,
+        current: currentUsage,
+        requested: amount,
+        remaining,
+        max: userLimit,
+        percentUsed
+      });
+
+      // Warn when quota is running low (<20% remaining)
+      if (percentUsed >= 80 && remaining > 0) {
+        logger.warn('User quota low', {
+          guildId,
+          userId,
+          type: usageType,
+          remaining,
+          max: userLimit,
+          percentUsed
+        });
+      }
+
+      if (currentUsage + amount > userLimit) {
+        logger.error('Quota exceeded', {
+          guildId,
+          userId,
+          type: usageType,
+          requested: amount,
+          current: currentUsage,
+          remaining,
+          max: userLimit
+        });
+        return {
+          allowed: false,
+          remaining,
+          max: userLimit,
+          reason: `You've reached your daily ${this.formatUsageType(usageType)} limit. Resets at midnight ET.`
+        };
+      }
+
+      return {
+        allowed: true,
+        remaining: remaining - amount,
+        max: userLimit,
+        reason: undefined
+      };
+    } catch (error) {
+      logger.error('Quota check failed closed due to lookup error', {
+        guildId,
+        userId,
+        type: usageType,
+        error
+      });
       return {
         allowed: false,
         remaining: 0,
         max: 0,
-        reason: `You don't have access to ${this.formatUsageType(usageType)}s.`
+        reason: 'Quota service is temporarily unavailable. Please try again in a moment.'
       };
     }
-
-    // Check guild quota first
-    const guildCheck = await this.adminDb.checkGuildQuota(guildId, usageType, amount);
-    if (!guildCheck.allowed) {
-      return {
-        allowed: false,
-        remaining: guildCheck.remaining,
-        max: guildCheck.max,
-        reason: `Server has reached its daily ${this.formatUsageType(usageType)} limit.`
-      };
-    }
-
-    // Get user's current daily usage
-    const userUsage = await this.adminDb.getUserDailyUsage(guildId, userId);
-    const currentUsage = userUsage ? this.getUserUsageByType(userUsage, usageType) : 0;
-    const remaining = Math.max(0, userLimit - currentUsage);
-
-    if (currentUsage + amount > userLimit) {
-      return {
-        allowed: false,
-        remaining,
-        max: userLimit,
-        reason: `You've reached your daily ${this.formatUsageType(usageType)} limit. Resets at midnight UTC.`
-      };
-    }
-
-    return {
-      allowed: true,
-      remaining: remaining - amount,
-      max: userLimit
-    };
   }
 
   /**
-   * Record usage after an action is performed
+   * Record usage after an action is performed using atomic increment
+   * Returns detailed result for logging
    */
   async recordUsage(
     guildId: string,
     userId: string,
     usageType: UsageType,
-    amount: number
+    amount: number,
+    userLimit?: number
   ): Promise<boolean> {
-    return this.adminDb.incrementUsage(guildId, userId, usageType, amount);
+    // If no limit provided, get it from database - fall back to legacy method
+    if (userLimit === undefined) {
+      return this.adminDb.incrementUsage(guildId, userId, usageType, amount);
+    }
+
+    const result = await this.adminDb.atomicIncrementUsage(
+      guildId,
+      userId,
+      usageType,
+      amount,
+      userLimit
+    );
+
+    logger.debug('Usage recorded', {
+      guildId,
+      userId,
+      type: usageType,
+      amount,
+      success: result.success,
+      newTotal: result.newTotal,
+      remaining: result.remaining
+    });
+
+    return result.success;
+  }
+
+  /**
+   * Record usage with atomic increment and return detailed result
+   */
+  async recordUsageAtomic(
+    guildId: string,
+    userId: string,
+    member: GuildMember,
+    usageType: UsageType,
+    amount: number
+  ): Promise<AtomicRecordResult> {
+    try {
+      const tier = await this.permissions.getUserRoleTier(guildId, userId, member);
+      const quotaLimits = await this.adminDb.getRoleTierQuota(guildId, tier);
+      const userLimit = this.getQuotaByType(quotaLimits, usageType);
+
+      if (!Number.isFinite(userLimit) || userLimit < 0) {
+        logger.error('Atomic usage record failed due to invalid user limit', {
+          guildId,
+          userId,
+          tier,
+          type: usageType,
+          userLimit
+        });
+        return { success: false, newTotal: 0, remaining: 0 };
+      }
+
+      const result = await this.adminDb.atomicIncrementUsage(
+        guildId,
+        userId,
+        usageType,
+        amount,
+        userLimit
+      );
+
+      logger.debug('Usage recorded (atomic)', {
+        guildId,
+        userId,
+        tier,
+        type: usageType,
+        amount,
+        success: result.success,
+        newTotal: result.newTotal,
+        remaining: result.remaining
+      });
+
+      return result;
+    } catch (error) {
+      logger.error('Atomic usage record failed', {
+        guildId,
+        userId,
+        type: usageType,
+        amount,
+        error
+      });
+      return { success: false, newTotal: 0, remaining: 0 };
+    }
+  }
+
+  /**
+   * Log quota accuracy for estimate tuning
+   */
+  async logAccuracy(
+    guildId: string,
+    userId: string,
+    inputLength: number,
+    estimatedTokens: number,
+    actualTokens: number
+  ): Promise<void> {
+    const difference = actualTokens - estimatedTokens;
+    const percentError = estimatedTokens > 0 ? Math.round((difference / estimatedTokens) * 100) : 0;
+
+    logger.debug('Token usage accuracy', {
+      guildId,
+      userId,
+      inputLength,
+      estimated: estimatedTokens,
+      actual: actualTokens,
+      difference,
+      percentError: `${percentError}%`
+    });
+
+    await this.adminDb.logQuotaAccuracy(
+      guildId,
+      userId,
+      inputLength,
+      estimatedTokens,
+      actualTokens
+    );
+  }
+
+  /**
+   * Mark user for reset notification when quota is exhausted
+   */
+  async markForResetNotification(
+    guildId: string,
+    userId: string,
+    channelId: string
+  ): Promise<void> {
+    await this.adminDb.markUserForResetNotification(guildId, userId, channelId);
+    logger.debug('User marked for reset notification', { guildId, userId, channelId });
   }
 
   /**
@@ -146,16 +431,25 @@ export class QuotaMiddleware {
     member: GuildMember
   ): Promise<Record<UsageType, { remaining: number; max: number }>> {
     const tier = await this.permissions.getUserRoleTier(guildId, userId, member);
+    const quotaLimits = await this.adminDb.getRoleTierQuota(guildId, tier);
     const userUsage = await this.adminDb.getUserDailyUsage(guildId, userId);
 
     const result: Record<UsageType, { remaining: number; max: number }> = {
       text_tokens: { remaining: 0, max: 0 },
       images: { remaining: 0, max: 0 },
-      voice_minutes: { remaining: 0, max: 0 }
+      voice_minutes: { remaining: 0, max: 0 },
+      vision_tokens: { remaining: 0, max: 0 },
+      video_tokens: { remaining: 0, max: 0 }
     };
 
-    for (const usageType of ['text_tokens', 'images', 'voice_minutes'] as UsageType[]) {
-      const max = DEFAULT_QUOTAS[usageType][tier];
+    for (const usageType of [
+      'text_tokens',
+      'images',
+      'voice_minutes',
+      'vision_tokens',
+      'video_tokens'
+    ] as UsageType[]) {
+      const max = this.getQuotaByType(quotaLimits, usageType);
       const used = userUsage ? this.getUserUsageByType(userUsage, usageType) : 0;
       result[usageType] = {
         remaining: Math.max(0, max - used),
@@ -173,6 +467,8 @@ export class QuotaMiddleware {
     textTokens: { used: number; max: number };
     images: { used: number; max: number };
     voiceMinutes: { used: number; max: number };
+    visionTokens: { used: number; max: number };
+    videoTokens: { used: number; max: number };
   }> {
     const usage = await this.adminDb.getGuildDailyUsage(guildId);
     const quota = await this.adminDb.getGuildQuota(guildId);
@@ -189,8 +485,45 @@ export class QuotaMiddleware {
       voiceMinutes: {
         used: usage?.voiceMinutes || 0,
         max: quota?.voiceMinutesMax || GUILD_MAX_QUOTAS.voice_minutes
+      },
+      visionTokens: {
+        used: usage?.visionTokens || 0,
+        max: quota?.visionTokensMax || GUILD_MAX_QUOTAS.vision_tokens
+      },
+      videoTokens: {
+        used: usage?.videoTokens || 0,
+        max: quota?.videoTokensMax ?? GUILD_MAX_QUOTAS.video_tokens
       }
     };
+  }
+
+  /**
+   * Get quota value by usage type from quota limits object
+   */
+  private getQuotaByType(
+    quotaLimits: {
+      textTokens: number;
+      images: number;
+      voiceMinutes: number;
+      visionTokens: number;
+      videoTokens: number;
+    },
+    usageType: UsageType
+  ): number {
+    switch (usageType) {
+      case 'text_tokens':
+        return quotaLimits.textTokens;
+      case 'images':
+        return quotaLimits.images;
+      case 'voice_minutes':
+        return quotaLimits.voiceMinutes;
+      case 'vision_tokens':
+        return quotaLimits.visionTokens;
+      case 'video_tokens':
+        return quotaLimits.videoTokens;
+      default:
+        return 0;
+    }
   }
 
   /**
@@ -204,6 +537,10 @@ export class QuotaMiddleware {
         return 'image generation';
       case 'voice_minutes':
         return 'voice minute';
+      case 'vision_tokens':
+        return 'vision token';
+      case 'video_tokens':
+        return 'video token';
       default:
         return usageType;
     }
@@ -213,7 +550,13 @@ export class QuotaMiddleware {
    * Extract usage value by type from user usage object
    */
   private getUserUsageByType(
-    usage: { textTokens: number; images: number; voiceMinutes: number },
+    usage: {
+      textTokens: number;
+      images: number;
+      voiceMinutes: number;
+      visionTokens: number;
+      videoTokens: number;
+    },
     usageType: UsageType
   ): number {
     switch (usageType) {
@@ -223,6 +566,10 @@ export class QuotaMiddleware {
         return usage.images;
       case 'voice_minutes':
         return usage.voiceMinutes;
+      case 'vision_tokens':
+        return usage.visionTokens;
+      case 'video_tokens':
+        return usage.videoTokens;
       default:
         return 0;
     }
