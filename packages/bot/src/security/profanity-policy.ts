@@ -41,19 +41,23 @@ export function sanitizeAssistantProfanity(content: string): {
   matchedTerms: string[];
 } {
   let sanitized = content;
-  const matchedTerms = new Set<string>();
+  const matchedTerms: string[] = [];
 
   for (const { term, testPattern, replacePattern } of TERM_PATTERNS) {
     if (testPattern.test(sanitized)) {
-      matchedTerms.add(term);
-      sanitized = sanitized.replace(replacePattern, '***');
+      const count = (sanitized.match(new RegExp(replacePattern.source, replacePattern.flags)) || [])
+        .length;
+      for (let index = 0; index < count; index += 1) {
+        matchedTerms.push(term);
+      }
+      sanitized = sanitized.replace(new RegExp(replacePattern.source, replacePattern.flags), '***');
     }
   }
 
   return {
     sanitized,
     changed: sanitized !== content,
-    matchedTerms: [...matchedTerms]
+    matchedTerms
   };
 }
 
