@@ -7,6 +7,7 @@ import {
   hasUnsafeSexualContext,
   hasPromptInjectionPattern
 } from '../../security/content-sanitizer';
+import { sentimentClassifier, shouldApplySentiment } from '../../security/sentiment-classifier';
 
 function extractLoreEntities(content: string): string[] {
   const matches = content.match(/\b[A-Z][A-Za-z0-9_-]{2,}\b/g) || [];
@@ -106,12 +107,27 @@ export class UserMemorySetCommand implements Command {
     }
 
     const entities = extractLoreEntities(content);
+    const sentiment = await sentimentClassifier.classifyPrompt(content);
+    const sentimentMetadata =
+      sentiment && shouldApplySentiment(sentiment)
+        ? {
+            sentimentLabel: sentiment.label,
+            sentimentScore: sentiment.score,
+            sentimentConfidence: sentiment.confidence,
+            toneFlags: {
+              urgency: sentiment.urgency,
+              frustration: sentiment.frustration,
+              confusion: sentiment.confusion
+            }
+          }
+        : {};
     const metadata = {
       entities,
       source: 'user_command',
       sourcePriority: 62,
       trustScore: USER_CONTEXT_TRUST[contextType],
-      conflictKey: resolveUserConflictKey(contextType, entities)
+      conflictKey: resolveUserConflictKey(contextType, entities),
+      ...sentimentMetadata
     };
 
     // Generate embedding for semantic search if RAG is enabled

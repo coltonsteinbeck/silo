@@ -43,6 +43,21 @@ export type { GuardrailsPromptDecision } from './openai-guardrails';
 export { composeSystemPromptWithSafety, IMMUTABLE_SAFETY_POLICY } from './safety-policy';
 export { resolvePromptPolicy } from './prompt-policy';
 export { safetyMonitor, SafetyMonitor, createSafetyMonitorFromEnv } from './safety-monitor';
+export {
+  sentimentClassifier,
+  buildSentimentStyleInstruction,
+  shouldApplySentiment,
+  isSentimentEnabled,
+  classifyPromptDeterministic,
+  resetSentimentRuntimeForTests,
+  setSentimentRuntimeForTests
+} from './sentiment-classifier';
+export type { SentimentClassification, SentimentLabel } from './sentiment-classifier';
+export {
+  profanityPolicy,
+  detectMildProfanity,
+  sanitizeAssistantProfanity
+} from './profanity-policy';
 export type {
   SafetyIncidentType,
   SafetyIncidentRecord,

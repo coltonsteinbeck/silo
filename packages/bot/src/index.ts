@@ -50,7 +50,11 @@ import {
   buildUserMessageForBlockedInput,
   composeSystemPromptWithSafety,
   resolvePromptPolicy,
-  safetyMonitor
+  safetyMonitor,
+  sentimentClassifier,
+  buildSentimentStyleInstruction,
+  shouldApplySentiment,
+  sanitizeAssistantProfanity
 } from './security';
 import { sanitizeAssistantOutput } from './security/output-sanitizer';
 import { QuotaMiddleware } from './middleware/quota';
@@ -368,9 +372,35 @@ async function main() {
     const commandData = Array.from(commands.values()).map(cmd => cmd.data.toJSON());
 
     try {
-      logger.info(`Registering ${commandData.length} slash commands...`);
-      await rest.put(Routes.applicationCommands(readyClient.user.id), { body: commandData });
-      logger.info('Slash commands registered successfully');
+      const registerGuildOnly =
+        Boolean(config.discord.guildId) && process.env.DISCORD_USE_GUILD_COMMANDS === 'true';
+
+      if (registerGuildOnly && config.discord.guildId) {
+        logger.info(
+          `Registering ${commandData.length} guild slash commands for guild ${config.discord.guildId}...`
+        );
+        await rest.put(
+          Routes.applicationGuildCommands(readyClient.user.id, config.discord.guildId),
+          { body: commandData }
+        );
+        logger.info('Guild slash commands registered successfully');
+      } else {
+        logger.info(`Registering ${commandData.length} global slash commands...`);
+        await rest.put(Routes.applicationCommands(readyClient.user.id), { body: commandData });
+        logger.info('Global slash commands registered successfully');
+
+        // Clear guild-scoped overrides to avoid duplicate command entries in the guild picker.
+        if (config.discord.guildId) {
+          logger.info(
+            `Clearing guild slash command overrides for guild ${config.discord.guildId} to avoid duplicates...`
+          );
+          await rest.put(
+            Routes.applicationGuildCommands(readyClient.user.id, config.discord.guildId),
+            { body: [] }
+          );
+          logger.info('Guild slash command overrides cleared');
+        }
+      }
     } catch (error) {
       logger.error('Failed to register slash commands:', error);
     }
@@ -529,11 +559,26 @@ async function main() {
       const replyContext = await resolveReplyContext(message, 2);
 
       // === Phase 1: Gates (moderation + quota — can early-exit) ===
-      // Run content moderation and member fetch in parallel (independent operations)
-      const [moderationResult, member] = await Promise.all([
-        contentSanitizer.processContent(userContent, message.guildId, message.author.id, 'message'),
-        message.guild!.members.fetch(message.author.id)
+      const [member, serverConfig] = await Promise.all([
+        message.guild!.members.fetch(message.author.id),
+        adminDb.getServerConfig(message.guildId)
       ]);
+
+      const edgyModeEnabled = Boolean(serverConfig?.featuresEnabled?.edgyModeEnabled);
+      const deterministicSentimentReviewEnabled = Boolean(
+        serverConfig?.featuresEnabled?.deterministicSentimentReviewEnabled
+      );
+
+      const moderationResult = await contentSanitizer.processContent(
+        userContent,
+        message.guildId,
+        message.author.id,
+        'message',
+        {
+          allowMildProfanityInput: edgyModeEnabled,
+          useDeterministicSentimentReview: deterministicSentimentReviewEnabled
+        }
+      );
 
       const { processedContent, moderation } = moderationResult;
 
@@ -579,6 +624,17 @@ async function main() {
         );
       }
 
+      const promptSentiment = await sentimentClassifier.classifyPrompt(processedContent);
+      const sentimentApplied = shouldApplySentiment(promptSentiment);
+      logger.info('Sentiment classification for prompt', {
+        guildId: message.guildId,
+        userId: message.author.id,
+        applied: sentimentApplied,
+        label: promptSentiment?.label || null,
+        confidence: promptSentiment?.confidence ?? null,
+        source: promptSentiment?.source || null
+      });
+
       const conversationContext = assembleConversationContext({
         processedContent,
         currentImageUrls,
@@ -591,10 +647,7 @@ async function main() {
 
       // === Phase 2: Config lookups (parallel — both are independent DB reads) ===
       const configStart = Date.now();
-      const [serverConfig, systemPromptResult] = await Promise.all([
-        adminDb.getServerConfig(message.guildId),
-        adminDb.getSystemPrompt(message.guildId)
-      ]);
+      const systemPromptResult = await adminDb.getSystemPrompt(message.guildId);
 
       const preferredProvider = serverConfig?.defaultProvider;
       const textProvider = providers.getTextProvider(preferredProvider || undefined);
@@ -719,6 +772,7 @@ async function main() {
       const plainStyleInstruction = userRequestedRichFormatting
         ? ''
         : '\n\nFormatting rule: Use plain text by default. Avoid markdown styling (bold/italics/lists) and avoid emojis unless the user explicitly asks for them.';
+      const sentimentStyleInstruction = buildSentimentStyleInstruction(promptSentiment);
 
       const promptHash = promptPolicy.promptHash;
       const hasConfiguredGuildPrompt = Boolean(dbPrompt && promptEnabled);
@@ -802,7 +856,8 @@ async function main() {
             config,
             serverId: guildId,
             userId: message.author.id,
-            content: conversationContext.mergedUserContent
+            content: conversationContext.mergedUserContent,
+            sentimentScore: promptSentiment?.score ?? null
           });
 
           if (selection.selected.length > 0) {
@@ -958,7 +1013,7 @@ async function main() {
         [
           {
             role: 'system',
-            content: `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${memoryMentionInstruction}${loreMemoryFactsBlock}${memoryConflictInstruction}${externalContextInstruction}${memoryContext}`
+            content: `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${sentimentStyleInstruction}${memoryMentionInstruction}${loreMemoryFactsBlock}${memoryConflictInstruction}${externalContextInstruction}${memoryContext}`
           },
           ...messages,
           {
@@ -1067,6 +1122,18 @@ async function main() {
         stripXmlLikeTags: true
       });
 
+      if (!edgyModeEnabled) {
+        const scrubbed = sanitizeAssistantProfanity(responseContent);
+        if (scrubbed.changed) {
+          logger.info('Scrubbed mild profanity from assistant output', {
+            guildId: message.guildId,
+            userId: message.author.id,
+            terms: scrubbed.matchedTerms
+          });
+          responseContent = scrubbed.sanitized;
+        }
+      }
+
       if (!responseContent.trim()) {
         responseContent = 'Sorry, I could not generate a valid response. Please try again.';
       }
@@ -1123,11 +1190,37 @@ async function main() {
           imageSummary: imageSummaryBlock || null
         })
       ];
+      const sentimentEvent = adminDb.logEvent({
+        guildId: message.guildId,
+        userId: message.author.id,
+        eventType: 'message_response',
+        command: undefined,
+        provider: textProvider.name,
+        model: response.model || undefined,
+        inputTokens: response.usage?.promptTokens || 0,
+        outputTokens: response.usage?.completionTokens || actualTokens,
+        tokensUsed: response.usage?.totalTokens || actualTokens,
+        responseTimeMs: Date.now() - llmStart,
+        success: true,
+        metadata: {
+          sentiment: {
+            applied: sentimentApplied,
+            source: promptSentiment?.source || null
+          },
+          safetyFlags: {
+            edgyModeEnabled,
+            deterministicSentimentReviewEnabled
+          },
+          moderationAction: assistantModeration.action,
+          usedVision
+        }
+      });
 
       if (usedVision) {
         const safeVisionUserLimit = Number.isFinite(visionUserLimit) ? visionUserLimit : undefined;
         Promise.all([
           ...conversationWrites,
+          sentimentEvent,
           quotaMiddleware.recordUsage(
             message.guildId,
             message.author.id,
@@ -1142,6 +1235,7 @@ async function main() {
         const safeTextUserLimit = Number.isFinite(textUserLimit) ? textUserLimit : undefined;
         Promise.all([
           ...conversationWrites,
+          sentimentEvent,
           quotaMiddleware.recordUsage(
             message.guildId,
             message.author.id,

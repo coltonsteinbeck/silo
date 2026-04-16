@@ -73,7 +73,7 @@ DEV_DB_SSL=${DEV_DB_SSL:-$DB_SSL}
 
 PROD_SCHEMAS=${PROD_SCHEMAS:-public}
 INCLUDE_TABLES=${INCLUDE_TABLES:-}
-EXCLUDE_TABLES=${EXCLUDE_TABLES:-public._migrations,public.schema_migrations}
+EXCLUDE_TABLES=${EXCLUDE_TABLES:-public._migrations,public.schema_migrations,public.archived_migration_022_backup,public.migration_022_guild_quota_backup,public.migration_022_role_tier_quota_backup}
 BACKUP_DIR=${BACKUP_DIR:-backups}
 BACKUP_TARGET_BEFORE_RESTORE=${BACKUP_TARGET_BEFORE_RESTORE:-true}
 TRUNCATE_TARGET=${TRUNCATE_TARGET:-false}

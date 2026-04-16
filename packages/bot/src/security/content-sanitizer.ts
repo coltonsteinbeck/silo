@@ -10,6 +10,9 @@ import OpenAI from 'openai';
 import { Pool } from 'pg';
 import { logger } from '@silo/core';
 import { evaluateUserPromptGuardrails } from './openai-guardrails';
+import type { GuardrailsPromptDecision } from './openai-guardrails';
+import { detectMildProfanity } from './profanity-policy';
+import { classifyPromptDeterministic, SentimentClassification } from './sentiment-classifier';
 
 // Lazy-initialized OpenAI client (avoids error at module load time)
 let openai: OpenAI | null = null;
@@ -36,6 +39,8 @@ export interface ModerationResult {
 
 export interface ModerationOptions {
   failClosedOnError?: boolean;
+  allowMildProfanityInput?: boolean;
+  useDeterministicSentimentReview?: boolean;
 }
 
 export interface ModerationDecision {
@@ -80,9 +85,40 @@ export function buildModerationApiFailureResult(
   };
 }
 
+export function shouldBypassGuardrailsBlockForEdgyMode(params: {
+  allowMildProfanityInput?: boolean;
+  decision: GuardrailsPromptDecision;
+}): boolean {
+  if (!params.allowMildProfanityInput || params.decision.allowed) {
+    return false;
+  }
+
+  const category = params.decision.category || '';
+  const reason = (params.decision.reason || '').toLowerCase();
+
+  if (category === 'guardrails/api_error_fail_closed' || category === 'guardrails/jailbreak') {
+    return false;
+  }
+
+  if (category === 'guardrails/moderation' || category === 'guardrails/nsfw') {
+    return true;
+  }
+
+  if (category === 'guardrails/input_blocked') {
+    return /harassment|moderation|nsfw/.test(reason);
+  }
+
+  return false;
+}
+
 export function evaluateModerationDecision(
   flaggedCategories: string[],
-  scores: Record<string, number>
+  scores: Record<string, number>,
+  context?: {
+    allowMildProfanityInput?: boolean;
+    content?: string;
+    sentimentReview?: SentimentClassification | null;
+  }
 ): ModerationDecision {
   let action: ModerationAction = 'allowed';
   let allowed = true;
@@ -98,6 +134,35 @@ export function evaluateModerationDecision(
       typeof scores[cat] === 'number' &&
       scores[cat] >= warnThreshold
   );
+
+  const canDowngradeForMildProfanity =
+    context?.allowMildProfanityInput &&
+    typeof context.content === 'string' &&
+    !flaggedCategories.includes('sexual') &&
+    !flaggedCategories.some(category => BLOCK_CATEGORIES.includes(category));
+
+  if (canDowngradeForMildProfanity) {
+    const contentToReview = context.content || '';
+    const matchedProfanityTerms = detectMildProfanity(contentToReview);
+    const hasHarassmentSignal = flaggedCategories.some(category =>
+      ['harassment', 'harassment/threatening'].includes(category)
+    );
+
+    if (matchedProfanityTerms.length > 0 && hasHarassmentSignal) {
+      const sentimentReview = context.sentimentReview;
+      const shouldWarn = Boolean(
+        sentimentReview &&
+        (sentimentReview.frustration >= 0.45 ||
+          sentimentReview.confusion >= 0.45 ||
+          sentimentReview.urgency >= 0.45)
+      );
+
+      return {
+        action: shouldWarn ? 'warned' : 'allowed',
+        allowed: true
+      };
+    }
+  }
 
   if (shouldBlock || shouldBlockWarnClass) {
     action = 'blocked';
@@ -464,7 +529,15 @@ class ContentSanitizer {
       }
 
       // Determine action based on flagged categories
-      const decision = evaluateModerationDecision(flaggedCategories, scores);
+      const sentimentReview = options.useDeterministicSentimentReview
+        ? classifyPromptDeterministic(content)
+        : null;
+
+      const decision = evaluateModerationDecision(flaggedCategories, scores, {
+        allowMildProfanityInput: options.allowMildProfanityInput,
+        content,
+        sentimentReview
+      });
       const { action, allowed } = decision;
 
       // Log the moderation result (using hash, never raw content)
@@ -720,44 +793,78 @@ class ContentSanitizer {
   }> {
     const contentHash = this.hashContent(content);
 
-    const guardrailsDecision = await evaluateUserPromptGuardrails(content, {
-      failClosedOnError: options.failClosedOnError
-    });
+    const mildProfanityInInput = detectMildProfanity(content).length > 0;
+    const shouldBypassInputGuardrails = Boolean(
+      options.allowMildProfanityInput &&
+      mildProfanityInInput &&
+      contentType === 'message' &&
+      !hasPromptInjectionPattern(content)
+    );
 
-    if (!guardrailsDecision.allowed) {
-      const category = guardrailsDecision.category || 'guardrails/jailbreak';
-      const action: ModerationAction =
-        category === 'guardrails/api_error_fail_closed' ? 'api_error_fail_closed' : 'blocked';
-
-      await this.logModerationResult({
+    if (shouldBypassInputGuardrails) {
+      logger.info('Skipping input guardrails for edgy-mode mild profanity message', {
         guildId,
         userId,
-        contentType,
-        contentHash,
-        contentLength: content.length,
-        flaggedCategories: [category],
-        moderationScores: {},
-        actionTaken: action
+        contentType
       });
+    }
 
-      return {
-        processedContent: '',
-        moderation: {
-          allowed: false,
-          action,
+    const guardrailsDecision = shouldBypassInputGuardrails
+      ? { allowed: true }
+      : await evaluateUserPromptGuardrails(content, {
+          failClosedOnError: options.failClosedOnError
+        });
+
+    if (!guardrailsDecision.allowed) {
+      if (
+        shouldBypassGuardrailsBlockForEdgyMode({
+          allowMildProfanityInput: options.allowMildProfanityInput,
+          decision: guardrailsDecision
+        })
+      ) {
+        logger.info('Bypassing guardrails input block for edgy-mode moderation fallback', {
+          guildId,
+          userId,
+          category: guardrailsDecision.category || null,
+          reason: guardrailsDecision.reason || null
+        });
+      } else {
+        const category = guardrailsDecision.category || 'guardrails/jailbreak';
+        const action: ModerationAction =
+          category === 'guardrails/api_error_fail_closed' ? 'api_error_fail_closed' : 'blocked';
+
+        await this.logModerationResult({
+          guildId,
+          userId,
+          contentType,
+          contentHash,
+          contentLength: content.length,
           flaggedCategories: [category],
-          scores: {},
-          contentHash
-        }
-      };
+          moderationScores: {},
+          actionTaken: action
+        });
+
+        return {
+          processedContent: '',
+          moderation: {
+            allowed: false,
+            action,
+            flaggedCategories: [category],
+            scores: {},
+            contentHash
+          }
+        };
+      }
     }
 
     // Sanitize first
     const sanitized = this.sanitizePrompt(content);
+    const hasMildProfanity = detectMildProfanity(sanitized).length > 0;
 
     // Quick check for previously blocked content
     const quickResult = await this.quickCheck(sanitized);
-    if (quickResult.skip && quickResult.previousAction === 'blocked') {
+    const bypassHistoricalBlock = Boolean(options.allowMildProfanityInput && hasMildProfanity);
+    if (quickResult.skip && quickResult.previousAction === 'blocked' && !bypassHistoricalBlock) {
       return {
         processedContent: '',
         moderation: {
@@ -768,6 +875,14 @@ class ContentSanitizer {
           contentHash: quickResult.hash
         }
       };
+    }
+
+    if (bypassHistoricalBlock && quickResult.previousAction === 'blocked') {
+      logger.info('Bypassing historical hash block for edgy-mode mild profanity re-evaluation', {
+        guildId,
+        userId,
+        contentHash: quickResult.hash
+      });
     }
 
     // Full moderation check
