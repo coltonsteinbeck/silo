@@ -152,9 +152,9 @@ export function evaluateModerationDecision(
       const sentimentReview = context.sentimentReview;
       const shouldWarn = Boolean(
         sentimentReview &&
-          (sentimentReview.frustration >= 0.45 ||
-            sentimentReview.confusion >= 0.45 ||
-            sentimentReview.urgency >= 0.45)
+        (sentimentReview.frustration >= 0.45 ||
+          sentimentReview.confusion >= 0.45 ||
+          sentimentReview.urgency >= 0.45)
       );
 
       return {
@@ -796,9 +796,9 @@ class ContentSanitizer {
     const mildProfanityInInput = detectMildProfanity(content).length > 0;
     const shouldBypassInputGuardrails = Boolean(
       options.allowMildProfanityInput &&
-        mildProfanityInInput &&
-        contentType === 'message' &&
-        !hasPromptInjectionPattern(content)
+      mildProfanityInInput &&
+      contentType === 'message' &&
+      !hasPromptInjectionPattern(content)
     );
 
     if (shouldBypassInputGuardrails) {
