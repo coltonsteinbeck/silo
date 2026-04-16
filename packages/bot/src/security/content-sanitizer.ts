@@ -10,6 +10,8 @@ import OpenAI from 'openai';
 import { Pool } from 'pg';
 import { logger } from '@silo/core';
 import { evaluateUserPromptGuardrails } from './openai-guardrails';
+import { detectMildProfanity } from './profanity-policy';
+import { classifyPromptDeterministic, SentimentClassification } from './sentiment-classifier';
 
 // Lazy-initialized OpenAI client (avoids error at module load time)
 let openai: OpenAI | null = null;
@@ -36,6 +38,8 @@ export interface ModerationResult {
 
 export interface ModerationOptions {
   failClosedOnError?: boolean;
+  allowMildProfanityInput?: boolean;
+  useDeterministicSentimentReview?: boolean;
 }
 
 export interface ModerationDecision {
@@ -82,7 +86,12 @@ export function buildModerationApiFailureResult(
 
 export function evaluateModerationDecision(
   flaggedCategories: string[],
-  scores: Record<string, number>
+  scores: Record<string, number>,
+  context?: {
+    allowMildProfanityInput?: boolean;
+    content?: string;
+    sentimentReview?: SentimentClassification | null;
+  }
 ): ModerationDecision {
   let action: ModerationAction = 'allowed';
   let allowed = true;
@@ -98,6 +107,35 @@ export function evaluateModerationDecision(
       typeof scores[cat] === 'number' &&
       scores[cat] >= warnThreshold
   );
+
+  const canDowngradeForMildProfanity =
+    context?.allowMildProfanityInput &&
+    typeof context.content === 'string' &&
+    !flaggedCategories.includes('sexual') &&
+    !flaggedCategories.some(category => BLOCK_CATEGORIES.includes(category));
+
+  if (canDowngradeForMildProfanity) {
+    const contentToReview = context.content || '';
+    const matchedProfanityTerms = detectMildProfanity(contentToReview);
+    const hasHarassmentSignal = flaggedCategories.some(category =>
+      ['harassment', 'harassment/threatening'].includes(category)
+    );
+
+    if (matchedProfanityTerms.length > 0 && hasHarassmentSignal) {
+      const sentimentReview = context.sentimentReview;
+      const shouldWarn = Boolean(
+        sentimentReview &&
+          (sentimentReview.frustration >= 0.45 ||
+            sentimentReview.confusion >= 0.45 ||
+            sentimentReview.urgency >= 0.45)
+      );
+
+      return {
+        action: shouldWarn ? 'warned' : 'allowed',
+        allowed: true
+      };
+    }
+  }
 
   if (shouldBlock || shouldBlockWarnClass) {
     action = 'blocked';
@@ -464,7 +502,15 @@ class ContentSanitizer {
       }
 
       // Determine action based on flagged categories
-      const decision = evaluateModerationDecision(flaggedCategories, scores);
+      const sentimentReview = options.useDeterministicSentimentReview
+        ? classifyPromptDeterministic(content)
+        : null;
+
+      const decision = evaluateModerationDecision(flaggedCategories, scores, {
+        allowMildProfanityInput: options.allowMildProfanityInput,
+        content,
+        sentimentReview
+      });
       const { action, allowed } = decision;
 
       // Log the moderation result (using hash, never raw content)
