@@ -528,23 +528,13 @@ export class AdminCommand implements Command {
       'deterministic-sentiment-review'
     );
 
-    const existingConfig = await this.adminDb.getServerConfig(guildId);
-    const existingFeatures = existingConfig?.featuresEnabled || {};
-    const deterministicSentimentReviewEnabled =
-      deterministicSentimentOption ??
-      existingFeatures.deterministicSentimentReviewEnabled ??
-      edgyModeEnabled;
-
-    const featuresEnabled = {
-      ...existingFeatures,
+    const updatedConfig = await this.adminDb.updateSafetyFeatures(guildId, {
       edgyModeEnabled,
-      deterministicSentimentReviewEnabled
-    };
-
-    await this.adminDb.setServerConfig({
-      guildId,
-      featuresEnabled
+      deterministicSentimentReviewEnabled: deterministicSentimentOption ?? undefined
     });
+    const deterministicSentimentReviewEnabled = Boolean(
+      updatedConfig.featuresEnabled?.deterministicSentimentReviewEnabled
+    );
 
     await this.adminDb.logAction({
       guildId,

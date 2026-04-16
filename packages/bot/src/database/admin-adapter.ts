@@ -40,15 +40,7 @@ function isUndefinedColumnError(error: unknown): error is { code: string; messag
 export class AdminAdapter {
   constructor(private pool: Pool) {}
 
-  // Server Configuration
-  async getServerConfig(guildId: string): Promise<ServerConfig | null> {
-    const result = await this.pool.query('SELECT * FROM server_config WHERE guild_id = $1', [
-      guildId
-    ]);
-
-    if (result.rows.length === 0) return null;
-
-    const row = result.rows[0];
+  private mapServerConfigRow(row: any): ServerConfig {
     return {
       guildId: row.guild_id,
       defaultProvider: row.default_provider,
@@ -60,6 +52,18 @@ export class AdminAdapter {
       createdAt: new Date(row.created_at),
       updatedAt: new Date(row.updated_at)
     };
+  }
+
+  // Server Configuration
+  async getServerConfig(guildId: string): Promise<ServerConfig | null> {
+    const result = await this.pool.query('SELECT * FROM server_config WHERE guild_id = $1', [
+      guildId
+    ]);
+
+    if (result.rows.length === 0) return null;
+
+    const row = result.rows[0];
+    return this.mapServerConfigRow(row);
   }
 
   async setServerConfig(
@@ -91,17 +95,42 @@ export class AdminAdapter {
     );
 
     const row = result.rows[0];
-    return {
-      guildId: row.guild_id,
-      defaultProvider: row.default_provider,
-      autoThread: row.auto_thread,
-      memoryRetentionDays: row.memory_retention_days,
-      rateLimitMultiplier: row.rate_limit_multiplier,
-      featuresEnabled: row.features_enabled,
-      channelConfigs: row.channel_configs,
-      createdAt: new Date(row.created_at),
-      updatedAt: new Date(row.updated_at)
-    };
+    return this.mapServerConfigRow(row);
+  }
+
+  async updateSafetyFeatures(
+    guildId: string,
+    updates: {
+      edgyModeEnabled: boolean;
+      deterministicSentimentReviewEnabled?: boolean;
+    }
+  ): Promise<ServerConfig> {
+    const result = await this.pool.query(
+      `INSERT INTO server_config (guild_id, features_enabled)
+       VALUES (
+         $1,
+         jsonb_build_object(
+           'edgyModeEnabled', $2::boolean,
+           'deterministicSentimentReviewEnabled', COALESCE($3::boolean, $2::boolean)
+         )
+       )
+       ON CONFLICT (guild_id)
+       DO UPDATE SET
+         features_enabled = COALESCE(server_config.features_enabled, '{}'::jsonb) || jsonb_build_object(
+           'edgyModeEnabled', $2::boolean,
+           'deterministicSentimentReviewEnabled',
+             COALESCE(
+               $3::boolean,
+               (server_config.features_enabled->>'deterministicSentimentReviewEnabled')::boolean,
+               $2::boolean
+             )
+         ),
+         updated_at = NOW()
+       RETURNING *`,
+      [guildId, updates.edgyModeEnabled, updates.deterministicSentimentReviewEnabled ?? null]
+    );
+
+    return this.mapServerConfigRow(result.rows[0]);
   }
 
   async getChannelConfig(guildId: string, channelId: string): Promise<ChannelConfig | null> {

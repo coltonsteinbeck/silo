@@ -50,6 +50,25 @@ describe('AdminCommand', () => {
       const json = command.data.toJSON();
       expect(json.dm_permission).toBe(false);
     });
+
+    test('registers safety subcommands with expected options', () => {
+      const json = command.data.toJSON();
+      const safetyToggle = json.options?.find(option => option.name === 'safety-toggle');
+      const safetyStatus = json.options?.find(option => option.name === 'safety-status');
+
+      expect(safetyToggle).toBeDefined();
+      expect(safetyStatus).toBeDefined();
+
+      const edgyModeOption = (safetyToggle as any)?.options?.find(
+        (option: any) => option.name === 'edgy-mode'
+      );
+      const deterministicOption = (safetyToggle as any)?.options?.find(
+        (option: any) => option.name === 'deterministic-sentiment-review'
+      );
+
+      expect(edgyModeOption?.required).toBe(true);
+      expect(deterministicOption?.required).toBe(false);
+    });
   });
 
   describe('execute', () => {
@@ -159,14 +178,16 @@ describe('AdminCommand', () => {
       expect(interaction._getReplies().length).toBeGreaterThanOrEqual(0);
     });
 
-    test('updates safety feature toggles', async () => {
+    test('updates safety feature toggles with deterministic sentiment disabled', async () => {
       mockPermissions.isAdmin = mock(async () => true);
-      mockAdminDb.getServerConfig = mock(async () => ({
+      mockAdminDb.updateSafetyFeatures = mock(async () => ({
+        guildId: '123456789',
         featuresEnabled: {
-          existingFlag: true
+          existingFlag: true,
+          edgyModeEnabled: true,
+          deterministicSentimentReviewEnabled: false
         }
       }));
-      mockAdminDb.setServerConfig = mock(async () => ({}));
 
       const interaction = createMockInteraction({
         options: {
@@ -178,15 +199,98 @@ describe('AdminCommand', () => {
 
       await (command as any).handleSafetyToggle(interaction as any);
 
-      expect(mockAdminDb.setServerConfig).toHaveBeenCalledWith({
-        guildId: '123456789',
-        featuresEnabled: {
-          existingFlag: true,
-          edgyModeEnabled: true,
-          deterministicSentimentReviewEnabled: false
-        }
+      expect(mockAdminDb.updateSafetyFeatures).toHaveBeenCalledWith('123456789', {
+        edgyModeEnabled: true,
+        deterministicSentimentReviewEnabled: false
       });
       expect(interaction._getReplies().length).toBeGreaterThan(0);
+    });
+
+    test('updates safety feature toggles with deterministic sentiment enabled', async () => {
+      mockPermissions.isAdmin = mock(async () => true);
+      mockAdminDb.updateSafetyFeatures = mock(async () => ({
+        guildId: '123456789',
+        featuresEnabled: {
+          edgyModeEnabled: true,
+          deterministicSentimentReviewEnabled: true
+        }
+      }));
+
+      const interaction = createMockInteraction({
+        options: {
+          subcommand: 'safety-toggle',
+          'edgy-mode': true,
+          'deterministic-sentiment-review': true
+        }
+      });
+
+      await (command as any).handleSafetyToggle(interaction as any);
+
+      expect(mockAdminDb.updateSafetyFeatures).toHaveBeenCalledWith('123456789', {
+        edgyModeEnabled: true,
+        deterministicSentimentReviewEnabled: true
+      });
+      expect(interaction._getReplies().length).toBeGreaterThan(0);
+    });
+
+    test('omits deterministic sentiment option and falls back to existing value', async () => {
+      mockPermissions.isAdmin = mock(async () => true);
+      mockAdminDb.updateSafetyFeatures = mock(async () => ({
+        guildId: '123456789',
+        featuresEnabled: {
+          edgyModeEnabled: false,
+          deterministicSentimentReviewEnabled: true
+        }
+      }));
+
+      const interaction = createMockInteraction({
+        options: {
+          subcommand: 'safety-toggle',
+          'edgy-mode': false
+        }
+      });
+
+      await (command as any).handleSafetyToggle(interaction as any);
+
+      expect(mockAdminDb.updateSafetyFeatures).toHaveBeenCalledWith('123456789', {
+        edgyModeEnabled: false,
+        deterministicSentimentReviewEnabled: undefined
+      });
+      const replies = interaction._getReplies();
+      expect(replies.length).toBeGreaterThan(0);
+      expect((replies[0] as { content: string }).content).toContain(
+        'Deterministic sentiment review: enabled'
+      );
+    });
+
+    test('omits deterministic sentiment option and falls back to edgy-mode value when unset', async () => {
+      mockPermissions.isAdmin = mock(async () => true);
+      mockAdminDb.updateSafetyFeatures = mock(async () => ({
+        guildId: '123456789',
+        featuresEnabled: {
+          edgyModeEnabled: false,
+          deterministicSentimentReviewEnabled: false
+        }
+      }));
+
+      const interaction = createMockInteraction({
+        options: {
+          subcommand: 'safety-toggle',
+          'edgy-mode': false
+        }
+      });
+
+      await (command as any).handleSafetyToggle(interaction as any);
+
+      expect(mockAdminDb.updateSafetyFeatures).toHaveBeenCalledWith('123456789', {
+        edgyModeEnabled: false,
+        deterministicSentimentReviewEnabled: undefined
+      });
+      const replies = interaction._getReplies();
+      expect(replies.length).toBeGreaterThan(0);
+      expect((replies[0] as { content: string }).content).toContain(
+        'Deterministic sentiment review: disabled'
+      );
     });
 
     test('reports safety feature toggle status', async () => {
