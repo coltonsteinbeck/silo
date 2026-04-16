@@ -3,6 +3,7 @@ import {
   SlashCommandBuilder,
   EmbedBuilder,
   GuildMember,
+  MessageFlags,
   SlashCommandSubcommandsOnlyBuilder
 } from 'discord.js';
 import { Command } from './types';
@@ -87,14 +88,17 @@ export class AdminCommand implements Command {
     if (!interaction.guildId || !interaction.member) {
       await interaction.reply({
         content: 'This command can only be used in a server.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
 
     const member = interaction.member;
     if (!(member instanceof GuildMember)) {
-      await interaction.reply({ content: 'Could not verify permissions.', ephemeral: true });
+      await interaction.reply({
+        content: 'Could not verify permissions.',
+        flags: MessageFlags.Ephemeral
+      });
       return;
     }
 
@@ -106,7 +110,7 @@ export class AdminCommand implements Command {
     if (!isAdmin) {
       await interaction.reply({
         content: 'You need admin permissions to use this command.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
@@ -139,19 +143,20 @@ export class AdminCommand implements Command {
         default:
           await interaction.reply({
             content: 'Unknown subcommand.',
-            ephemeral: true
+            flags: MessageFlags.Ephemeral
           });
       }
     } catch (error) {
       logger.error('Error in admin command:', error);
-      const reply = {
-        content: 'An error occurred while executing the command.',
-        ephemeral: true
-      };
       if (interaction.deferred) {
-        await interaction.editReply(reply);
+        await interaction.editReply({
+          content: 'An error occurred while executing the command.'
+        });
       } else {
-        await interaction.reply(reply);
+        await interaction.reply({
+          content: 'An error occurred while executing the command.',
+          flags: MessageFlags.Ephemeral
+        });
       }
     }
   }
@@ -160,7 +165,7 @@ export class AdminCommand implements Command {
     interaction: ChatInputCommandInteraction,
     _member: GuildMember
   ): Promise<void> {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     // Get server configuration
     const config = await this.adminDb.getServerConfig(interaction.guildId!);
@@ -235,7 +240,7 @@ export class AdminCommand implements Command {
     interaction: ChatInputCommandInteraction,
     member: GuildMember
   ): Promise<void> {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const targetUser = interaction.options.getUser('user') || interaction.user;
     const guildId = interaction.guildId!;
@@ -351,7 +356,7 @@ export class AdminCommand implements Command {
   }
 
   private async handleQuotaStats(interaction: ChatInputCommandInteraction): Promise<void> {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const guildId = interaction.guildId!;
 
@@ -405,7 +410,7 @@ export class AdminCommand implements Command {
   }
 
   private async handleQuotaHistory(interaction: ChatInputCommandInteraction): Promise<void> {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const targetUser = interaction.options.getUser('user') || interaction.user;
     const guildId = interaction.guildId!;
@@ -462,7 +467,7 @@ export class AdminCommand implements Command {
   }
 
   private async handleQuotaOverride(interaction: ChatInputCommandInteraction): Promise<void> {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const guildId = interaction.guildId!;
     const adminUserId = interaction.user.id;
@@ -515,7 +520,7 @@ export class AdminCommand implements Command {
   }
 
   private async handleSafetyToggle(interaction: ChatInputCommandInteraction): Promise<void> {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const guildId = interaction.guildId!;
     const edgyModeEnabled = interaction.options.getBoolean('edgy-mode') ?? false;
@@ -561,7 +566,7 @@ export class AdminCommand implements Command {
   }
 
   private async handleSafetyStatus(interaction: ChatInputCommandInteraction): Promise<void> {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const guildId = interaction.guildId!;
     const serverConfig = await this.adminDb.getServerConfig(guildId);
