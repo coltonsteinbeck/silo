@@ -372,9 +372,35 @@ async function main() {
     const commandData = Array.from(commands.values()).map(cmd => cmd.data.toJSON());
 
     try {
-      logger.info(`Registering ${commandData.length} slash commands...`);
-      await rest.put(Routes.applicationCommands(readyClient.user.id), { body: commandData });
-      logger.info('Slash commands registered successfully');
+      const registerGuildOnly =
+        Boolean(config.discord.guildId) && process.env.DISCORD_USE_GUILD_COMMANDS === 'true';
+
+      if (registerGuildOnly && config.discord.guildId) {
+        logger.info(
+          `Registering ${commandData.length} guild slash commands for guild ${config.discord.guildId}...`
+        );
+        await rest.put(
+          Routes.applicationGuildCommands(readyClient.user.id, config.discord.guildId),
+          { body: commandData }
+        );
+        logger.info('Guild slash commands registered successfully');
+      } else {
+        logger.info(`Registering ${commandData.length} global slash commands...`);
+        await rest.put(Routes.applicationCommands(readyClient.user.id), { body: commandData });
+        logger.info('Global slash commands registered successfully');
+
+        // Clear guild-scoped overrides to avoid duplicate command entries in the guild picker.
+        if (config.discord.guildId) {
+          logger.info(
+            `Clearing guild slash command overrides for guild ${config.discord.guildId} to avoid duplicates...`
+          );
+          await rest.put(
+            Routes.applicationGuildCommands(readyClient.user.id, config.discord.guildId),
+            { body: [] }
+          );
+          logger.info('Guild slash command overrides cleared');
+        }
+      }
     } catch (error) {
       logger.error('Failed to register slash commands:', error);
     }
@@ -1096,7 +1122,7 @@ async function main() {
         stripXmlLikeTags: true
       });
 
-      if (edgyModeEnabled) {
+      if (!edgyModeEnabled) {
         const scrubbed = sanitizeAssistantProfanity(responseContent);
         if (scrubbed.changed) {
           logger.info('Scrubbed mild profanity from assistant output', {
@@ -1179,9 +1205,6 @@ async function main() {
         metadata: {
           sentiment: {
             applied: sentimentApplied,
-            label: promptSentiment?.label || null,
-            confidence: promptSentiment?.confidence ?? null,
-            score: promptSentiment?.score ?? null,
             source: promptSentiment?.source || null
           },
           safetyFlags: {
