@@ -113,16 +113,27 @@ describe('OpenAIEmbeddingsProvider', () => {
     });
 
     it('handles large batches by chunking internally', async () => {
-      // The implementation chunks batches internally (MAX_BATCH_SIZE = 100)
-      // so batches > 100 are processed, not rejected
+      // Use a deterministic client mock to validate chunking behavior.
       const texts = Array(150).fill('test content');
-      try {
-        await provider.generateEmbeddings(texts);
-        expect(true).toBe(false); // Will fail due to API
-      } catch (error: any) {
-        // Should fail on API call, not batch validation
-        expect(error).toBeDefined();
-      }
+      let calls = 0;
+
+      (provider as any).client = {
+        embeddings: {
+          create: async ({ input }: { input: string[] }) => {
+            calls += 1;
+            return {
+              data: input.map((_, index) => ({
+                index,
+                embedding: Array(1536).fill(0)
+              }))
+            };
+          }
+        }
+      };
+
+      const result = await provider.generateEmbeddings(texts);
+      expect(result).toHaveLength(150);
+      expect(calls).toBe(2); // 100 + 50
     });
 
     it('processes batch of acceptable size', async () => {
@@ -219,34 +230,28 @@ describe('OpenAIEmbeddingsProvider', () => {
 
   describe('rate limiting', () => {
     it('enforces rate limit', async () => {
-      // Rate limiting is enforced internally
-      let limited = false;
-      for (let i = 0; i < 550; i++) {
-        try {
-          // Sync rate limit check happens
-          if (i > 500) {
-            await provider.generateEmbedding('test');
-          }
-        } catch (error: any) {
-          if (error.message.includes('rate limit')) {
-            limited = true;
-          }
-        }
-      }
-      // Either limited or API auth error
-      expect(typeof limited).toBe('boolean');
+      // Trigger the limiter before any network call is attempted.
+      (provider as any).requestCount = 500;
+      (provider as any).lastResetTime = Date.now();
+
+      await expect(provider.generateEmbedding('test')).rejects.toThrow(/rate limit/i);
     });
   });
 
   describe('error handling', () => {
     it('throws on invalid API call', async () => {
-      try {
-        await provider.generateEmbedding('test');
-        expect(true).toBe(false); // Should fail
-      } catch (error: any) {
-        expect(error).toBeDefined();
-        expect(error instanceof Error).toBe(true);
-      }
+      // Avoid network flakiness by forcing a deterministic API failure.
+      (provider as any).client = {
+        embeddings: {
+          create: async () => {
+            throw new Error('mock invalid api call');
+          }
+        }
+      };
+
+      await expect(provider.generateEmbedding('test')).rejects.toThrow(
+        /OpenAI embedding generation failed: mock invalid api call/
+      );
     });
 
     it('provides meaningful error messages', async () => {
@@ -259,11 +264,18 @@ describe('OpenAIEmbeddingsProvider', () => {
     });
 
     it('handles batch errors gracefully', async () => {
-      try {
-        await provider.generateEmbeddings(['test']);
-      } catch (error: any) {
-        expect(error).toBeDefined();
-      }
+      // Avoid network flakiness by forcing a deterministic API failure.
+      (provider as any).client = {
+        embeddings: {
+          create: async () => {
+            throw new Error('mock batch failure');
+          }
+        }
+      };
+
+      await expect(provider.generateEmbeddings(['test'])).rejects.toThrow(
+        /OpenAI batch embedding generation failed: mock batch failure/
+      );
     });
   });
 });

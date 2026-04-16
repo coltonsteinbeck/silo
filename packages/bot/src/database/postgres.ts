@@ -1,6 +1,6 @@
-import { Pool } from 'pg';
-import { readFileSync, readdirSync } from 'fs';
-import { join } from 'path';
+import { Pool, PoolClient } from 'pg';
+import { readFileSync, readdirSync, existsSync, statSync } from 'fs';
+import { dirname, join, resolve } from 'path';
 import {
   DatabaseAdapter,
   UserMemory,
@@ -42,14 +42,64 @@ interface ConversationMessageRow {
   guild_id: string;
   channel_id: string;
   user_id: string;
+  discord_message_id: string | null;
   prompt_hash: string;
   role: string; // Note: This comes from DB, may be any string
   content: string;
+  reply_to_message_id: string | null;
+  reply_to_user_id: string | null;
+  referenced_content: string | null;
+  image_summary: string | null;
   created_at: string;
 }
 
+type MigrationSummary = {
+  totalFiles: number;
+  applied: number;
+  skipped: number;
+  baselineMarked: number;
+  succeeded: boolean;
+};
+
 export class PostgresAdapter implements DatabaseAdapter {
   public readonly pool: Pool;
+
+  private static readonly MIGRATION_LOCK_ID = 830245913;
+  private lastMigrationSummary: MigrationSummary | null = null;
+
+  getLastMigrationSummary(): MigrationSummary | null {
+    return this.lastMigrationSummary;
+  }
+
+  private getBaselineVersion(): number {
+    const rawValue = process.env.MIGRATION_BASELINE_VERSION || '14';
+    const parsed = Number.parseInt(rawValue, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 14;
+  }
+
+  private parseMigrationVersion(fileName: string): number | null {
+    const match = fileName.match(/^(\d+)/);
+    if (!match || !match[1]) {
+      return null;
+    }
+
+    const parsed = Number.parseInt(match[1], 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  private async hasLegacySchema(client: PoolClient): Promise<boolean> {
+    const result = await client.query<{ user_memory: string | null; server_memory: string | null }>(
+      `SELECT to_regclass('public.user_memory')::text AS user_memory,
+              to_regclass('public.server_memory')::text AS server_memory`
+    );
+
+    const row = result.rows[0];
+    if (!row) {
+      return false;
+    }
+
+    return Boolean(row.user_memory && row.server_memory);
+  }
 
   /**
    * Validates and converts embedding array to a valid PostgreSQL vector string
@@ -89,9 +139,19 @@ export class PostgresAdapter implements DatabaseAdapter {
     return `[${validatedNumbers.join(',')}]`;
   }
 
-  constructor(connectionUrl: string) {
+  constructor(connectionUrl: string, options?: { ssl?: boolean; maxConnections?: number }) {
     this.pool = new Pool({
-      connectionString: connectionUrl
+      connectionString: connectionUrl,
+      connectionTimeoutMillis: 10000,
+      idleTimeoutMillis: 30000,
+      max: options?.maxConnections ?? 10,
+      ...(options?.ssl ? { ssl: { rejectUnauthorized: false } } : {})
+    });
+
+    // Handle unexpected pool errors (e.g. idle client disconnections)
+    // Without this handler, pool errors become uncaught exceptions that crash the process
+    this.pool.on('error', err => {
+      logger.error('Unexpected database pool error:', err);
     });
   }
 
@@ -110,39 +170,176 @@ export class PostgresAdapter implements DatabaseAdapter {
   }
 
   private async runMigrations(): Promise<void> {
+    let client: PoolClient | undefined;
+
     try {
-      const migrationsDir = join(process.cwd(), 'supabase', 'migrations');
+      const migrationsDir = this.resolveMigrationsDir();
       const migrationFiles = readdirSync(migrationsDir)
         .filter(file => file.endsWith('.sql'))
         .sort();
 
       logger.info(`Found ${migrationFiles.length} migration files`);
 
+      if (migrationFiles.length === 0) {
+        this.lastMigrationSummary = {
+          totalFiles: 0,
+          applied: 0,
+          skipped: 0,
+          baselineMarked: 0,
+          succeeded: true
+        };
+        logger.info('No migration files found, skipping migration step');
+        return;
+      }
+
+      client = await this.pool.connect();
+      await client.query('SELECT pg_advisory_lock($1)', [PostgresAdapter.MIGRATION_LOCK_ID]);
+
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS public.schema_migrations (
+          filename TEXT PRIMARY KEY,
+          applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `);
+
+      const appliedResult = await client.query<{ filename: string }>(
+        'SELECT filename FROM public.schema_migrations'
+      );
+      const appliedMigrations = new Set(appliedResult.rows.map(row => row.filename));
+
+      let appliedCount = 0;
+      let skippedCount = 0;
+      let baselineMarkedCount = 0;
+
+      if (appliedMigrations.size === 0 && (await this.hasLegacySchema(client))) {
+        const baselineVersion = this.getBaselineVersion();
+        const filesToBaseline = migrationFiles.filter(file => {
+          const version = this.parseMigrationVersion(file);
+          return version !== null && version < baselineVersion;
+        });
+
+        for (const file of filesToBaseline) {
+          await client.query(
+            'INSERT INTO public.schema_migrations (filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING',
+            [file]
+          );
+          appliedMigrations.add(file);
+          baselineMarkedCount += 1;
+        }
+
+        if (baselineMarkedCount > 0) {
+          logger.info('Legacy database baseline applied for migration tracking', {
+            baselineVersion,
+            markedApplied: baselineMarkedCount
+          });
+        }
+      }
+
       for (const file of migrationFiles) {
+        if (appliedMigrations.has(file)) {
+          skippedCount += 1;
+          logger.info(`↷ Migration already tracked, skipping: ${file}`);
+          continue;
+        }
+
         const filePath = join(migrationsDir, file);
         const sql = readFileSync(filePath, 'utf-8');
 
         try {
-          await this.pool.query(sql);
-          logger.info(`✓ Migration applied: ${file}`);
+          await client.query(sql);
+          await client.query('INSERT INTO public.schema_migrations (filename) VALUES ($1)', [file]);
+          appliedMigrations.add(file);
+          appliedCount += 1;
+          logger.info(`✓ Migration applied and tracked: ${file}`);
         } catch (error: any) {
-          // Check if it's a "already exists" error (which is fine)
-          if (
-            error.message?.includes('already exists') ||
-            error.code === 'EEXIST' ||
-            error.message?.includes('does not exist')
-          ) {
-            logger.info(`⚠ Skipping migration ${file}: ${error.message}`);
+          if (this.isAlreadyAppliedMigrationError(error)) {
+            await client.query(
+              'INSERT INTO public.schema_migrations (filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING',
+              [file]
+            );
+            appliedMigrations.add(file);
+            skippedCount += 1;
+            logger.info(
+              `⚠ Migration appears already applied, marked as tracked and skipped: ${file}`,
+              { reason: error.message }
+            );
             continue;
           }
+
           throw error;
         }
       }
-      logger.info('All migrations completed successfully');
+
+      logger.info('Migration step completed', {
+        totalFiles: migrationFiles.length,
+        applied: appliedCount,
+        skipped: skippedCount,
+        baselineMarked: baselineMarkedCount
+      });
+
+      this.lastMigrationSummary = {
+        totalFiles: migrationFiles.length,
+        applied: appliedCount,
+        skipped: skippedCount,
+        baselineMarked: baselineMarkedCount,
+        succeeded: true
+      };
     } catch (error) {
       logger.error('Failed to run migrations:', error);
+      this.lastMigrationSummary = {
+        totalFiles: 0,
+        applied: 0,
+        skipped: 0,
+        baselineMarked: 0,
+        succeeded: false
+      };
       // Don't throw - continue with app startup
+    } finally {
+      if (client) {
+        try {
+          await client.query('SELECT pg_advisory_unlock($1)', [PostgresAdapter.MIGRATION_LOCK_ID]);
+        } catch (unlockError) {
+          logger.warn('Failed to release migration advisory lock', unlockError);
+        }
+
+        client.release();
+      }
     }
+  }
+
+  private resolveMigrationsDir(): string {
+    let current = resolve(process.cwd());
+
+    while (true) {
+      const candidate = join(current, 'supabase', 'migrations');
+      if (existsSync(candidate)) {
+        const stats = statSync(candidate);
+        if (stats.isDirectory()) {
+          return candidate;
+        }
+      }
+
+      const parent = dirname(current);
+      if (parent === current) {
+        break;
+      }
+
+      current = parent;
+    }
+
+    // Fall back to cwd-relative path so original behavior remains predictable in logs.
+    return join(process.cwd(), 'supabase', 'migrations');
+  }
+
+  private isAlreadyAppliedMigrationError(error: unknown): boolean {
+    if (!error || typeof error !== 'object') {
+      return false;
+    }
+
+    const maybePgError = error as { message?: string; code?: string };
+    const message = (maybePgError.message || '').toLowerCase();
+
+    return message.includes('already exists') || maybePgError.code === 'EEXIST';
   }
 
   async disconnect(): Promise<void> {
@@ -160,12 +357,45 @@ export class PostgresAdapter implements DatabaseAdapter {
   }
 
   // User Memory
+  async getUserMemoryCount(userId: string): Promise<number> {
+    const result = await this.pool.query(
+      'SELECT COUNT(*)::int AS count FROM user_memory WHERE user_id = $1',
+      [userId]
+    );
+    return result.rows[0]?.count ?? 0;
+  }
+
+  async getAllMemoryCount(): Promise<number> {
+    const result = await this.pool.query('SELECT COUNT(*)::int AS count FROM user_memory');
+    return result.rows[0]?.count ?? 0;
+  }
+
   async getUserMemories(userId: string, contextType?: string, limit = 50): Promise<UserMemory[]> {
     const query = contextType
       ? 'SELECT * FROM user_memory WHERE user_id = $1 AND context_type = $2 ORDER BY created_at DESC LIMIT $3'
       : 'SELECT * FROM user_memory WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2';
 
     const params = contextType ? [userId, contextType, limit] : [userId, limit];
+    const result = await this.pool.query<UserMemoryRow>(query, params);
+
+    return result.rows.map(row => ({
+      id: row.id,
+      userId: row.user_id,
+      memoryContent: row.memory_content,
+      contextType: row.context_type as UserMemory['contextType'],
+      metadata: row.metadata,
+      expiresAt: row.expires_at ? new Date(row.expires_at) : undefined,
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(row.updated_at)
+    }));
+  }
+
+  async getAllMemories(contextType?: string, limit = 50): Promise<UserMemory[]> {
+    const query = contextType
+      ? 'SELECT * FROM user_memory WHERE context_type = $1 ORDER BY created_at DESC LIMIT $2'
+      : 'SELECT * FROM user_memory ORDER BY created_at DESC LIMIT $1';
+
+    const params = contextType ? [contextType, limit] : [limit];
     const result = await this.pool.query<UserMemoryRow>(query, params);
 
     return result.rows.map(row => ({
@@ -403,8 +633,8 @@ export class PostgresAdapter implements DatabaseAdapter {
     limit = 50
   ): Promise<ServerMemory[]> {
     const query = contextType
-      ? 'SELECT * FROM server_memory WHERE server_id = $1 AND context_type = $2 ORDER BY created_at DESC LIMIT $3'
-      : 'SELECT * FROM server_memory WHERE server_id = $1 ORDER BY created_at DESC LIMIT $2';
+      ? 'SELECT * FROM server_memory WHERE server_id = $1 AND context_type = $2 AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY created_at DESC LIMIT $3'
+      : 'SELECT * FROM server_memory WHERE server_id = $1 AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY created_at DESC LIMIT $2';
 
     const params = contextType ? [serverId, contextType, limit] : [serverId, limit];
     const result = await this.pool.query<ServerMemoryRow>(query, params);
@@ -423,10 +653,107 @@ export class PostgresAdapter implements DatabaseAdapter {
     }));
   }
 
+  async searchServerMemories(serverId: string, query: string, limit = 20): Promise<ServerMemory[]> {
+    const result = await this.pool.query<ServerMemoryRow>(
+      `SELECT * FROM server_memory
+       WHERE server_id = $1
+         AND memory_content ILIKE $2
+         AND (expires_at IS NULL OR expires_at > NOW())
+       ORDER BY created_at DESC
+       LIMIT $3`,
+      [serverId, `%${query}%`, limit]
+    );
+
+    return result.rows.map(row => ({
+      id: row.id,
+      serverId: row.server_id,
+      userId: row.user_id,
+      memoryContent: row.memory_content,
+      title: row.title,
+      contextType: row.context_type as ServerMemory['contextType'],
+      metadata: row.metadata,
+      expiresAt: row.expires_at ? new Date(row.expires_at) : undefined,
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(row.updated_at)
+    }));
+  }
+
+  async searchServerMemoriesByEmbedding(
+    serverId: string,
+    embedding: number[],
+    contextType?: string,
+    limit = 10
+  ): Promise<(ServerMemory & { similarity: number })[]> {
+    try {
+      const vectorStr = this.validateAndBuildVectorStr(embedding);
+      if (!vectorStr) {
+        logger.warn('Server memory embedding validation failed, returning empty results');
+        return [];
+      }
+
+      const query = contextType
+        ? `SELECT *, (1 - (embedding <=> $3::vector)) as similarity
+           FROM server_memory
+           WHERE server_id = $1
+             AND context_type = $2
+             AND embedding IS NOT NULL
+             AND (expires_at IS NULL OR expires_at > NOW())
+           ORDER BY embedding <=> $3::vector
+           LIMIT $4`
+        : `SELECT *, (1 - (embedding <=> $2::vector)) as similarity
+           FROM server_memory
+           WHERE server_id = $1
+             AND embedding IS NOT NULL
+             AND (expires_at IS NULL OR expires_at > NOW())
+           ORDER BY embedding <=> $2::vector
+           LIMIT $3`;
+
+      const params = contextType
+        ? [serverId, contextType, vectorStr, limit]
+        : [serverId, vectorStr, limit];
+
+      const result = await this.pool.query<ServerMemoryRow>(query, params);
+
+      return result.rows.map(row => ({
+        id: row.id,
+        serverId: row.server_id,
+        userId: row.user_id,
+        memoryContent: row.memory_content,
+        title: row.title,
+        contextType: row.context_type as ServerMemory['contextType'],
+        metadata: row.metadata,
+        similarity: row.similarity ?? 0,
+        expiresAt: row.expires_at ? new Date(row.expires_at) : undefined,
+        createdAt: new Date(row.created_at),
+        updatedAt: new Date(row.updated_at)
+      }));
+    } catch (error) {
+      logger.error('Failed to search server memories by embedding', error);
+      return [];
+    }
+  }
+
+  async getRelevantServerMemoriesForContext(
+    serverId: string,
+    embedding: number[],
+    contextType?: string,
+    limit = 5
+  ): Promise<ServerMemory[]> {
+    const relevant = await this.searchServerMemoriesByEmbedding(
+      serverId,
+      embedding,
+      contextType,
+      limit
+    );
+
+    return relevant.map(({ similarity: _unused, ...rest }) => rest);
+  }
+
   async storeServerMemory(
     memory: Omit<ServerMemory, 'id' | 'createdAt' | 'updatedAt'>,
     embedding?: number[]
   ): Promise<ServerMemory> {
+    const vectorStr = embedding ? this.validateAndBuildVectorStr(embedding) : null;
     const result = await this.pool.query(
       `INSERT INTO server_memory (server_id, user_id, memory_content, title, context_type, metadata, expires_at, embedding)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -439,7 +766,7 @@ export class PostgresAdapter implements DatabaseAdapter {
         memory.contextType,
         memory.metadata || {},
         memory.expiresAt,
-        embedding ? `[${embedding.join(',')}]` : null
+        vectorStr
       ]
     );
 
@@ -493,7 +820,7 @@ export class PostgresAdapter implements DatabaseAdapter {
     }
     if (embedding !== undefined) {
       fields.push(`embedding = $${paramIndex++}`);
-      values.push(`[${embedding.join(',')}]`);
+      values.push(embedding ? this.validateAndBuildVectorStr(embedding) : null);
     }
 
     values.push(id);
@@ -585,9 +912,14 @@ export class PostgresAdapter implements DatabaseAdapter {
       guildId: row.guild_id,
       channelId: row.channel_id,
       userId: row.user_id,
+      discordMessageId: row.discord_message_id,
       promptHash: row.prompt_hash,
       role: row.role as ConversationMessage['role'],
       content: row.content,
+      replyToMessageId: row.reply_to_message_id,
+      replyToUserId: row.reply_to_user_id,
+      referencedContent: row.referenced_content,
+      imageSummary: row.image_summary,
       createdAt: new Date(row.created_at)
     }));
   }
@@ -596,16 +928,33 @@ export class PostgresAdapter implements DatabaseAdapter {
     message: Omit<ConversationMessage, 'id' | 'createdAt'>
   ): Promise<ConversationMessage> {
     const result = await this.pool.query(
-      `INSERT INTO conversation_messages (guild_id, channel_id, user_id, prompt_hash, role, content)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO conversation_messages (
+         guild_id,
+         channel_id,
+         user_id,
+         discord_message_id,
+         prompt_hash,
+         role,
+         content,
+         reply_to_message_id,
+         reply_to_user_id,
+         referenced_content,
+         image_summary
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
       [
         message.guildId,
         message.channelId,
         message.userId,
+        message.discordMessageId ?? null,
         message.promptHash,
         message.role,
-        message.content
+        message.content,
+        message.replyToMessageId ?? null,
+        message.replyToUserId ?? null,
+        message.referencedContent ?? null,
+        message.imageSummary ?? null
       ]
     );
 
@@ -615,9 +964,14 @@ export class PostgresAdapter implements DatabaseAdapter {
       guildId: row.guild_id,
       channelId: row.channel_id,
       userId: row.user_id,
+      discordMessageId: row.discord_message_id,
       promptHash: row.prompt_hash,
       role: row.role,
       content: row.content,
+      replyToMessageId: row.reply_to_message_id,
+      replyToUserId: row.reply_to_user_id,
+      referencedContent: row.referenced_content,
+      imageSummary: row.image_summary,
       createdAt: new Date(row.created_at)
     };
   }

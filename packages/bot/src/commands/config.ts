@@ -15,6 +15,7 @@ import { logger } from '@silo/core';
 
 // Maximum system prompt length (characters)
 const MAX_SYSTEM_PROMPT_LENGTH = 4000;
+const PROMPT_MODAL_PREFILL_TIMEOUT_MS = 1200;
 
 export class ConfigCommand implements Command {
   public readonly data;
@@ -295,8 +296,25 @@ export class ConfigCommand implements Command {
             }
 
             case 'edit': {
-              // Use a modal for editing the system prompt
-              const { prompt } = await this.adminDb.getSystemPrompt(interaction.guildId, forVoice);
+              // Show modal quickly to avoid interaction timeout; prompt prefill is best-effort.
+              const promptLookupPromise = this.adminDb
+                .getSystemPrompt(interaction.guildId, forVoice)
+                .then(result => result.prompt)
+                .catch(error => {
+                  logger.warn('Failed to preload system prompt for modal', {
+                    guildId: interaction.guildId,
+                    forVoice,
+                    error
+                  });
+                  return null;
+                });
+
+              const prompt = await Promise.race<string | null>([
+                promptLookupPromise,
+                new Promise(resolve => {
+                  setTimeout(() => resolve(null), PROMPT_MODAL_PREFILL_TIMEOUT_MS);
+                })
+              ]);
 
               const modal = new ModalBuilder()
                 .setCustomId(`system_prompt_modal_${forVoice ? 'voice' : 'text'}`)
@@ -314,7 +332,7 @@ export class ConfigCommand implements Command {
 
               // Pre-fill with existing prompt if there is one
               if (prompt) {
-                promptInput.setValue(prompt);
+                promptInput.setValue(prompt.slice(0, MAX_SYSTEM_PROMPT_LENGTH));
               }
 
               const row = new ActionRowBuilder<TextInputBuilder>().addComponents(promptInput);

@@ -5,6 +5,7 @@ export const ProviderConfigSchema = z.object({
     .object({
       apiKey: z.string().optional(),
       model: z.string().default('gpt-4o-mini'),
+      imageModel: z.string().default('gpt-image-1'),
       baseURL: z.string().url().optional()
     })
     .optional(),
@@ -17,7 +18,9 @@ export const ProviderConfigSchema = z.object({
   xai: z
     .object({
       apiKey: z.string().optional(),
-      model: z.string().default('grok-3-mini'),
+      model: z.string().default('grok-4-1-fast-non-reasoning'),
+      imageModel: z.string().default('grok-imagine-image'),
+      videoModel: z.string().default('grok-imagine-video'),
       baseURL: z.string().url().default('https://api.x.ai/v1')
     })
     .optional(),
@@ -31,7 +34,7 @@ export const ProviderConfigSchema = z.object({
   google: z
     .object({
       apiKey: z.string().optional(),
-      model: z.string().default('gemini-2.0-flash-exp')
+      model: z.string().default('gemini-3.1-flash-image-preview')
     })
     .optional()
 });
@@ -60,6 +63,18 @@ export const FeaturesConfigSchema = z.object({
   enableImages: z.boolean().default(true)
 });
 
+export const MemoryConfigSchema = z.object({
+  retrievalLimit: z.number().int().min(1).max(12).default(4),
+  fallbackLimit: z.number().int().min(1).max(3).default(1),
+  triggerThreshold: z.number().min(0).max(1).default(0.45),
+  semanticMinSimilarity: z.number().min(0).max(1).default(0.62),
+  keywordMentionThreshold: z.number().min(0).max(1).default(0.55),
+  keywordWeight: z.number().min(0).max(1).default(0.15),
+  semanticWeight: z.number().min(0).max(1).default(0.75),
+  cueWeight: z.number().min(0).max(1).default(0.07),
+  entityWeight: z.number().min(0).max(1).default(0.03)
+});
+
 export const MLServiceConfigSchema = z.object({
   url: z.string().url(),
   timeout: z.number().int().positive().default(30000),
@@ -69,7 +84,16 @@ export const MLServiceConfigSchema = z.object({
 export const SecurityConfigSchema = z.object({
   healthCheckSecret: z.string().min(32).optional().or(z.literal('')),
   alertWebhookUrl: z.string().url().optional().or(z.literal('')),
-  enableMonitoring: z.boolean().default(false)
+  enableMonitoring: z.boolean().default(false),
+  urlPolicy: z
+    .object({
+      denylistDomains: z.array(z.string().min(1)).default([]),
+      allowlistDomains: z.array(z.string().min(1)).default([]),
+      enforceAllowlist: z.boolean().default(false),
+      blockKnownShorteners: z.boolean().default(true),
+      safeBrowsingApiKey: z.string().optional().or(z.literal(''))
+    })
+    .default({})
 });
 
 export const ConfigSchema = z.object({
@@ -83,6 +107,7 @@ export const ConfigSchema = z.object({
   redis: RedisConfigSchema,
   rateLimits: RateLimitConfigSchema,
   features: FeaturesConfigSchema,
+  memory: MemoryConfigSchema.default({}),
   mlService: MLServiceConfigSchema.optional(),
   security: SecurityConfigSchema
 });
@@ -91,3 +116,4 @@ export type Config = z.infer<typeof ConfigSchema>;
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
 export type DatabaseConfig = z.infer<typeof DatabaseConfigSchema>;
 export type RateLimitConfig = z.infer<typeof RateLimitConfigSchema>;
+export type MemoryConfig = z.infer<typeof MemoryConfigSchema>;
