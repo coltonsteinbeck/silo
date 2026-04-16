@@ -15,19 +15,20 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function buildWholeWordRegex(term: string): RegExp {
-  return new RegExp(`\\b${escapeRegex(term)}\\b`, 'gi');
+function buildWholeWordRegex(term: string, global: boolean = false): RegExp {
+  return new RegExp(`\\b${escapeRegex(term)}\\b`, global ? 'gi' : 'i');
 }
 
 const TERM_PATTERNS = MILD_PROFANITY_TERMS.map(term => ({
   term,
-  pattern: buildWholeWordRegex(term)
+  testPattern: buildWholeWordRegex(term),
+  replacePattern: buildWholeWordRegex(term, true)
 }));
 
 export function detectMildProfanity(content: string): string[] {
   const matches = new Set<string>();
-  for (const { term, pattern } of TERM_PATTERNS) {
-    if (pattern.test(content)) {
+  for (const { term, testPattern } of TERM_PATTERNS) {
+    if (testPattern.test(content)) {
       matches.add(term);
     }
   }
@@ -42,10 +43,10 @@ export function sanitizeAssistantProfanity(content: string): {
   let sanitized = content;
   const matchedTerms = new Set<string>();
 
-  for (const { term, pattern } of TERM_PATTERNS) {
-    if (pattern.test(sanitized)) {
+  for (const { term, testPattern, replacePattern } of TERM_PATTERNS) {
+    if (testPattern.test(sanitized)) {
       matchedTerms.add(term);
-      sanitized = sanitized.replace(pattern, '***');
+      sanitized = sanitized.replace(replacePattern, '***');
     }
   }
 
