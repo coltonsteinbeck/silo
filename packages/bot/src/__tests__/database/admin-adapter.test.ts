@@ -115,4 +115,73 @@ describe('AdminAdapter cost helpers', () => {
     expect(sql).toContain('duration_ms');
     expect(sql).not.toContain('response_time_ms');
   });
+
+  test('updateSafetyFeatures writes atomic JSONB merge update', async () => {
+    pool._setQueryResults([
+      {
+        rows: [
+          {
+            guild_id: 'guild-1',
+            default_provider: null,
+            auto_thread: false,
+            memory_retention_days: 30,
+            rate_limit_multiplier: 1,
+            features_enabled: {
+              edgyModeEnabled: true,
+              deterministicSentimentReviewEnabled: false
+            },
+            channel_configs: {},
+            created_at: new Date('2026-01-01T00:00:00Z'),
+            updated_at: new Date('2026-01-01T00:00:00Z')
+          }
+        ],
+        rowCount: 1
+      }
+    ]);
+
+    const result = await adapter.updateSafetyFeatures('guild-1', {
+      edgyModeEnabled: true,
+      deterministicSentimentReviewEnabled: false
+    });
+
+    const sql = (pool.query.mock.calls[0]?.[0] || '') as string;
+    const params = (pool.query.mock.calls[0]?.[1] || []) as unknown[];
+    expect(sql).toContain(
+      "features_enabled = COALESCE(server_config.features_enabled, '{}'::jsonb)"
+    );
+    expect(params).toEqual(['guild-1', true, false]);
+    expect(result.featuresEnabled.edgyModeEnabled).toBe(true);
+    expect(result.featuresEnabled.deterministicSentimentReviewEnabled).toBe(false);
+  });
+
+  test('updateSafetyFeatures sends null deterministic when omitted', async () => {
+    pool._setQueryResults([
+      {
+        rows: [
+          {
+            guild_id: 'guild-1',
+            default_provider: null,
+            auto_thread: false,
+            memory_retention_days: 30,
+            rate_limit_multiplier: 1,
+            features_enabled: {
+              edgyModeEnabled: false,
+              deterministicSentimentReviewEnabled: false
+            },
+            channel_configs: {},
+            created_at: new Date('2026-01-01T00:00:00Z'),
+            updated_at: new Date('2026-01-01T00:00:00Z')
+          }
+        ],
+        rowCount: 1
+      }
+    ]);
+
+    await adapter.updateSafetyFeatures('guild-1', {
+      edgyModeEnabled: false
+    });
+
+    const params = (pool.query.mock.calls[0]?.[1] || []) as unknown[];
+    expect(params).toEqual(['guild-1', false, null]);
+  });
 });

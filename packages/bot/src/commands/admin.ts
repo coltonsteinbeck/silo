@@ -3,6 +3,7 @@ import {
   SlashCommandBuilder,
   EmbedBuilder,
   GuildMember,
+  MessageFlags,
   SlashCommandSubcommandsOnlyBuilder
 } from 'discord.js';
 import { Command } from './types';
@@ -56,6 +57,30 @@ export class AdminCommand implements Command {
               .setDescription('User to reset (leave empty to reset all users)')
               .setRequired(false)
           )
+      )
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('safety-toggle')
+          .setDescription('Toggle edgy input mode and deterministic sentiment review')
+          .addBooleanOption(option =>
+            option
+              .setName('edgy-mode')
+              .setDescription(
+                'Allow mild user profanity while keeping strict harmful-content blocks'
+              )
+              .setRequired(true)
+          )
+          .addBooleanOption(option =>
+            option
+              .setName('deterministic-sentiment-review')
+              .setDescription('Use deterministic sentiment review for edgy-mode moderation flow')
+              .setRequired(false)
+          )
+      )
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('safety-status')
+          .setDescription('View current safety policy toggle status')
       );
   }
 
@@ -63,14 +88,17 @@ export class AdminCommand implements Command {
     if (!interaction.guildId || !interaction.member) {
       await interaction.reply({
         content: 'This command can only be used in a server.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
 
     const member = interaction.member;
     if (!(member instanceof GuildMember)) {
-      await interaction.reply({ content: 'Could not verify permissions.', ephemeral: true });
+      await interaction.reply({
+        content: 'Could not verify permissions.',
+        flags: MessageFlags.Ephemeral
+      });
       return;
     }
 
@@ -82,7 +110,7 @@ export class AdminCommand implements Command {
     if (!isAdmin) {
       await interaction.reply({
         content: 'You need admin permissions to use this command.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
@@ -106,22 +134,29 @@ export class AdminCommand implements Command {
         case 'quota-override':
           await this.handleQuotaOverride(interaction);
           break;
+        case 'safety-toggle':
+          await this.handleSafetyToggle(interaction);
+          break;
+        case 'safety-status':
+          await this.handleSafetyStatus(interaction);
+          break;
         default:
           await interaction.reply({
             content: 'Unknown subcommand.',
-            ephemeral: true
+            flags: MessageFlags.Ephemeral
           });
       }
     } catch (error) {
       logger.error('Error in admin command:', error);
-      const reply = {
-        content: 'An error occurred while executing the command.',
-        ephemeral: true
-      };
       if (interaction.deferred) {
-        await interaction.editReply(reply);
+        await interaction.editReply({
+          content: 'An error occurred while executing the command.'
+        });
       } else {
-        await interaction.reply(reply);
+        await interaction.reply({
+          content: 'An error occurred while executing the command.',
+          flags: MessageFlags.Ephemeral
+        });
       }
     }
   }
@@ -130,7 +165,7 @@ export class AdminCommand implements Command {
     interaction: ChatInputCommandInteraction,
     _member: GuildMember
   ): Promise<void> {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     // Get server configuration
     const config = await this.adminDb.getServerConfig(interaction.guildId!);
@@ -205,7 +240,7 @@ export class AdminCommand implements Command {
     interaction: ChatInputCommandInteraction,
     member: GuildMember
   ): Promise<void> {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const targetUser = interaction.options.getUser('user') || interaction.user;
     const guildId = interaction.guildId!;
@@ -321,7 +356,7 @@ export class AdminCommand implements Command {
   }
 
   private async handleQuotaStats(interaction: ChatInputCommandInteraction): Promise<void> {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const guildId = interaction.guildId!;
 
@@ -375,7 +410,7 @@ export class AdminCommand implements Command {
   }
 
   private async handleQuotaHistory(interaction: ChatInputCommandInteraction): Promise<void> {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const targetUser = interaction.options.getUser('user') || interaction.user;
     const guildId = interaction.guildId!;
@@ -432,7 +467,7 @@ export class AdminCommand implements Command {
   }
 
   private async handleQuotaOverride(interaction: ChatInputCommandInteraction): Promise<void> {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const guildId = interaction.guildId!;
     const adminUserId = interaction.user.id;
@@ -481,6 +516,58 @@ export class AdminCommand implements Command {
 
     await interaction.editReply({
       content: `Quota override applied for all users in this server for ET day ${result.usageDate}. Affected users: ${result.affectedUsers}.`
+    });
+  }
+
+  private async handleSafetyToggle(interaction: ChatInputCommandInteraction): Promise<void> {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    const guildId = interaction.guildId!;
+    const edgyModeEnabled = interaction.options.getBoolean('edgy-mode') ?? false;
+    const deterministicSentimentOption = interaction.options.getBoolean(
+      'deterministic-sentiment-review'
+    );
+
+    const updatedConfig = await this.adminDb.updateSafetyFeatures(guildId, {
+      edgyModeEnabled,
+      deterministicSentimentReviewEnabled: deterministicSentimentOption ?? undefined
+    });
+    const deterministicSentimentReviewEnabled = Boolean(
+      updatedConfig.featuresEnabled?.deterministicSentimentReviewEnabled
+    );
+
+    await this.adminDb.logAction({
+      guildId,
+      userId: interaction.user.id,
+      action: 'safety_policy_toggled',
+      details: {
+        edgyModeEnabled,
+        deterministicSentimentReviewEnabled
+      }
+    });
+
+    await interaction.editReply({
+      content: [
+        'Updated safety policy toggles:',
+        `• Edgy input mode: ${edgyModeEnabled ? 'enabled' : 'disabled'}`,
+        `• Deterministic sentiment review: ${deterministicSentimentReviewEnabled ? 'enabled' : 'disabled'}`
+      ].join('\n')
+    });
+  }
+
+  private async handleSafetyStatus(interaction: ChatInputCommandInteraction): Promise<void> {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    const guildId = interaction.guildId!;
+    const serverConfig = await this.adminDb.getServerConfig(guildId);
+    const features = serverConfig?.featuresEnabled || {};
+
+    await interaction.editReply({
+      content: [
+        'Current safety policy toggles:',
+        `• Edgy input mode: ${features.edgyModeEnabled ? 'enabled' : 'disabled'}`,
+        `• Deterministic sentiment review: ${features.deterministicSentimentReviewEnabled ? 'enabled' : 'disabled'}`
+      ].join('\n')
     });
   }
 

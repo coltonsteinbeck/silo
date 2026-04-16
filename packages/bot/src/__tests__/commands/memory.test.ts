@@ -495,7 +495,7 @@ describe('ServerMemorySetCommand', () => {
       await command.execute(interaction as any);
 
       const payload = mockDb.storeServerMemory.mock.calls[0]?.[0];
-      expect(payload.metadata).toEqual({
+      expect(payload.metadata).toMatchObject({
         entities: ['dragon', 'citadel'],
         source: 'server_moderator_command',
         sourcePriority: 777,

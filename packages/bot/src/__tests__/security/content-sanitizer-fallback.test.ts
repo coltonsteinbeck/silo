@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import {
   buildModerationApiFailureResult,
-  buildUserMessageForBlockedInput
+  buildUserMessageForBlockedInput,
+  shouldBypassGuardrailsBlockForEdgyMode
 } from '../../security/content-sanitizer';
 
 describe('content-sanitizer failure fallback', () => {
@@ -41,5 +42,41 @@ describe('content-sanitizer failure fallback', () => {
 
     expect(message).toContain('temporarily blocked');
     expect(message).toContain('safety systems are unavailable');
+  });
+
+  test('allows edgy-mode bypass for moderation category guardrails block', () => {
+    const bypass = shouldBypassGuardrailsBlockForEdgyMode({
+      allowMildProfanityInput: true,
+      decision: {
+        allowed: false,
+        category: 'guardrails/moderation',
+        reason: 'harassment'
+      }
+    });
+
+    expect(bypass).toBe(true);
+  });
+
+  test('does not bypass jailbreak or fail-closed guardrails blocks', () => {
+    const jailbreakBypass = shouldBypassGuardrailsBlockForEdgyMode({
+      allowMildProfanityInput: true,
+      decision: {
+        allowed: false,
+        category: 'guardrails/jailbreak',
+        reason: 'jailbreak'
+      }
+    });
+
+    const failClosedBypass = shouldBypassGuardrailsBlockForEdgyMode({
+      allowMildProfanityInput: true,
+      decision: {
+        allowed: false,
+        category: 'guardrails/api_error_fail_closed',
+        reason: 'Guardrails API unavailable'
+      }
+    });
+
+    expect(jailbreakBypass).toBe(false);
+    expect(failClosedBypass).toBe(false);
   });
 });
