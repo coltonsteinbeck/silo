@@ -11,6 +11,7 @@ import {
   createMockPermissionManager,
   createMockGuildMember
 } from '@silo/core/test-setup';
+import { GuildMember } from 'discord.js';
 import { ConfigCommand } from '../../commands/config';
 
 describe('ConfigCommand', () => {
@@ -103,7 +104,7 @@ describe('ConfigCommand', () => {
         });
 
         // Make it look like a GuildMember
-        Object.setPrototypeOf(interaction.member, { constructor: { name: 'GuildMember' } });
+        Object.setPrototypeOf(interaction.member, GuildMember.prototype);
 
         await command.execute(interaction as any);
 
@@ -172,6 +173,29 @@ describe('ConfigCommand', () => {
 
         // Command should produce a response
         expect(interaction._getReplies().length).toBeGreaterThanOrEqual(0);
+      });
+    });
+
+    describe('system-prompt subcommand', () => {
+      test('shows edit modal even when prompt preload fails', async () => {
+        mockAdminDb.getSystemPrompt = mock(async () => {
+          throw new Error('prompt preload timeout');
+        });
+
+        const interaction = createMockInteraction({
+          options: {
+            subcommand: 'system-prompt',
+            action: 'edit',
+            type: 'text'
+          },
+          member: createMockGuildMember({ isAdmin: true }) as any
+        });
+
+        Object.setPrototypeOf(interaction.member, GuildMember.prototype);
+
+        await command.execute(interaction as any);
+
+        expect(interaction.showModal).toHaveBeenCalled();
       });
     });
   });
