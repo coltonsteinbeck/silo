@@ -200,6 +200,33 @@ export function createMockAdminAdapter() {
       return config;
     }),
 
+    updateSafetyFeatures: mock(
+      async (
+        guildId: string,
+        updates: { edgyModeEnabled: boolean; deterministicSentimentReviewEnabled?: boolean }
+      ) => {
+        const existing = serverConfigs.get(guildId) ?? { guildId };
+        const existingFeatures = (existing.featuresEnabled as Record<string, unknown>) ?? {};
+        const deterministicSentimentReviewEnabled =
+          updates.deterministicSentimentReviewEnabled ??
+          (existingFeatures.deterministicSentimentReviewEnabled as boolean | undefined) ??
+          updates.edgyModeEnabled;
+
+        const next = {
+          ...existing,
+          guildId,
+          featuresEnabled: {
+            ...existingFeatures,
+            edgyModeEnabled: updates.edgyModeEnabled,
+            deterministicSentimentReviewEnabled
+          }
+        };
+
+        serverConfigs.set(guildId, next);
+        return next;
+      }
+    ),
+
     getChannelConfig: mock(async () => null),
     setChannelConfig: mock(async () => {}),
 
