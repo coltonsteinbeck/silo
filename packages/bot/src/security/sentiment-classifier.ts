@@ -174,7 +174,18 @@ async function classifyWithAi(
     return null;
   }
 
-  const parsed = JSON.parse(content) as Partial<SentimentClassification>;
+  let parsed: Partial<SentimentClassification>;
+  try {
+    parsed = JSON.parse(content) as Partial<SentimentClassification>;
+  } catch (error) {
+    logger.warn('Sentiment AI JSON parse failed; expected SentimentClassification JSON', {
+      context,
+      rawContent: content,
+      error
+    });
+    return null;
+  }
+
   const label = parsed.label;
   if (!label || !['negative', 'neutral', 'positive', 'mixed'].includes(label)) {
     return null;
