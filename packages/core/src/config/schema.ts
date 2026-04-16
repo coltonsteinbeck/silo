@@ -93,7 +93,13 @@ export const SecurityConfigSchema = z.object({
       blockKnownShorteners: z.boolean().default(true),
       safeBrowsingApiKey: z.string().optional().or(z.literal(''))
     })
-    .default({})
+    .default({
+      denylistDomains: [],
+      allowlistDomains: [],
+      enforceAllowlist: false,
+      blockKnownShorteners: true,
+      safeBrowsingApiKey: ''
+    })
 });
 
 export const ConfigSchema = z.object({
@@ -107,7 +113,17 @@ export const ConfigSchema = z.object({
   redis: RedisConfigSchema,
   rateLimits: RateLimitConfigSchema,
   features: FeaturesConfigSchema,
-  memory: MemoryConfigSchema.default({}),
+  memory: MemoryConfigSchema.default({
+    retrievalLimit: 4,
+    fallbackLimit: 1,
+    triggerThreshold: 0.45,
+    semanticMinSimilarity: 0.62,
+    keywordMentionThreshold: 0.55,
+    keywordWeight: 0.15,
+    semanticWeight: 0.75,
+    cueWeight: 0.07,
+    entityWeight: 0.03
+  }),
   mlService: MLServiceConfigSchema.optional(),
   security: SecurityConfigSchema
 });
