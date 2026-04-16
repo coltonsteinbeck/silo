@@ -13,6 +13,47 @@ Self-hosted Discord bot framework with customizable AI providers, advanced memor
 
 ### Local Setup with Docker
 
+#### Docker on WSL (Windows)
+
+If you're running Silo inside WSL, the easiest setup is to use **Docker Desktop on Windows** and enable WSL integration:
+
+1. Install Docker Desktop
+2. Settings → General: enable **Use the WSL 2 based engine**
+3. Settings → Resources → WSL Integration: enable integration for your distro (e.g. Ubuntu)
+4. Restart your WSL terminal
+
+Sanity checks inside WSL:
+
+```bash
+docker version
+docker compose version
+```
+
+If Docker isn't available in WSL yet, you can still install deps and create `.env` by skipping the local DB startup:
+
+```bash
+SKIP_DB=1 bun run setup
+```
+
+#### IPv6 / Supabase on WSL
+
+Supabase database hosts are **IPv6-only**. WSL's default NAT networking doesn't route IPv6, so connections will fail with `ECONNREFUSED`. Fix this by enabling **mirrored networking** (WSL 2.x):
+
+Create or edit `C:\Users\<you>\.wslconfig`:
+
+```ini
+[wsl2]
+networkingMode=mirrored
+```
+
+Then restart WSL from PowerShell:
+
+```powershell
+wsl --shutdown
+```
+
+Re-open your WSL terminal — IPv6 traffic now passes through your Windows host's network stack.
+
 ```bash
 git clone <your-repo>
 cd silo
@@ -29,8 +70,11 @@ bun install
 # Get your Postgres connection string from Supabase
 export DATABASE_URL='postgresql://postgres:[password]@db.[project].supabase.co:5432/postgres'
 
-# Run migrations
-bun run migrate:remote
+# Run migration status (remote target)
+bash scripts/migrate.sh --target remote --status
+
+# Apply only pending migrations (remote target)
+bash scripts/migrate.sh --target remote
 
 # Start local Redis
 docker run -d -p 6379:6379 redis:7-alpine
@@ -103,6 +147,80 @@ docker run -d \
 docker-compose -f docker-compose.prod.yml up -d
 ```
 
+### Data Refresh Workflow (Prod -> Local -> Dev Branch)
+
+Use a two-lane workflow to avoid accidental writes and reduce schema drift:
+
+1. Refresh local Supabase first (Docker + local `DATABASE_URL`).
+2. Run app and smoke tests locally.
+3. Refresh persistent dev branch only after local validation passes.
+
+Persistent branch refresh script:
+
+```bash
+bun run db:refresh:branch
+```
+
+Required environment variables for branch refresh:
+
+- `HOSTED_DB_IDENTIFIER`
+- `SUPABASE_PW`
+- `DEV_DB_IDENTIFIER`
+- `SUPABASE_DEV_PW`
+
+Safety controls:
+
+- The branch script requires `CONFIRM_REMOTE_RESTORE=true`.
+- The script fails if source and target hosts match.
+- The script fails if the branch target resolves to localhost.
+- The script can back up the target branch before restore and checks migration compatibility by default.
+
+### Migration Workflow (Schema Promotion)
+
+Use one migration-aware command with explicit targets.
+
+For this repo's standard branch workflow, run schema migrations on the persistent dev branch (no data refresh):
+
+```bash
+bun run migrate:dev
+```
+
+Do not use refresh scripts for schema changes. Use refresh scripts only for data movement.
+
+Primary command:
+
+```bash
+bash scripts/migrate.sh --target <local|dev|prod|remote>
+```
+
+Helpful modes:
+
+```bash
+# Show pending/applied without changing schema
+bash scripts/migrate.sh --target local --status
+
+# Preview pending only
+bash scripts/migrate.sh --target dev --dry-run
+
+# Show pending/applied on persistent dev branch
+bash scripts/migrate.sh --target dev --status
+
+# Apply to prod (requires explicit confirmation)
+bash scripts/migrate.sh --target prod --confirm-prod
+```
+
+Promotion order:
+
+1. Apply locally first.
+2. Apply to persistent dev branch.
+3. Apply to production last.
+
+Migration safety rules:
+
+- Treat already-applied migration files as immutable.
+- If a migration already ran in dev/prod, add a new corrective migration instead of editing old files.
+- Keep data refresh scripts (`clone-prod-to-local.sh`, `refresh-prod-to-branch.sh`) for data movement only; use `migrate.sh` for schema progression.
+
 ## Getting Discord Bot Token
 
 1. Go to https://discord.com/developers/applications
@@ -129,6 +247,7 @@ docker-compose -f docker-compose.prod.yml up -d
 - **Daily Quotas**: Per-user and per-guild usage limits with automatic daily reset
 - **Audit Logging**: Track all admin actions and moderation events
 - **Analytics**: Command usage, AI costs, response times, user feedback
+- **Safety Guardrails**: Immutable system safety layer, prompt-hash allowlisting option, input moderation, and output moderation fail-closed mode
 
 ### Commands
 
@@ -137,6 +256,12 @@ docker-compose -f docker-compose.prod.yml up -d
 - `/memory-view [type]` - View stored memories
 - `/memory-set <content> <type>` - Store new memory
 - `/memory-clear [id|type]` - Clear memories
+- Optional `scope` on memory commands: `user` (default) or `server`
+
+Memory scope rules:
+
+- `scope: user` (default) stores/reads **user memory**.
+- `scope: server` stores/reads **guild shared memory** and requires moderator/admin access.
 
 #### Media Generation
 
@@ -181,7 +306,8 @@ Usage limits reset at midnight UTC:
 
 | Feature       | Member | Trusted | Moderator | Admin |
 | ------------- | ------ | ------- | --------- | ----- |
-| Text tokens   | 5k     | 10k     | 20k       | 50k   |
+| Text tokens   | 7k     | 13k     | 20k       | 50k   |
+| Vision tokens | 1.5k   | 4k      | 5k        | 10k   |
 | Images        | 1      | 2       | 3         | 5     |
 | Voice minutes | 0      | 5       | 10        | 15    |
 
@@ -229,7 +355,12 @@ All configuration in `.env`:
 
 - `bun run dev` - Start in development mode
 - `bun run build` - Build for production
-- `bun run migrate` - Run database migrations
+- `bun run migrate` - Apply pending migrations to default target (local)
+- `bun run migrate:status` - Show applied/pending migrations without changes
+- `bun run migrate:dry-run` - Preview pending migrations without applying
+- `bun run migrate:local` - Apply pending migrations to local DB
+- `bun run migrate:dev` - Apply pending migrations to persistent dev branch DB
+- `bun run migrate:prod` - Apply pending migrations to prod DB (guarded)
 - `bun run type-check` - Check TypeScript types
 
 ## License
