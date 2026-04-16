@@ -1,9 +1,11 @@
 import { Collection } from 'discord.js';
 import { Command } from './types';
 import { ViewMemoryCommand } from './memory/view';
-import { SetMemoryCommand } from './memory/set';
+import { UserMemorySetCommand } from './memory/user-set';
+import { ServerMemorySetCommand } from './memory/server-set';
 import { ClearMemoryCommand } from './memory/clear';
 import { DrawCommand } from './draw';
+import { VideoCommand } from './video';
 import { ThreadCommand } from './thread';
 import { DigestCommand } from './digest';
 import { AdminCommand } from './admin';
@@ -22,7 +24,7 @@ import { QuotaMiddleware } from '../middleware/quota';
 export function createCommands(
   db: DatabaseAdapter,
   registry: ProviderRegistry,
-  _config: Config, // Reserved for future use
+  config: Config,
   adminDb: AdminAdapter,
   permissions: PermissionManager,
   quotaMiddleware?: QuotaMiddleware
@@ -30,17 +32,27 @@ export function createCommands(
   const commands = new Collection<string, Command>();
 
   // Memory commands
-  const viewMemory = new ViewMemoryCommand(db);
-  const setMemory = new SetMemoryCommand(db, registry);
-  const clearMemory = new ClearMemoryCommand(db);
+  const viewMemory = new ViewMemoryCommand(db, permissions);
+  const userSetMemory = new UserMemorySetCommand(db, registry);
+  const serverSetMemory = new ServerMemorySetCommand(db, permissions, registry);
+  const clearMemory = new ClearMemoryCommand(db, permissions);
 
   commands.set(viewMemory.data.name, viewMemory);
-  commands.set(setMemory.data.name, setMemory);
+  commands.set(userSetMemory.data.name, userSetMemory);
+  commands.set(serverSetMemory.data.name, serverSetMemory);
   commands.set(clearMemory.data.name, clearMemory);
 
+  const urlSecurity = {
+    policy: config.security?.urlPolicy,
+    adminDb
+  };
+
   // Media generation
-  const draw = new DrawCommand(registry, quotaMiddleware);
+  const draw = new DrawCommand(registry, quotaMiddleware, urlSecurity);
   commands.set(draw.data.name, draw);
+
+  const video = new VideoCommand(registry, quotaMiddleware, urlSecurity);
+  commands.set(video.data.name, video);
 
   // Collaboration features
   const thread = new ThreadCommand(db, registry, adminDb);
@@ -65,7 +77,8 @@ export function createCommands(
   // Voice commands
   const speak = new SpeakCommand(adminDb, quotaMiddleware);
   commands.set(speak.data.name, speak);
-  commands.set(StopSpeakingCommand.data.name, StopSpeakingCommand);
+  const stopSpeaking = new StopSpeakingCommand(quotaMiddleware);
+  commands.set(stopSpeaking.data.name, stopSpeaking);
 
   // Feedback command
   const feedback = new FeedbackCommand(adminDb);

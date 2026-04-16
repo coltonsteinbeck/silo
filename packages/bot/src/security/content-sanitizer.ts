@@ -9,6 +9,7 @@ import { createHash } from 'crypto';
 import OpenAI from 'openai';
 import { Pool } from 'pg';
 import { logger } from '@silo/core';
+import { evaluateUserPromptGuardrails } from './openai-guardrails';
 
 // Lazy-initialized OpenAI client (avoids error at module load time)
 let openai: OpenAI | null = null;
@@ -23,7 +24,7 @@ function getOpenAIClient(): OpenAI {
 }
 
 export type ContentType = 'prompt' | 'memory' | 'feedback' | 'message';
-export type ModerationAction = 'allowed' | 'blocked' | 'warned';
+export type ModerationAction = 'allowed' | 'blocked' | 'warned' | 'api_error_fail_closed';
 
 export interface ModerationResult {
   allowed: boolean;
@@ -31,6 +32,88 @@ export interface ModerationResult {
   flaggedCategories: string[];
   scores: Record<string, number>;
   contentHash: string;
+}
+
+export interface ModerationOptions {
+  failClosedOnError?: boolean;
+}
+
+export interface ModerationDecision {
+  action: ModerationAction;
+  allowed: boolean;
+}
+
+export function buildUserMessageForBlockedInput(params: {
+  action: ModerationAction;
+  flaggedCategories: string[];
+}): string {
+  if (
+    params.action === 'api_error_fail_closed' ||
+    params.flaggedCategories.includes('api_error_fail_closed')
+  ) {
+    return '⚠️ Your message was temporarily blocked because safety systems are unavailable. Please try again in a moment.';
+  }
+
+  return '⚠️ Your message was blocked by safety policy. Please rephrase with safer wording and avoid harmful, explicit, or policy-bypassing requests.';
+}
+
+export function buildModerationApiFailureResult(
+  contentHash: string,
+  failClosedOnError: boolean
+): ModerationResult {
+  if (failClosedOnError) {
+    return {
+      allowed: false,
+      action: 'api_error_fail_closed',
+      flaggedCategories: ['api_error_fail_closed'],
+      scores: {},
+      contentHash
+    };
+  }
+
+  return {
+    allowed: true,
+    action: 'allowed',
+    flaggedCategories: ['api_error'],
+    scores: {},
+    contentHash
+  };
+}
+
+export function evaluateModerationDecision(
+  flaggedCategories: string[],
+  scores: Record<string, number>
+): ModerationDecision {
+  let action: ModerationAction = 'allowed';
+  let allowed = true;
+  const warnThreshold = SCORE_THRESHOLD * 0.8;
+
+  const shouldBlock = flaggedCategories.some(
+    cat => BLOCK_CATEGORIES.includes(cat) && scores[cat] && scores[cat] >= SCORE_THRESHOLD
+  );
+
+  const shouldBlockWarnClass = flaggedCategories.some(
+    cat =>
+      WARN_BLOCK_CATEGORIES.includes(cat) &&
+      typeof scores[cat] === 'number' &&
+      scores[cat] >= warnThreshold
+  );
+
+  if (shouldBlock || shouldBlockWarnClass) {
+    action = 'blocked';
+    allowed = false;
+  } else if (flaggedCategories.length > 0) {
+    const shouldWarn = flaggedCategories.some(
+      cat => WARN_CATEGORIES.includes(cat) && scores[cat] && scores[cat] >= warnThreshold
+    );
+
+    if (shouldWarn) {
+      action = 'warned';
+      allowed = true;
+    }
+  }
+
+  return { action, allowed };
 }
 
 export interface ModerationLogEntry {
@@ -46,11 +129,19 @@ export interface ModerationLogEntry {
 
 // Categories that should result in blocking
 const BLOCK_CATEGORIES = [
+  'sexual',
   'sexual/minors',
+  'hate',
   'hate/threatening',
+  'illicit',
+  'illicit/violent',
   'violence/graphic',
   'self-harm/intent',
-  'self-harm/instructions'
+  'self-harm/instructions',
+  'sexual/explicit_generation',
+  'illicit/drugs_instructional',
+  'hate/slur_evasion',
+  'hate/slur_acronym_evasion'
 ];
 
 // Categories that should result in warnings (not blocking)
@@ -63,8 +154,224 @@ const WARN_CATEGORIES = [
   'harassment/threatening'
 ];
 
+const WARN_BLOCK_CATEGORIES = ['sexual', 'harassment', 'harassment/threatening'];
+
 // Threshold for category scores to trigger action (0.0 - 1.0)
 const SCORE_THRESHOLD = 0.7;
+
+const BLOCKED_SLUR_TOKENS = [
+  'faggot',
+  'nigger',
+  'kike',
+  'chink',
+  'spic',
+  'gook',
+  'wetback',
+  'tranny'
+];
+
+const LETTER_SEPARATED_SLUR_PATTERNS = [
+  /\bf[\W_]*a[\W_]*g[\W_]*g[\W_]*o[\W_]*t(?:s)?\b/i,
+  /\bn[\W_]*i[\W_]*g[\W_]*g[\W_]*e[\W_]*r(?:s)?\b/i,
+  /\bk[\W_]*i[\W_]*k[\W_]*e(?:s)?\b/i,
+  /\bc[\W_]*h[\W_]*i[\W_]*n[\W_]*k(?:s)?\b/i,
+  /\bs[\W_]*p[\W_]*i[\W_]*c(?:s)?\b/i,
+  /\bg[\W_]*o[\W_]*o[\W_]*k(?:s)?\b/i,
+  /\bw[\W_]*e[\W_]*t[\W_]*b[\W_]*a[\W_]*c[\W_]*k(?:s)?\b/i,
+  /\bt[\W_]*r[\W_]*a[\W_]*n[\W_]*n[\W_]*y(?:ies)?\b/i
+];
+
+const LEETSPEAK_CHAR_MAP: Record<string, string> = {
+  '0': 'o',
+  '1': 'i',
+  '2': 'z',
+  '3': 'e',
+  '4': 'a',
+  '5': 's',
+  '6': 'g',
+  '7': 't',
+  '8': 'b',
+  '9': 'g',
+  '@': 'a',
+  $: 's',
+  '!': 'i',
+  '|': 'i',
+  '+': 't'
+};
+
+const PROMPT_INJECTION_PATTERNS = [
+  /ignore\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|rules?)/i,
+  /disregard\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|rules?)/i,
+  /forget\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|rules?)/i,
+  /system\s*:\s*override/i,
+  /developer\s*:\s*override/i,
+  /jailbreak/i,
+  /do\s+anything\s+now/i,
+  /reveal\s+(the\s+)?system\s+prompt/i,
+  /print\s+(the\s+)?(hidden|internal)\s+instructions?/i,
+  /act\s+as\s+(?:the\s+)?system/i
+];
+
+const EXPLICIT_SEX_TOPIC_PATTERN =
+  /\b(porn|pornography|nsfw|xxx|sext(?:ing)?|sexual\s+roleplay|erp|fetish|blowjob|handjob|deepthroat|cum(?:ming)?|anal)\b/i;
+
+const EXPLICIT_SEX_INTENT_PATTERN =
+  /\b(talk\s+to\s+me\s+about|describe|write|roleplay|act\s+like|tell\s+me|fantas(?:y|ize)|dirty\s+talk|moan)\b/i;
+
+const ILLICIT_DRUG_TOPIC_PATTERN =
+  /\b(cocaine|meth(?:amphetamine)?|heroin|fentanyl|mdma|ecstasy|lsd|acid|crack|opioids?|molly)\b/i;
+
+const ILLICIT_DRUG_INTENT_PATTERN =
+  /\b(how\s+to|where\s+can\s+i|buy|get|score|cook|make|synthesi[sz]e|dose|snort|inject|smoke|sell|dealer)\b/i;
+
+const ILLICIT_DRUG_HOWTO_PATTERN =
+  /\b(how\s+to|steps?|instructions?)\b.{0,80}\b(make|cook|synthesi[sz]e|buy|get|sell)\b.{0,80}\b(cocaine|meth(?:amphetamine)?|heroin|fentanyl|mdma|ecstasy|lsd|acid|crack|molly)\b/i;
+
+const SEXUAL_ANATOMY_REFERENCE_PATTERN =
+  /\b(male\s+genitalia|genitalia|penis|dick|cock|shaft|balls?|testicles?|phallus)\b/i;
+
+const SEXUAL_FIXATION_LANGUAGE_PATTERN =
+  /\b(obsessed|hands?\s+on|find\s+joy\s+in|stop\s+at\s+nothing|research(?:ing)?\s+male\s+genitalia|(?:like|likes|enjoy|enjoys)\s+(?:looking|staring)\s+at)\b/i;
+
+export function hasUnsafeSexualContext(content: string): boolean {
+  return (
+    SEXUAL_ANATOMY_REFERENCE_PATTERN.test(content) && SEXUAL_FIXATION_LANGUAGE_PATTERN.test(content)
+  );
+}
+
+function normalizeTokenForEvasionDetection(content: string): string {
+  const normalized = normalizeCharactersForEvasion(content)
+    .toLowerCase()
+    .split('')
+    .map(char => LEETSPEAK_CHAR_MAP[char] || char)
+    .join('');
+
+  return normalized.replace(/[^a-z]/g, '');
+}
+
+function normalizeCharactersForEvasion(content: string): string {
+  return content
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .split('')
+    .map(char => {
+      const code = char.codePointAt(0);
+      if (!code) return char;
+
+      // Full-width digits and letters
+      if (code >= 0xff10 && code <= 0xff19) return String.fromCharCode(code - 0xff10 + 0x30);
+      if (code >= 0xff21 && code <= 0xff3a) return String.fromCharCode(code - 0xff21 + 0x41);
+      if (code >= 0xff41 && code <= 0xff5a) return String.fromCharCode(code - 0xff41 + 0x61);
+
+      // Circled letters
+      if (code >= 0x24b6 && code <= 0x24cf) return String.fromCharCode(code - 0x24b6 + 0x41);
+      if (code >= 0x24d0 && code <= 0x24e9) return String.fromCharCode(code - 0x24d0 + 0x61);
+
+      return char;
+    })
+    .join('');
+}
+
+export function hasPromptInjectionPattern(content: string): boolean {
+  const normalized = normalizeContentForEvasionDetection(content);
+  return PROMPT_INJECTION_PATTERNS.some(pattern => pattern.test(normalized));
+}
+
+export function normalizeContentForEvasionDetection(content: string): string {
+  return normalizeCharactersForEvasion(content)
+    .toLowerCase()
+    .split('')
+    .map(char => LEETSPEAK_CHAR_MAP[char] || char)
+    .join('')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractNormalizedTokens(content: string): string[] {
+  return content
+    .split(/\s+/)
+    .map(token => normalizeTokenForEvasionDetection(token))
+    .filter(Boolean);
+}
+
+function buildInitialism(value: string): string {
+  return value
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(word => word[0]?.toLowerCase() || '')
+    .join('');
+}
+
+function extractQuotedSegments(content: string): string[] {
+  const matches = content.matchAll(/["“]([^"”]+)["”]/g);
+  return Array.from(matches, match => match[1]?.trim() || '').filter(Boolean);
+}
+
+function hasInitialismBypassIntent(content: string): boolean {
+  return /(abbreviation|acronym|first\s+letter|initials?)/i.test(content);
+}
+
+export function detectDeterministicHateEvasion(content: string): string[] {
+  const categories: string[] = [];
+  const normalizedTokens = extractNormalizedTokens(content);
+
+  const hasSeparatedSlur = LETTER_SEPARATED_SLUR_PATTERNS.some(pattern => pattern.test(content));
+  const hasNormalizedSlur = normalizedTokens.some(token => BLOCKED_SLUR_TOKENS.includes(token));
+
+  if (hasSeparatedSlur || hasNormalizedSlur) {
+    categories.push('hate/slur_evasion');
+  }
+
+  if (hasInitialismBypassIntent(content)) {
+    const quotedSegments = extractQuotedSegments(content);
+    const generatedAcronyms = quotedSegments
+      .map(segment => buildInitialism(segment))
+      .filter(Boolean);
+
+    const hasSlurAcronym = generatedAcronyms.some(acronym => BLOCKED_SLUR_TOKENS.includes(acronym));
+    if (hasSlurAcronym) {
+      categories.push('hate/slur_acronym_evasion');
+    }
+  }
+
+  return [...new Set(categories)];
+}
+
+function detectDeterministicExplicitSex(content: string): string[] {
+  const hasTopic = EXPLICIT_SEX_TOPIC_PATTERN.test(content);
+  const hasIntent = EXPLICIT_SEX_INTENT_PATTERN.test(content);
+
+  if (hasTopic && hasIntent) {
+    return ['sexual/explicit_generation'];
+  }
+
+  return [];
+}
+
+function detectDeterministicDrugIntent(content: string): string[] {
+  const hasTopic = ILLICIT_DRUG_TOPIC_PATTERN.test(content);
+  const hasIntent = ILLICIT_DRUG_INTENT_PATTERN.test(content);
+  const hasHowToPattern = ILLICIT_DRUG_HOWTO_PATTERN.test(content);
+
+  if ((hasTopic && hasIntent) || hasHowToPattern) {
+    return ['illicit/drugs_instructional'];
+  }
+
+  return [];
+}
+
+export function detectDeterministicIllicitContent(content: string): string[] {
+  const unsafeSexualContext = hasUnsafeSexualContext(content) ? ['sexual/unsafe_context'] : [];
+
+  return [
+    ...new Set([
+      ...detectDeterministicHateEvasion(content),
+      ...detectDeterministicExplicitSex(content),
+      ...detectDeterministicDrugIntent(content),
+      ...unsafeSexualContext
+    ])
+  ];
+}
 
 class ContentSanitizer {
   private pool: Pool | null = null;
@@ -101,9 +408,37 @@ class ContentSanitizer {
     content: string,
     guildId: string,
     userId: string,
-    contentType: ContentType
+    contentType: ContentType,
+    options: ModerationOptions = {}
   ): Promise<ModerationResult> {
     const contentHash = this.hashContent(content);
+    const failClosedOnError = options.failClosedOnError ?? false;
+
+    const deterministicCategories = detectDeterministicIllicitContent(content);
+    if (deterministicCategories.length > 0) {
+      const deterministicScores = Object.fromEntries(
+        deterministicCategories.map(category => [category, 1])
+      );
+
+      await this.logModerationResult({
+        guildId,
+        userId,
+        contentType,
+        contentHash,
+        contentLength: content.length,
+        flaggedCategories: deterministicCategories,
+        moderationScores: deterministicScores,
+        actionTaken: 'blocked'
+      });
+
+      return {
+        allowed: false,
+        action: 'blocked',
+        flaggedCategories: deterministicCategories,
+        scores: deterministicScores,
+        contentHash
+      };
+    }
 
     try {
       // Call OpenAI moderation API
@@ -129,30 +464,8 @@ class ContentSanitizer {
       }
 
       // Determine action based on flagged categories
-      let action: ModerationAction = 'allowed';
-      let allowed = true;
-
-      // Check for block-worthy categories - ONLY block for severe categories
-      // Regular violence, harassment etc should warn, not block (allows casual speech like "punch my friends")
-      const shouldBlock = flaggedCategories.some(
-        cat => BLOCK_CATEGORIES.includes(cat) && scores[cat] && scores[cat] >= SCORE_THRESHOLD
-      );
-
-      if (shouldBlock) {
-        action = 'blocked';
-        allowed = false;
-      } else if (flaggedCategories.length > 0) {
-        // Check for warning-worthy categories
-        const shouldWarn = flaggedCategories.some(
-          cat =>
-            WARN_CATEGORIES.includes(cat) && scores[cat] && scores[cat] >= SCORE_THRESHOLD * 0.8
-        );
-
-        if (shouldWarn) {
-          action = 'warned';
-          allowed = true; // Warnings still allow the content through
-        }
-      }
+      const decision = evaluateModerationDecision(flaggedCategories, scores);
+      const { action, allowed } = decision;
 
       // Log the moderation result (using hash, never raw content)
       await this.logModerationResult({
@@ -176,25 +489,20 @@ class ContentSanitizer {
     } catch (error) {
       logger.error('Content moderation failed:', error);
 
-      // On API failure, allow content but log the failure
+      const failureResult = buildModerationApiFailureResult(contentHash, failClosedOnError);
+
       await this.logModerationResult({
         guildId,
         userId,
         contentType,
         contentHash,
         contentLength: content.length,
-        flaggedCategories: ['api_error'],
+        flaggedCategories: failureResult.flaggedCategories,
         moderationScores: {},
-        actionTaken: 'allowed'
+        actionTaken: failureResult.action
       });
 
-      return {
-        allowed: true,
-        action: 'allowed',
-        flaggedCategories: [],
-        scores: {},
-        contentHash
-      };
+      return failureResult;
     }
   }
 
@@ -252,6 +560,10 @@ class ContentSanitizer {
              ORDER BY created_at DESC LIMIT 1`,
       [hash]
     );
+
+    if (result[0]?.action_taken === 'api_error_fail_closed') {
+      return { skip: false, hash, previousAction: result[0].action_taken };
+    }
 
     if (result[0]?.action_taken === 'blocked') {
       return { skip: true, hash, previousAction: 'blocked' };
@@ -400,11 +712,46 @@ class ContentSanitizer {
     content: string,
     guildId: string,
     userId: string,
-    contentType: ContentType
+    contentType: ContentType,
+    options: ModerationOptions = {}
   ): Promise<{
     processedContent: string;
     moderation: ModerationResult;
   }> {
+    const contentHash = this.hashContent(content);
+
+    const guardrailsDecision = await evaluateUserPromptGuardrails(content, {
+      failClosedOnError: options.failClosedOnError
+    });
+
+    if (!guardrailsDecision.allowed) {
+      const category = guardrailsDecision.category || 'guardrails/jailbreak';
+      const action: ModerationAction =
+        category === 'guardrails/api_error_fail_closed' ? 'api_error_fail_closed' : 'blocked';
+
+      await this.logModerationResult({
+        guildId,
+        userId,
+        contentType,
+        contentHash,
+        contentLength: content.length,
+        flaggedCategories: [category],
+        moderationScores: {},
+        actionTaken: action
+      });
+
+      return {
+        processedContent: '',
+        moderation: {
+          allowed: false,
+          action,
+          flaggedCategories: [category],
+          scores: {},
+          contentHash
+        }
+      };
+    }
+
     // Sanitize first
     const sanitized = this.sanitizePrompt(content);
 
@@ -424,7 +771,7 @@ class ContentSanitizer {
     }
 
     // Full moderation check
-    const moderation = await this.moderateContent(sanitized, guildId, userId, contentType);
+    const moderation = await this.moderateContent(sanitized, guildId, userId, contentType, options);
 
     return {
       processedContent: moderation.allowed ? sanitized : '',

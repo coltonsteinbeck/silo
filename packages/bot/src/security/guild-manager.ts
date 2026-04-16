@@ -520,10 +520,78 @@ class GuildManager {
   }
 
   /**
-   * Update activity timestamp for a guild
+   * Update activity timestamp for a guild.
+   * Uses upsert to auto-register the guild if it's missing from guild_registry,
+   * preventing silent no-ops that could cause the inactivity scheduler to
+   * eventually evict and delete all guild data.
    */
   async updateActivity(guildId: string): Promise<void> {
-    await this.query(`SELECT update_guild_activity($1)`, [guildId]);
+    const result = await this.query<{ rows_affected: number }>(
+      `WITH updated AS (
+        UPDATE guild_registry SET last_activity_at = NOW()
+        WHERE guild_id = $1 AND is_active = true
+        RETURNING 1
+      )
+      SELECT COUNT(*)::int AS rows_affected FROM updated`,
+      [guildId]
+    );
+
+    // If no rows were updated, the guild is missing from the registry — re-register it
+    if ((result[0]?.rows_affected ?? 0) === 0 && this.client) {
+      try {
+        const guild = await this.client.guilds.fetch(guildId);
+        const info = await this.extractGuildInfo(guild);
+        const mode = deploymentDetector.getConfig().isSelfHosted ? 'self-hosted' : 'hosted';
+        await this.registerGuild(info, mode);
+        console.log(`[GuildManager] Auto-registered missing guild: ${guild.name} (${guildId})`);
+      } catch (error) {
+        // Guild may have been deleted or bot was kicked — just log and move on
+        console.warn(`[GuildManager] Could not auto-register guild ${guildId}:`, error);
+      }
+    }
+  }
+
+  /**
+   * Ensure all guilds the bot is currently in are registered in guild_registry.
+   * Called on startup to prevent the inactivity scheduler from evicting guilds
+   * that were never registered (e.g. after a database reset or migration issue).
+   */
+  async ensureGuildsRegistered(): Promise<{ synced: number; skipped: number }> {
+    if (!this.client) {
+      console.warn('[GuildManager] Cannot sync guilds — client not set');
+      return { synced: 0, skipped: 0 };
+    }
+
+    const guilds = this.client.guilds.cache;
+    let synced = 0;
+    let skipped = 0;
+
+    for (const [, guild] of guilds) {
+      try {
+        // Check if guild already exists in registry
+        const existing = await this.query<{ guild_id: string }>(
+          `SELECT guild_id FROM guild_registry WHERE guild_id = $1`,
+          [guild.id]
+        );
+
+        if (existing.length > 0) {
+          skipped++;
+          continue;
+        }
+
+        // Guild is missing — register it
+        const info = await this.extractGuildInfo(guild);
+        const mode = deploymentDetector.getConfig().isSelfHosted ? 'self-hosted' : 'hosted';
+        await this.registerGuild(info, mode);
+        synced++;
+        console.log(`[GuildSync] Registered missing guild: ${guild.name} (${guild.id})`);
+      } catch (error) {
+        console.warn(`[GuildSync] Failed to sync guild ${guild.name}:`, error);
+        skipped++;
+      }
+    }
+
+    return { synced, skipped };
   }
 
   /**
