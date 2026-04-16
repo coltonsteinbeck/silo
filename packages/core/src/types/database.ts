@@ -35,9 +35,14 @@ export interface ConversationMessage {
   guildId: string;
   channelId: string;
   userId: string;
+  discordMessageId?: string | null;
   promptHash: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
+  replyToMessageId?: string | null;
+  replyToUserId?: string | null;
+  referencedContent?: string | null;
+  imageSummary?: string | null;
   createdAt: Date;
 }
 
@@ -47,7 +52,10 @@ export interface DatabaseAdapter {
   healthCheck(): Promise<boolean>;
 
   // User Memory
+  getUserMemoryCount(userId: string): Promise<number>;
+  getAllMemoryCount(): Promise<number>;
   getUserMemories(userId: string, contextType?: string, limit?: number): Promise<UserMemory[]>;
+  getAllMemories(contextType?: string, limit?: number): Promise<UserMemory[]>;
   storeUserMemory(
     memory: Omit<UserMemory, 'id' | 'createdAt' | 'updatedAt'>,
     embedding?: number[]
@@ -60,6 +68,12 @@ export interface DatabaseAdapter {
   deleteUserMemory(id: string): Promise<void>;
   findUserMemoryByIdPrefix(userId: string, idPrefix: string): Promise<UserMemory | null>;
   searchUserMemories(userId: string, query: string, limit?: number): Promise<UserMemory[]>;
+  searchUserMemoriesByEmbedding(
+    userId: string,
+    embedding: number[],
+    contextType?: string,
+    limit?: number
+  ): Promise<(UserMemory & { similarity: number })[]>;
 
   // Server Memory
   getServerMemories(
@@ -67,10 +81,28 @@ export interface DatabaseAdapter {
     contextType?: string,
     limit?: number
   ): Promise<ServerMemory[]>;
+  searchServerMemories(serverId: string, query: string, limit?: number): Promise<ServerMemory[]>;
+  searchServerMemoriesByEmbedding(
+    serverId: string,
+    embedding: number[],
+    contextType?: string,
+    limit?: number
+  ): Promise<(ServerMemory & { similarity: number })[]>;
+  getRelevantServerMemoriesForContext(
+    serverId: string,
+    embedding: number[],
+    contextType?: string,
+    limit?: number
+  ): Promise<ServerMemory[]>;
   storeServerMemory(
-    memory: Omit<ServerMemory, 'id' | 'createdAt' | 'updatedAt'>
+    memory: Omit<ServerMemory, 'id' | 'createdAt' | 'updatedAt'>,
+    embedding?: number[]
   ): Promise<ServerMemory>;
-  updateServerMemory(id: string, updates: Partial<ServerMemory>): Promise<ServerMemory>;
+  updateServerMemory(
+    id: string,
+    updates: Partial<ServerMemory>,
+    embedding?: number[]
+  ): Promise<ServerMemory>;
   deleteServerMemory(id: string): Promise<void>;
 
   // User Preferences

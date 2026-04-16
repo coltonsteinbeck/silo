@@ -255,6 +255,7 @@ export class AnalyticsCommand implements Command {
         textTokens: 0,
         images: 0,
         voiceMinutes: 0,
+        videoTokens: 0,
         date: new Date()
       };
 
@@ -262,14 +263,20 @@ export class AnalyticsCommand implements Command {
       const textPercent = ((currentUsage.textTokens / limits.textTokens) * 100).toFixed(1);
       const imagePercent = ((currentUsage.images / limits.images) * 100).toFixed(1);
       const voicePercent = ((currentUsage.voiceMinutes / limits.voiceMinutes) * 100).toFixed(1);
+      const videoPercent = ((currentUsage.videoTokens / limits.videoTokens) * 100).toFixed(1);
 
       const textRemaining = Math.max(0, limits.textTokens - currentUsage.textTokens);
       const imageRemaining = Math.max(0, limits.images - currentUsage.images);
       const voiceRemaining = Math.max(0, limits.voiceMinutes - currentUsage.voiceMinutes);
+      const videoRemaining = Math.max(0, limits.videoTokens - currentUsage.videoTokens);
 
       // Determine color based on overall usage
       const avgPercent =
-        (parseFloat(textPercent) + parseFloat(imagePercent) + parseFloat(voicePercent)) / 3;
+        (parseFloat(textPercent) +
+          parseFloat(imagePercent) +
+          parseFloat(voicePercent) +
+          parseFloat(videoPercent)) /
+        4;
       const embedColor = avgPercent >= 90 ? 0xff0000 : avgPercent >= 75 ? 0xffa500 : 0x00ff00;
 
       const embed = new EmbedBuilder()
@@ -291,10 +298,15 @@ export class AnalyticsCommand implements Command {
             name: '🎤 Voice Minutes',
             value: `**Used:** ${currentUsage.voiceMinutes} / ${limits.voiceMinutes} minutes\n**Remaining:** ${voiceRemaining} minutes (${voicePercent}% used)`,
             inline: false
+          },
+          {
+            name: '🎬 Video Tokens',
+            value: `**Used:** ${currentUsage.videoTokens.toLocaleString()} / ${limits.videoTokens.toLocaleString()}\n**Remaining:** ${videoRemaining.toLocaleString()} (${videoPercent}% used)`,
+            inline: false
           }
         )
         .setFooter({
-          text: 'Quotas reset daily at midnight UTC • Contact admin to adjust limits'
+          text: 'Quotas reset daily at midnight ET • Contact admin to adjust limits'
         })
         .setTimestamp();
 
