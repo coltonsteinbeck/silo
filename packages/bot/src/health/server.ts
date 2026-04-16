@@ -89,9 +89,8 @@ export class HealthServer {
     // Start Discord channel health notifications
     this.startDiscordHealthNotifications();
 
-    // Handle graceful shutdown
-    process.on('SIGTERM', () => this.sendFailurePing());
-    process.on('SIGINT', () => this.sendFailurePing());
+    // Note: Graceful shutdown (SIGTERM/SIGINT) is handled in index.ts
+    // which calls healthServer.stop() for proper cleanup
   }
 
   async stop(): Promise<void> {

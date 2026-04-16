@@ -28,6 +28,24 @@ Please report security vulnerabilities responsibly using one of the following ch
 - Code under this repository, including infrastructure templates and workflows.
 - Do not test against production deployments without prior written permission.
 
+## Runtime Safety Controls
+
+- User input is sanitized and moderated before model invocation.
+- Assistant output is moderated before being sent; output moderation can fail closed.
+- An immutable safety policy is layered into all runtime system prompts.
+- Custom prompts can be restricted using hash allowlisting (`SAFETY_ALLOWED_PROMPT_HASHES`).
+- Runtime safety monitor supports block-rate thresholds, temporary kill switch, and alert cooldowns.
+- Memory conflicts are handled conservatively via clarification-first guidance.
+
+### Runtime Safety Monitor Env Controls
+
+- `SAFETY_MONITOR_ENABLED` (default: `true`) enables/disables runtime incident tracking.
+- `SAFETY_BLOCK_THRESHOLD` (default: `3`) blocked incidents required inside the monitoring window.
+- `SAFETY_WINDOW_MS` (default: `300000`) rolling window used for threshold checks.
+- `SAFETY_KILL_SWITCH_ENABLED` (default: `true`) enables temporary auto-mitigation mode.
+- `SAFETY_KILL_SWITCH_DURATION_MS` (default: `600000`) kill-switch duration after threshold breach.
+- `SAFETY_ALERT_COOLDOWN_MS` (default: `120000`) minimum interval between repeated safety alerts.
+
 ## Preferences
 
 - Provide minimal PoCs; avoid automated scanners against live instances.
