@@ -31,9 +31,9 @@ function hashUrl(normalizedUrl: string): string {
 function isUndefinedColumnError(error: unknown): error is { code: string; message?: string } {
   return Boolean(
     error &&
-      typeof error === 'object' &&
-      'code' in error &&
-      (error as { code?: unknown }).code === '42703'
+    typeof error === 'object' &&
+    'code' in error &&
+    (error as { code?: unknown }).code === '42703'
   );
 }
 
