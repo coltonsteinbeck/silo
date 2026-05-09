@@ -254,8 +254,15 @@ export class GoogleTextProvider implements TextProvider {
     };
 
     // Add system instruction if present (preserves safety-validated guild custom prompts)
+    // Google's API expects system_instruction as a Content object with parts, not a plain string
     if (systemInstruction) {
-      requestBody.system_instruction = systemInstruction;
+      requestBody.system_instruction = {
+        parts: [
+          {
+            text: systemInstruction
+          }
+        ]
+      };
     }
 
     // Add thinking level configuration if specified (Gemini 3 uses thinking_level instead of thinking_budget)
