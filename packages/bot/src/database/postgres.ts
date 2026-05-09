@@ -150,7 +150,7 @@ export class PostgresAdapter implements DatabaseAdapter {
 
     // Ensure search_path includes public schema on every new connection
     // This is critical for Supabase pooled connections which may reset schema context
-    this.pool.on('connect', async (client) => {
+    this.pool.on('connect', async client => {
       try {
         await client.query('SET search_path TO public');
       } catch (err) {

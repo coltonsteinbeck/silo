@@ -1,5 +1,9 @@
 import OpenAI from 'openai';
 import type {
+  ChatCompletion,
+  ChatCompletionCreateParamsNonStreaming
+} from 'openai/resources/chat/completions';
+import type {
   TextProvider,
   ImageProvider,
   Message,
@@ -128,30 +132,40 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
       }
     }
 
-    const response = await this.client.chat.completions.create(requestParams as Parameters<typeof this.client.chat.completions.create>[0]);
+    const response = await this.client.chat.completions.create(
+      requestParams as unknown as ChatCompletionCreateParamsNonStreaming
+    );
 
-    const choice = response.choices[0];
+    // Type guard: stream is false, so response is ChatCompletion, not Stream
+    const chatResponse = response as ChatCompletion & { _request_id?: string | null };
+
+    const choice = chatResponse.choices[0];
     if (!choice?.message?.content) {
       throw new Error('No response from OpenAI');
     }
 
     // Extract thinking content if available (for models with extended thinking)
-    const thinking = choice.message.reasoning ? choice.message.reasoning : undefined;
+    const thinking = (choice.message as unknown as Record<string, unknown>).reasoning as
+      | string
+      | undefined;
 
     return {
       content: choice.message.content,
       thinking,
-      usage: response.usage
+      usage: chatResponse.usage
         ? {
-            promptTokens: response.usage.prompt_tokens,
-            completionTokens: response.usage.completion_tokens,
-            totalTokens: response.usage.total_tokens,
-            reasoningTokens: (response.usage as Record<string, unknown>).reasoning_tokens as number | undefined,
-            cacheCreationTokens: (response.usage as Record<string, unknown>).cache_creation_input_tokens as number | undefined,
-            cacheReadTokens: (response.usage as Record<string, unknown>).cache_read_input_tokens as number | undefined
+            promptTokens: chatResponse.usage.prompt_tokens,
+            completionTokens: chatResponse.usage.completion_tokens,
+            totalTokens: chatResponse.usage.total_tokens,
+            reasoningTokens: (chatResponse.usage as unknown as Record<string, unknown>)
+              .reasoning_tokens as number | undefined,
+            cacheCreationTokens: (chatResponse.usage as unknown as Record<string, unknown>)
+              .cache_creation_input_tokens as number | undefined,
+            cacheReadTokens: (chatResponse.usage as unknown as Record<string, unknown>)
+              .cache_read_input_tokens as number | undefined
           }
         : undefined,
-      model: response.model
+      model: chatResponse.model
     };
   }
 
