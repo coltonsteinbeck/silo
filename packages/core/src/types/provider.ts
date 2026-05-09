@@ -8,6 +8,10 @@ export interface TextGenerationOptions {
   temperature?: number;
   maxTokens?: number;
   stream?: boolean;
+  reasoning?: {
+    type?: 'enabled' | 'budgeted';
+    budget?: number; // reasoning tokens budget for faster responses
+  };
 }
 
 export interface TextGenerationResponse {
@@ -16,8 +20,12 @@ export interface TextGenerationResponse {
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
+    reasoningTokens?: number; // For models with extended thinking (OpenAI GPT-5.4+)
+    cacheCreationTokens?: number; // Tokens written to cache
+    cacheReadTokens?: number; // Tokens read from cache
   };
   model: string;
+  thinking?: string; // Internal reasoning for models with extended thinking
 }
 
 export interface ImageGenerationOptions {

@@ -1,5 +1,13 @@
 import { logger } from '@silo/core';
-import type { ImageProvider, ImageGenerationOptions, ImageGenerationResponse } from '@silo/core';
+import type {
+  ImageProvider,
+  ImageGenerationOptions,
+  ImageGenerationResponse,
+  TextProvider,
+  Message,
+  TextGenerationOptions,
+  TextGenerationResponse
+} from '@silo/core';
 
 interface InlineImagePart {
   inline_data: {
@@ -68,6 +76,12 @@ async function fetchReferenceImageAsInlineData(url: string): Promise<InlineImage
   }
 }
 
+/**
+ * Google Gemini image generation provider
+ * NOTE: Google now supports BOTH text generation and image generation
+ * Use 'google' in /config provider for text generation
+ * See GoogleTextProvider for text capabilities
+ */
 export class GoogleImageProvider implements ImageProvider {
   name = 'google';
   capabilities = {
@@ -79,7 +93,7 @@ export class GoogleImageProvider implements ImageProvider {
   private apiKey: string | null = null;
   private defaultModel: string;
 
-  constructor(apiKey?: string, model: string = 'gemini-3.1-flash-image-preview') {
+  constructor(apiKey?: string, model: string = 'gemini-3.1-flash-image') {
     this.defaultModel = model;
     if (apiKey) {
       this.apiKey = apiKey;
@@ -171,6 +185,128 @@ export class GoogleImageProvider implements ImageProvider {
       revisedPrompt,
       model,
       moderationPassed: true
+    };
+  }
+}
+
+/**
+ * Google Gemini text generation provider
+ * Supports text chat and reasoning with the Gemini API
+ */
+export class GoogleTextProvider implements TextProvider {
+  name = 'google';
+  capabilities = {
+    vision: false
+  };
+
+  private apiKey: string | null = null;
+  private defaultModel: string;
+
+  constructor(apiKey?: string, model: string = 'gemini-3.1-flash-lite') {
+    this.defaultModel = model;
+    if (apiKey) {
+      this.apiKey = apiKey;
+    }
+  }
+
+  isConfigured(): boolean {
+    return Boolean(this.apiKey);
+  }
+
+  async generateText(
+    messages: Message[],
+    options?: TextGenerationOptions
+  ): Promise<TextGenerationResponse> {
+    if (!this.apiKey) {
+      throw new Error('Google provider not configured');
+    }
+
+    const model = options?.model || this.defaultModel;
+    const maxTokens = options?.maxTokens || 2048;
+
+    // Convert messages to Gemini format
+    const contents = messages.map(msg => ({
+      role: msg.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: msg.content }]
+    }));
+
+    const requestBody: Record<string, unknown> = {
+      contents,
+      generationConfig: {
+        maxOutputTokens: maxTokens,
+        temperature: 1.0, // Gemini 3 default - do not change
+        topP: 0.9,
+        topK: 40
+      }
+    };
+
+    // Add thinking level configuration if specified (Gemini 3 uses thinking_level instead of thinking_budget)
+    if (options?.reasoning) {
+      if (options.reasoning.type === 'enabled') {
+        requestBody.thinking_config = {
+          thinking_level: 'high'
+        };
+      } else if (options.reasoning.type === 'budgeted') {
+        // For budgeted mode, use lower thinking level for cost efficiency
+        requestBody.thinking_config = {
+          thinking_level: 'low'
+        };
+      }
+    }
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(this.apiKey)}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(requestBody)
+      }
+    );
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Google text generation failed (${response.status}): ${body.slice(0, 300)}`);
+    }
+
+    const json = (await response.json()) as GoogleGenerateContentResponse;
+    const candidates = Array.isArray(json.candidates) ? json.candidates : [];
+
+    const parts =
+      candidates[0]?.content?.parts && Array.isArray(candidates[0].content.parts)
+        ? candidates[0].content.parts
+        : [];
+
+    const textContent = parts
+      .filter(part => typeof part.text === 'string')
+      .map(part => (part.text || '').trim())
+      .filter(Boolean)
+      .join('\n');
+
+    if (!textContent) {
+      logger.warn('Google text generation response did not include text content', {
+        model,
+        candidateCount: candidates.length
+      });
+      throw new Error('Google text generation returned no text content');
+    }
+
+    // Token estimation: Gemini typically reports token counts in usage metadata
+    // For now, we'll estimate based on character count (rough approximation: 1 token ≈ 4 characters)
+    const estimatedPromptTokens = Math.ceil(
+      messages.reduce((sum, msg) => sum + msg.content.length, 0) / 4
+    );
+    const estimatedCompletionTokens = Math.ceil(textContent.length / 4);
+
+    return {
+      content: textContent,
+      model,
+      usage: {
+        promptTokens: estimatedPromptTokens,
+        completionTokens: estimatedCompletionTokens,
+        totalTokens: estimatedPromptTokens + estimatedCompletionTokens
+      }
     };
   }
 }
