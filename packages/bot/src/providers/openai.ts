@@ -83,7 +83,7 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
   private defaultModel: string;
   private defaultImageModel: string;
 
-  constructor(apiKey?: string, model: string = 'gpt-5-mini', imageModel: string = 'gpt-image-1') {
+  constructor(apiKey?: string, model: string = 'gpt-5.4-nano', imageModel: string = 'gpt-image-1') {
     this.defaultModel = model;
     this.defaultImageModel = imageModel;
     if (apiKey) {
@@ -103,29 +103,52 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
       throw new Error('OpenAI provider not configured');
     }
 
-    const response = await this.client.chat.completions.create({
+    // Build request with optional reasoning tokens for faster responses
+    const requestParams: Record<string, unknown> = {
       model: options?.model || this.defaultModel,
       messages: messages.map(m => ({
         role: m.role,
         content: m.content
       })),
       temperature: options?.temperature ?? 0.8,
-      max_tokens: options?.maxTokens,
+      // GPT-5.4 models use max_completion_tokens; other models use max_tokens
+      ...(options?.maxTokens ? { max_completion_tokens: options.maxTokens } : {}),
       stream: false
-    });
+    };
+
+    // Enable reasoning tokens for improved accuracy with bounded budget
+    if (options?.reasoning) {
+      if (options.reasoning.type === 'budgeted' && options.reasoning.budget) {
+        requestParams.reasoning = {
+          type: 'budgeted',
+          budget_tokens: Math.min(options.reasoning.budget, 16000) // Cap at model limit
+        };
+      } else if (options.reasoning.type === 'enabled') {
+        requestParams.reasoning = 'enabled';
+      }
+    }
+
+    const response = await this.client.chat.completions.create(requestParams as Parameters<typeof this.client.chat.completions.create>[0]);
 
     const choice = response.choices[0];
     if (!choice?.message?.content) {
       throw new Error('No response from OpenAI');
     }
 
+    // Extract thinking content if available (for models with extended thinking)
+    const thinking = choice.message.reasoning ? choice.message.reasoning : undefined;
+
     return {
       content: choice.message.content,
+      thinking,
       usage: response.usage
         ? {
             promptTokens: response.usage.prompt_tokens,
             completionTokens: response.usage.completion_tokens,
-            totalTokens: response.usage.total_tokens
+            totalTokens: response.usage.total_tokens,
+            reasoningTokens: (response.usage as Record<string, unknown>).reasoning_tokens as number | undefined,
+            cacheCreationTokens: (response.usage as Record<string, unknown>).cache_creation_input_tokens as number | undefined,
+            cacheReadTokens: (response.usage as Record<string, unknown>).cache_read_input_tokens as number | undefined
           }
         : undefined,
       model: response.model

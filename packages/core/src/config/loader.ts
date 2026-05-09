@@ -175,20 +175,20 @@ export class ConfigLoader {
         openai: process.env.OPENAI_API_KEY
           ? {
               apiKey: process.env.OPENAI_API_KEY,
-              model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+              model: process.env.OPENAI_MODEL || 'gpt-5.4-nano',
               imageModel: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-1'
             }
           : undefined,
         anthropic: process.env.ANTHROPIC_API_KEY
           ? {
               apiKey: process.env.ANTHROPIC_API_KEY,
-              model: process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022'
+              model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6'
             }
           : undefined,
         xai: process.env.XAI_API_KEY
           ? {
               apiKey: process.env.XAI_API_KEY,
-              model: process.env.XAI_MODEL || 'grok-4-1-fast-non-reasoning',
+              model: process.env.XAI_MODEL || 'grok-4.20-non-reasoning',
               imageModel: process.env.XAI_IMAGE_MODEL || 'grok-imagine-image',
               videoModel: process.env.XAI_VIDEO_MODEL || 'grok-imagine-video'
             }

@@ -45,7 +45,7 @@ describe('ConfigSchema', () => {
       });
       expect(result.success).toBe(true);
       if (result.success) {
-        expect(result.data.openai?.model).toBe('gpt-4o-mini');
+        expect(result.data.openai?.model).toBe('gpt-5.4-nano');
       }
     });
 

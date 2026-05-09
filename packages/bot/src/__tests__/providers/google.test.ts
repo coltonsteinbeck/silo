@@ -60,7 +60,7 @@ describe('GoogleImageProvider', () => {
 
     expect(result.url).toBe('data:image/png;base64,abc123');
     expect(result.revisedPrompt).toContain('Revised prompt output');
-    expect(result.model).toBe('gemini-3.1-flash-image-preview');
+    expect(result.model).toBe('gemini-3.1-flash-image');
   });
 
   test('surfaces upstream API errors', async () => {

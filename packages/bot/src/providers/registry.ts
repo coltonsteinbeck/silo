@@ -10,7 +10,7 @@ import { AnthropicProvider } from './anthropic';
 import { XAIProvider } from './xai';
 import { LocalOpenAIProvider } from './local-openai';
 import { OpenAIEmbeddingsProvider } from './openai-embeddings';
-import { GoogleImageProvider } from './google';
+import { GoogleImageProvider, GoogleTextProvider } from './google';
 
 export class ProviderRegistry {
   private textProviders: TextProvider[] = [];
@@ -51,11 +51,19 @@ export class ProviderRegistry {
     }
 
     if (config.providers.google?.apiKey) {
-      const provider = new GoogleImageProvider(
+      // Add Google text provider for text generation
+      const textProvider = new GoogleTextProvider(
         config.providers.google.apiKey,
         config.providers.google.model
       );
-      this.imageProviders.push(provider);
+      this.textProviders.push(textProvider);
+
+      // Also add Google image provider for image generation
+      const imageProvider = new GoogleImageProvider(
+        config.providers.google.apiKey,
+        config.providers.google.model
+      );
+      this.imageProviders.push(imageProvider);
     }
 
     if (config.features.enableLocalModels && config.providers.local?.baseURL) {
@@ -77,6 +85,10 @@ export class ProviderRegistry {
     if (name) {
       const provider = this.textProviders.find(p => p.name === name);
       if (provider) return provider;
+      
+      // Log that requested provider wasn't found
+      const availableText = this.textProviders.filter(p => p.isConfigured()).map(p => p.name);
+      console.warn(`[PROVIDER] Requested text provider "${name}" not available. Available: ${availableText.join(', ')}. Falling back to first available.`);
     }
 
     const configured = this.textProviders.find(p => p.isConfigured());

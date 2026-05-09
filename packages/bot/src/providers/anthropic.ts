@@ -11,7 +11,7 @@ export class AnthropicProvider implements TextProvider {
   private client: Anthropic | null = null;
   private defaultModel: string;
 
-  constructor(apiKey?: string, model: string = 'claude-3-5-sonnet-20241022') {
+  constructor(apiKey?: string, model: string = 'claude-sonnet-4-6') {
     this.defaultModel = model;
     if (apiKey) {
       this.client = new Anthropic({ apiKey });
