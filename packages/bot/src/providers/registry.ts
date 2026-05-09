@@ -54,19 +54,13 @@ export class ProviderRegistry {
       // Add Google text provider for text generation
       // Use textModel if specified, otherwise fall back to default (gemini-3.1-flash-lite)
       const textModel = config.providers.google.textModel || config.providers.google.model;
-      const textProvider = new GoogleTextProvider(
-        config.providers.google.apiKey,
-        textModel
-      );
+      const textProvider = new GoogleTextProvider(config.providers.google.apiKey, textModel);
       this.textProviders.push(textProvider);
 
       // Also add Google image provider for image generation
       // Use imageModel if specified, otherwise fall back to default (gemini-3.1-flash-image)
       const imageModel = config.providers.google.imageModel || config.providers.google.model;
-      const imageProvider = new GoogleImageProvider(
-        config.providers.google.apiKey,
-        imageModel
-      );
+      const imageProvider = new GoogleImageProvider(config.providers.google.apiKey, imageModel);
       this.imageProviders.push(imageProvider);
     }
 
@@ -89,10 +83,12 @@ export class ProviderRegistry {
     if (name) {
       const provider = this.textProviders.find(p => p.name === name);
       if (provider) return provider;
-      
+
       // Log that requested provider wasn't found
       const availableText = this.textProviders.filter(p => p.isConfigured()).map(p => p.name);
-      console.warn(`[PROVIDER] Requested text provider "${name}" not available. Available: ${availableText.join(', ')}. Falling back to first available.`);
+      console.warn(
+        `[PROVIDER] Requested text provider "${name}" not available. Available: ${availableText.join(', ')}. Falling back to first available.`
+      );
     }
 
     const configured = this.textProviders.find(p => p.isConfigured());

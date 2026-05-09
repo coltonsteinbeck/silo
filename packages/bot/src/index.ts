@@ -157,16 +157,13 @@ function acquireProcessLock(): boolean {
   }
 
   // Also check if this is production with self-hosted mode (likely using PM2 or another orchestrator)
-  if (
-    process.env.DEPLOYMENT_MODE === 'production' ||
-    process.env.NODE_ENV === 'production'
-  ) {
+  if (process.env.DEPLOYMENT_MODE === 'production' || process.env.NODE_ENV === 'production') {
     console.log('[LOCK] Production mode detected - skipping process lock (using orchestrator)');
     return true;
   }
 
   const lockFile = path.join(process.cwd(), '.bot.lock');
-  
+
   try {
     // Attempt atomic lock creation with 'wx' flag (exclusive write, fails if exists)
     try {
@@ -178,13 +175,15 @@ function acquireProcessLock(): boolean {
         try {
           const content = fs.readFileSync(lockFile, 'utf-8').trim();
           const pid = parseInt(content, 10);
-          
+
           if (!isNaN(pid) && pid !== process.pid) {
             // Check if the process is still alive
             try {
               process.kill(pid, 0);
               // If we get here, process exists - don't start
-              console.error(`[LOCK] Another bot instance (PID ${pid}) is already running. Exiting to prevent duplicates.`);
+              console.error(
+                `[LOCK] Another bot instance (PID ${pid}) is already running. Exiting to prevent duplicates.`
+              );
               return false;
             } catch (signalErr: any) {
               // Process doesn't exist - remove stale lock and retry
@@ -193,10 +192,14 @@ function acquireProcessLock(): boolean {
                 // Retry atomic creation once
                 try {
                   fs.writeFileSync(lockFile, process.pid.toString(), { flag: 'wx' });
-                  console.log(`[LOCK] Process lock acquired (PID ${process.pid}) - cleaned up stale lock`);
+                  console.log(
+                    `[LOCK] Process lock acquired (PID ${process.pid}) - cleaned up stale lock`
+                  );
                 } catch (retryErr: any) {
                   if (retryErr.code === 'EEXIST') {
-                    console.error('[LOCK] Failed to acquire lock after cleanup - another instance may have started');
+                    console.error(
+                      '[LOCK] Failed to acquire lock after cleanup - another instance may have started'
+                    );
                     return false;
                   }
                   throw retryErr;
@@ -212,18 +215,18 @@ function acquireProcessLock(): boolean {
         throw err;
       }
     }
-    
+
     // Clean up lock file on exit
     const cleanup = () => {
       try {
         if (fs.existsSync(lockFile)) {
           fs.unlinkSync(lockFile);
         }
-      } catch (err) {
+      } catch {
         // Ignore cleanup errors
       }
     };
-    
+
     // Register cleanup handlers
     // For Bun: use standard process events which are well-supported
     process.on('exit', cleanup);
@@ -235,7 +238,7 @@ function acquireProcessLock(): boolean {
       cleanup();
       process.exit(0);
     });
-    
+
     return true;
   } catch (err) {
     console.error('[LOCK] Failed to acquire process lock:', err);
@@ -348,7 +351,9 @@ async function handleModalSubmit(interaction: ModalSubmitInteraction, adminDb: A
 async function main() {
   // Acquire process lock to prevent duplicate instances
   if (!acquireProcessLock()) {
-    console.error('[MAIN] Failed to acquire process lock. Exiting to prevent duplicate bot instances.');
+    console.error(
+      '[MAIN] Failed to acquire process lock. Exiting to prevent duplicate bot instances.'
+    );
     process.exit(1);
   }
 
