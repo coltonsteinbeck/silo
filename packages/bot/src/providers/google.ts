@@ -32,6 +32,11 @@ interface GoogleGenerateContentCandidate {
 
 interface GoogleGenerateContentResponse {
   candidates?: GoogleGenerateContentCandidate[];
+  usageMetadata?: {
+    promptTokenCount?: number;
+    candidatesTokenCount?: number;
+    totalTokenCount?: number;
+  };
 }
 
 function normalizeResolution(value: string | undefined): string {
@@ -224,8 +229,16 @@ export class GoogleTextProvider implements TextProvider {
     const model = options?.model || this.defaultModel;
     const maxTokens = options?.maxTokens || 2048;
 
-    // Convert messages to Gemini format
-    const contents = messages.map(msg => ({
+    // Separate system messages (which include safety-validated guild prompts) from conversation
+    const systemMessages = messages.filter(msg => msg.role === 'system');
+    const conversationMessages = messages.filter(msg => msg.role !== 'system');
+
+    // Concatenate all system messages (typically one, but handle multiple if present)
+    const systemInstruction =
+      systemMessages.length > 0 ? systemMessages.map(msg => msg.content).join('\n\n') : undefined;
+
+    // Convert conversation messages to Gemini format (system already handled)
+    const contents = conversationMessages.map(msg => ({
       role: msg.role === 'assistant' ? 'model' : 'user',
       parts: [{ text: msg.content }]
     }));
@@ -239,6 +252,11 @@ export class GoogleTextProvider implements TextProvider {
         topK: 40
       }
     };
+
+    // Add system instruction if present (preserves safety-validated guild custom prompts)
+    if (systemInstruction) {
+      requestBody.system_instruction = systemInstruction;
+    }
 
     // Add thinking level configuration if specified (Gemini 3 uses thinking_level instead of thinking_budget)
     if (options?.reasoning) {
@@ -292,20 +310,29 @@ export class GoogleTextProvider implements TextProvider {
       throw new Error('Google text generation returned no text content');
     }
 
-    // Token estimation: Gemini typically reports token counts in usage metadata
-    // For now, we'll estimate based on character count (rough approximation: 1 token ≈ 4 characters)
-    const estimatedPromptTokens = Math.ceil(
-      messages.reduce((sum, msg) => sum + msg.content.length, 0) / 4
-    );
-    const estimatedCompletionTokens = Math.ceil(textContent.length / 4);
+    // Use actual token counts from API response if available
+    let promptTokens: number;
+    let completionTokens: number;
+    let totalTokens: number;
+
+    if (json.usageMetadata) {
+      promptTokens = json.usageMetadata.promptTokenCount ?? 0;
+      completionTokens = json.usageMetadata.candidatesTokenCount ?? 0;
+      totalTokens = json.usageMetadata.totalTokenCount ?? promptTokens + completionTokens;
+    } else {
+      // Fallback to character-based estimation if usageMetadata not available
+      promptTokens = Math.ceil(messages.reduce((sum, msg) => sum + msg.content.length, 0) / 4);
+      completionTokens = Math.ceil(textContent.length / 4);
+      totalTokens = promptTokens + completionTokens;
+    }
 
     return {
       content: textContent,
       model,
       usage: {
-        promptTokens: estimatedPromptTokens,
-        completionTokens: estimatedCompletionTokens,
-        totalTokens: estimatedPromptTokens + estimatedCompletionTokens
+        promptTokens,
+        completionTokens,
+        totalTokens
       }
     };
   }

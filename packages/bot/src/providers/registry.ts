@@ -52,16 +52,20 @@ export class ProviderRegistry {
 
     if (config.providers.google?.apiKey) {
       // Add Google text provider for text generation
+      // Use textModel if specified, otherwise fall back to default (gemini-3.1-flash-lite)
+      const textModel = config.providers.google.textModel || config.providers.google.model;
       const textProvider = new GoogleTextProvider(
         config.providers.google.apiKey,
-        config.providers.google.model
+        textModel
       );
       this.textProviders.push(textProvider);
 
       // Also add Google image provider for image generation
+      // Use imageModel if specified, otherwise fall back to default (gemini-3.1-flash-image)
+      const imageModel = config.providers.google.imageModel || config.providers.google.model;
       const imageProvider = new GoogleImageProvider(
         config.providers.google.apiKey,
-        config.providers.google.model
+        imageModel
       );
       this.imageProviders.push(imageProvider);
     }
