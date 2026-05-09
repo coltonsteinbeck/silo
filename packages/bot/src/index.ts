@@ -168,39 +168,50 @@ function acquireProcessLock(): boolean {
   const lockFile = path.join(process.cwd(), '.bot.lock');
   
   try {
-    // Check if lock file exists and if the process is still alive
-    if (fs.existsSync(lockFile)) {
-      try {
-        const content = fs.readFileSync(lockFile, 'utf-8').trim();
-        const pid = parseInt(content, 10);
-        
-        if (!isNaN(pid) && pid !== process.pid) {
-          // Try to check if the process exists (signal 0 check)
-          try {
-            process.kill(pid, 0);
-            // If we get here, process exists - don't start
-            console.error(`[LOCK] Another bot instance (PID ${pid}) is already running. Exiting to prevent duplicates.`);
-            return false;
-          } catch (err: any) {
-            // Process doesn't exist or we can't check - remove stale lock
-            if (err.code === 'ESRCH') {
-              fs.unlinkSync(lockFile);
+    // Attempt atomic lock creation with 'wx' flag (exclusive write, fails if exists)
+    try {
+      fs.writeFileSync(lockFile, process.pid.toString(), { flag: 'wx' });
+      console.log(`[LOCK] Process lock acquired (PID ${process.pid})`);
+    } catch (err: any) {
+      // Handle existing lock file
+      if (err.code === 'EEXIST') {
+        try {
+          const content = fs.readFileSync(lockFile, 'utf-8').trim();
+          const pid = parseInt(content, 10);
+          
+          if (!isNaN(pid) && pid !== process.pid) {
+            // Check if the process is still alive
+            try {
+              process.kill(pid, 0);
+              // If we get here, process exists - don't start
+              console.error(`[LOCK] Another bot instance (PID ${pid}) is already running. Exiting to prevent duplicates.`);
+              return false;
+            } catch (signalErr: any) {
+              // Process doesn't exist - remove stale lock and retry
+              if (signalErr.code === 'ESRCH') {
+                fs.unlinkSync(lockFile);
+                // Retry atomic creation once
+                try {
+                  fs.writeFileSync(lockFile, process.pid.toString(), { flag: 'wx' });
+                  console.log(`[LOCK] Process lock acquired (PID ${process.pid}) - cleaned up stale lock`);
+                } catch (retryErr: any) {
+                  if (retryErr.code === 'EEXIST') {
+                    console.error('[LOCK] Failed to acquire lock after cleanup - another instance may have started');
+                    return false;
+                  }
+                  throw retryErr;
+                }
+              }
             }
           }
+        } catch (readErr) {
+          console.error('[LOCK] Error reading/validating lock file:', readErr);
+          throw readErr;
         }
-      } catch (readErr) {
-        // If we can't read the lock file, assume it's stale
-        try {
-          fs.unlinkSync(lockFile);
-        } catch {
-          // Ignore cleanup errors
-        }
+      } else {
+        throw err;
       }
     }
-    
-    // Write current process ID to lock file
-    fs.writeFileSync(lockFile, process.pid.toString());
-    console.log(`[LOCK] Process lock acquired (PID ${process.pid})`);
     
     // Clean up lock file on exit
     const cleanup = () => {

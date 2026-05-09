@@ -34,7 +34,9 @@ export const ProviderConfigSchema = z.object({
   google: z
     .object({
       apiKey: z.string().optional(),
-      model: z.string().default('gemini-3.1-flash-image-preview')
+      model: z.string().optional(), // Deprecated: use textModel/imageModel
+      textModel: z.string().optional(),
+      imageModel: z.string().optional()
     })
     .optional()
 });
