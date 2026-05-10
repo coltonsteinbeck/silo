@@ -247,7 +247,7 @@ export class GoogleTextProvider implements TextProvider {
       contents,
       generationConfig: {
         maxOutputTokens: maxTokens,
-        temperature: 1.0, // Gemini 3 default - do not change
+        temperature: options?.temperature ?? 1.0,
         topP: 0.9,
         topK: 40
       }
