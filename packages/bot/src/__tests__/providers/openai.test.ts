@@ -184,7 +184,7 @@ describe('OpenAIProvider.generateImage reference image path', () => {
 });
 
 describe('OpenAIProvider.generateText reasoning parameters', () => {
-  test('maps budgeted reasoning to effort and max_output_tokens cap', async () => {
+  test('maps budgeted reasoning to effort and max_completion_tokens cap', async () => {
     const provider = new OpenAIProvider('sk-test');
     const createSpy = mock(async (_request: Record<string, unknown>) => ({
       choices: [{ message: { content: 'hello' } }],
@@ -212,11 +212,11 @@ describe('OpenAIProvider.generateText reasoning parameters', () => {
     const request = createSpy.mock.calls[0]?.[0] as Record<string, unknown>;
     const reasoning = request.reasoning as Record<string, unknown> | undefined;
     expect(reasoning).toEqual({ effort: 'medium' });
-    expect(request.max_output_tokens).toBe(5000);
+    expect(request.max_completion_tokens).toBe(5000);
     expect(reasoning?.budget_tokens).toBeUndefined();
   });
 
-  test('caps max_output_tokens at model limit for large reasoning budgets', async () => {
+  test('caps max_completion_tokens at model limit for large reasoning budgets', async () => {
     const provider = new OpenAIProvider('sk-test');
     const createSpy = mock(async (_request: Record<string, unknown>) => ({
       choices: [{ message: { content: 'hello' } }],
@@ -243,6 +243,6 @@ describe('OpenAIProvider.generateText reasoning parameters', () => {
     const request = createSpy.mock.calls[0]?.[0] as Record<string, unknown>;
     const reasoning = request.reasoning as Record<string, unknown> | undefined;
     expect(reasoning).toEqual({ effort: 'xhigh' });
-    expect(request.max_output_tokens).toBe(16000);
+    expect(request.max_completion_tokens).toBe(16000);
   });
 });

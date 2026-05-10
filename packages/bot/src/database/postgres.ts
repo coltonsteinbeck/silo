@@ -913,13 +913,24 @@ export class PostgresAdapter implements DatabaseAdapter {
     limit = 20
   ): Promise<ConversationMessage[]> {
     const result = await this.pool.query<ConversationMessageRow>(
-      `SELECT * FROM conversation_messages 
-       WHERE channel_id = $1 AND prompt_hash = $2 
-       ORDER BY created_at DESC LIMIT $3`,
+      `SELECT *
+       FROM (
+         SELECT *
+         FROM conversation_messages
+         WHERE channel_id = $1 AND prompt_hash = $2
+         ORDER BY created_at DESC
+         LIMIT $3
+       ) AS recent
+       ORDER BY created_at ASC,
+         CASE role
+           WHEN 'user' THEN 0
+           WHEN 'assistant' THEN 1
+           ELSE 2
+         END`,
       [channelId, promptHash, limit]
     );
 
-    return result.rows.reverse().map(row => ({
+    return result.rows.map(row => ({
       id: row.id,
       guildId: row.guild_id,
       channelId: row.channel_id,
