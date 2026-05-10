@@ -424,11 +424,15 @@ export function detectDeterministicHateEvasion(content: string): string[] {
 }
 
 function detectDeterministicPolicyBypass(content: string): string[] {
-  if (hasPromptInjectionPattern(content)) {
+  const normalized = normalizeContentForEvasionDetection(content);
+
+  if (hasPromptInjectionPattern(normalized)) {
     return ['prompt_injection/policy_bypass'];
   }
 
-  const matchesPolicyBypassPattern = POLICY_BYPASS_PATTERNS.some(pattern => pattern.test(content));
+  const matchesPolicyBypassPattern = POLICY_BYPASS_PATTERNS.some(pattern =>
+    pattern.test(normalized)
+  );
   return matchesPolicyBypassPattern ? ['prompt_injection/policy_bypass'] : [];
 }
 
