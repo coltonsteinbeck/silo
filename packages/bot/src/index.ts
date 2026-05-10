@@ -164,14 +164,23 @@ function acquireProcessLock(): boolean {
 
   const lockFile = path.join(process.cwd(), '.bot.lock');
 
+  const getErrorCode = (error: unknown): string | undefined => {
+    if (!error || typeof error !== 'object' || !('code' in error)) {
+      return undefined;
+    }
+
+    const maybeCode = (error as { code?: unknown }).code;
+    return typeof maybeCode === 'string' ? maybeCode : undefined;
+  };
+
   try {
     // Attempt atomic lock creation with 'wx' flag (exclusive write, fails if exists)
     try {
       fs.writeFileSync(lockFile, process.pid.toString(), { flag: 'wx' });
       console.log(`[LOCK] Process lock acquired (PID ${process.pid})`);
-    } catch (err: any) {
+    } catch (err: unknown) {
       // Handle existing lock file
-      if (err.code === 'EEXIST') {
+      if (getErrorCode(err) === 'EEXIST') {
         try {
           const content = fs.readFileSync(lockFile, 'utf-8').trim();
           const pid = parseInt(content, 10);
@@ -185,9 +194,9 @@ function acquireProcessLock(): boolean {
                 `[LOCK] Another bot instance (PID ${pid}) is already running. Exiting to prevent duplicates.`
               );
               return false;
-            } catch (signalErr: any) {
+            } catch (signalErr: unknown) {
               // Process doesn't exist - remove stale lock and retry
-              if (signalErr.code === 'ESRCH') {
+              if (getErrorCode(signalErr) === 'ESRCH') {
                 fs.unlinkSync(lockFile);
                 // Retry atomic creation once
                 try {
@@ -195,8 +204,8 @@ function acquireProcessLock(): boolean {
                   console.log(
                     `[LOCK] Process lock acquired (PID ${process.pid}) - cleaned up stale lock`
                   );
-                } catch (retryErr: any) {
-                  if (retryErr.code === 'EEXIST') {
+                } catch (retryErr: unknown) {
+                  if (getErrorCode(retryErr) === 'EEXIST') {
                     console.error(
                       '[LOCK] Failed to acquire lock after cleanup - another instance may have started'
                     );

@@ -182,3 +182,67 @@ describe('OpenAIProvider.generateImage reference image path', () => {
     );
   });
 });
+
+describe('OpenAIProvider.generateText reasoning parameters', () => {
+  test('maps budgeted reasoning to effort and max_output_tokens cap', async () => {
+    const provider = new OpenAIProvider('sk-test');
+    const createSpy = mock(async (_request: Record<string, unknown>) => ({
+      choices: [{ message: { content: 'hello' } }],
+      usage: {
+        prompt_tokens: 10,
+        completion_tokens: 5,
+        total_tokens: 15
+      },
+      model: 'gpt-5.4-nano'
+    }));
+
+    (provider as any).client = {
+      chat: {
+        completions: {
+          create: createSpy
+        }
+      }
+    };
+
+    await provider.generateText([{ role: 'user', content: 'test' }], {
+      reasoning: { type: 'budgeted', budget: 5000 },
+      maxTokens: 12000
+    });
+
+    const request = createSpy.mock.calls[0]?.[0] as Record<string, unknown>;
+    const reasoning = request.reasoning as Record<string, unknown> | undefined;
+    expect(reasoning).toEqual({ effort: 'medium' });
+    expect(request.max_output_tokens).toBe(5000);
+    expect(reasoning?.budget_tokens).toBeUndefined();
+  });
+
+  test('caps max_output_tokens at model limit for large reasoning budgets', async () => {
+    const provider = new OpenAIProvider('sk-test');
+    const createSpy = mock(async (_request: Record<string, unknown>) => ({
+      choices: [{ message: { content: 'hello' } }],
+      usage: {
+        prompt_tokens: 10,
+        completion_tokens: 5,
+        total_tokens: 15
+      },
+      model: 'gpt-5.4-nano'
+    }));
+
+    (provider as any).client = {
+      chat: {
+        completions: {
+          create: createSpy
+        }
+      }
+    };
+
+    await provider.generateText([{ role: 'user', content: 'test' }], {
+      reasoning: { type: 'budgeted', budget: 50000 }
+    });
+
+    const request = createSpy.mock.calls[0]?.[0] as Record<string, unknown>;
+    const reasoning = request.reasoning as Record<string, unknown> | undefined;
+    expect(reasoning).toEqual({ effort: 'xhigh' });
+    expect(request.max_output_tokens).toBe(16000);
+  });
+});
