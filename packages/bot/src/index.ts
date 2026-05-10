@@ -130,6 +130,80 @@ function shouldEmitPromptFallbackStartupAudit(guildId: string): boolean {
   return true;
 }
 
+function normalizeHistoryContent(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function isLowInformationAssistantReply(value: string): boolean {
+  const normalized = normalizeHistoryContent(value);
+  if (!normalized) {
+    return true;
+  }
+
+  const wordCount = normalized.split(' ').filter(Boolean).length;
+  return normalized.length <= 24 && wordCount <= 4;
+}
+
+function pruneDominantLowInformationAssistantReplies<T extends { role: string; content: string }>(
+  history: T[]
+): { filtered: T[]; removedCount: number; dominantReply: string | null } {
+  const lowInfoAssistantReplies = history.filter(
+    msg => msg.role === 'assistant' && isLowInformationAssistantReply(msg.content)
+  );
+
+  if (lowInfoAssistantReplies.length < 4) {
+    return { filtered: history, removedCount: 0, dominantReply: null };
+  }
+
+  const counts = new Map<string, number>();
+  for (const msg of lowInfoAssistantReplies) {
+    const key = normalizeHistoryContent(msg.content);
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+
+  let dominantReply: string | null = null;
+  let dominantCount = 0;
+  for (const [key, count] of counts.entries()) {
+    if (count > dominantCount) {
+      dominantReply = key;
+      dominantCount = count;
+    }
+  }
+
+  if (!dominantReply) {
+    return { filtered: history, removedCount: 0, dominantReply: null };
+  }
+
+  const dominanceRatio = dominantCount / lowInfoAssistantReplies.length;
+  if (dominantCount < 3 || dominanceRatio < 0.6) {
+    return { filtered: history, removedCount: 0, dominantReply: null };
+  }
+
+  let removedCount = 0;
+  const filtered = history.filter(msg => {
+    if (msg.role !== 'assistant') {
+      return true;
+    }
+
+    if (!isLowInformationAssistantReply(msg.content)) {
+      return true;
+    }
+
+    if (normalizeHistoryContent(msg.content) !== dominantReply) {
+      return true;
+    }
+
+    removedCount += 1;
+    return false;
+  });
+
+  if (removedCount === 0) {
+    return { filtered: history, removedCount: 0, dominantReply: null };
+  }
+
+  return { filtered, removedCount, dominantReply };
+}
+
 // Global error handlers to prevent silent crashes
 process.on('uncaughtException', error => {
   console.error('[FATAL] Uncaught exception:', error);
@@ -1040,7 +1114,19 @@ async function main() {
         })
       ]);
 
-      const messages = history.map(msg => ({
+      const {
+        filtered: historyForPrompt,
+        removedCount,
+        dominantReply
+      } = pruneDominantLowInformationAssistantReplies(history);
+
+      if (removedCount > 0) {
+        logger.info(
+          `Pruned ${removedCount} repetitive low-information assistant history messages (dominant="${dominantReply}") for guild ${message.guildId}, channel ${message.channelId}`
+        );
+      }
+
+      const messages = historyForPrompt.map(msg => ({
         role: msg.role,
         content: [
           msg.role === 'user' ? `[User: ${msg.userId}] ${msg.content}` : msg.content,
@@ -1294,6 +1380,7 @@ async function main() {
 
       // Fire-and-forget: post-LLM writes don't block the user-facing response
       const actualTokens = quotaMiddleware.getChargeableTextTokens(response.usage, responseContent);
+      const assistantUserId = message.client.user?.id || message.author.id;
       const conversationWrites = [
         db.storeConversationMessage({
           guildId: message.guildId,
@@ -1311,7 +1398,7 @@ async function main() {
         db.storeConversationMessage({
           guildId: message.guildId,
           channelId: message.channelId,
-          userId: message.author.id,
+          userId: assistantUserId,
           promptHash,
           role: 'assistant',
           content: responseContent,
