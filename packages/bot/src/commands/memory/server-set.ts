@@ -44,6 +44,9 @@ function resolveServerConflictKey(contextType: string, entities: string[]): stri
 }
 
 export const serverMemorySetInternals = {
+  hasPromptInjectionPattern,
+  detectDeterministicIllicitContent,
+  hasUnsafeSexualContext,
   extractLoreEntities,
   SERVER_CONTEXT_TRUST,
   SERVER_CONTEXT_PRIORITY,
@@ -112,14 +115,15 @@ export class ServerMemorySetCommand implements Command {
     const contextType = interaction.options.getString('type', true);
     const expiresInHours = interaction.options.getInteger('expires-in-hours');
 
-    if (hasPromptInjectionPattern(content)) {
+    if (serverMemorySetInternals.hasPromptInjectionPattern(content)) {
       await interaction.editReply(
         'Memory looks like instruction override text. Please store factual context instead of control instructions.'
       );
       return;
     }
 
-    const deterministicViolations = detectDeterministicIllicitContent(content);
+    const deterministicViolations =
+      serverMemorySetInternals.detectDeterministicIllicitContent(content);
     if (deterministicViolations.length > 0) {
       await interaction.editReply(
         'Memory was rejected by safety policy. Please remove unsafe content and try again.'
@@ -127,7 +131,7 @@ export class ServerMemorySetCommand implements Command {
       return;
     }
 
-    if (hasUnsafeSexualContext(content)) {
+    if (serverMemorySetInternals.hasUnsafeSexualContext(content)) {
       await interaction.editReply(
         'Memory was rejected by safety policy. Please remove unsafe sexual content and try again.'
       );
