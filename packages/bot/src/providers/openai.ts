@@ -80,6 +80,36 @@ function redactSecrets(value: string): string {
     .replace(/\bBearer\s+[A-Za-z0-9_.-]+\b/gi, 'Bearer [redacted-token]');
 }
 
+type OpenAIReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+
+const MAX_OPENAI_OUTPUT_TOKENS = 16000;
+
+function toReasoningEffort(
+  reasoning: TextGenerationOptions['reasoning']
+): OpenAIReasoningEffort | null {
+  if (!reasoning) {
+    return null;
+  }
+
+  if (reasoning.type === 'enabled') {
+    return 'medium';
+  }
+
+  if (reasoning.type === 'budgeted') {
+    const budget = typeof reasoning.budget === 'number' ? reasoning.budget : 0;
+    if (budget <= 2000) return 'low';
+    if (budget <= 6000) return 'medium';
+    if (budget <= 12000) return 'high';
+    return 'xhigh';
+  }
+
+  return null;
+}
+
+function clampOutputTokens(value: number): number {
+  return Math.min(Math.max(1, Math.trunc(value)), MAX_OPENAI_OUTPUT_TOKENS);
+}
+
 export class OpenAIProvider implements TextProvider, ImageProvider {
   name = 'openai';
   capabilities = { vision: true, maxImagesPerRequest: 1, maxImageReferences: 5 };
@@ -107,7 +137,7 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
       throw new Error('OpenAI provider not configured');
     }
 
-    // Build request with optional reasoning tokens for faster responses
+    // Build request payload
     const requestParams: Record<string, unknown> = {
       model: options?.model || this.defaultModel,
       messages: messages.map(m => ({
@@ -115,21 +145,28 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
         content: m.content
       })),
       temperature: options?.temperature ?? 0.8,
-      // GPT-5.4 models use max_completion_tokens; other models use max_tokens
-      ...(options?.maxTokens ? { max_completion_tokens: options.maxTokens } : {}),
       stream: false
     };
 
-    // Enable reasoning tokens for improved accuracy with bounded budget
+    let maxOutputTokens =
+      typeof options?.maxTokens === 'number' ? clampOutputTokens(options.maxTokens) : undefined;
+
+    // GPT-5.4 reasoning uses effort levels and max_output_tokens caps
     if (options?.reasoning) {
-      if (options.reasoning.type === 'budgeted' && options.reasoning.budget) {
-        requestParams.reasoning = {
-          type: 'budgeted',
-          budget_tokens: Math.min(options.reasoning.budget, 16000) // Cap at model limit
-        };
-      } else if (options.reasoning.type === 'enabled') {
-        requestParams.reasoning = 'enabled';
+      const effort = toReasoningEffort(options.reasoning);
+      if (effort) {
+        requestParams.reasoning = { effort };
       }
+
+      if (options.reasoning.type === 'budgeted' && typeof options.reasoning.budget === 'number') {
+        const budgetCap = clampOutputTokens(options.reasoning.budget);
+        maxOutputTokens =
+          typeof maxOutputTokens === 'number' ? Math.min(maxOutputTokens, budgetCap) : budgetCap;
+      }
+    }
+
+    if (typeof maxOutputTokens === 'number') {
+      requestParams.max_output_tokens = maxOutputTokens;
     }
 
     const response = await this.client.chat.completions.create(

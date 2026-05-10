@@ -205,6 +205,28 @@ describe('GoogleTextProvider', () => {
     expect(capturedRequestBody?.contents?.[0]?.role).toBe('user');
   });
 
+  test('applies caller-supplied temperature in generationConfig', async () => {
+    let capturedRequestBody: Record<string, any> | undefined;
+
+    globalThis.fetch = mock(async (_input: unknown, init?: { body?: unknown }) => {
+      capturedRequestBody = JSON.parse(String(init?.body ?? '{}'));
+      return jsonResponse({
+        candidates: [
+          {
+            content: {
+              parts: [{ text: 'assistant reply' }]
+            }
+          }
+        ]
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const provider = new GoogleTextProvider('google-key');
+    await provider.generateText([{ role: 'user', content: 'hello' }], { temperature: 0.35 });
+
+    expect(capturedRequestBody?.generationConfig?.temperature).toBe(0.35);
+  });
+
   test('surfaces upstream Gemini API errors for text generation', async () => {
     globalThis.fetch = mock(async () => {
       return new Response('bad gateway', { status: 502 });
