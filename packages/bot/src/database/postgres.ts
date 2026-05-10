@@ -148,6 +148,16 @@ export class PostgresAdapter implements DatabaseAdapter {
       ...(options?.ssl ? { ssl: { rejectUnauthorized: false } } : {})
     });
 
+    // Ensure search_path includes public schema on every new connection
+    // This is critical for Supabase pooled connections which may reset schema context
+    this.pool.on('connect', async client => {
+      try {
+        await client.query('SET search_path TO public');
+      } catch (err) {
+        logger.warn('Failed to set search_path on connection:', err);
+      }
+    });
+
     // Handle unexpected pool errors (e.g. idle client disconnections)
     // Without this handler, pool errors become uncaught exceptions that crash the process
     this.pool.on('error', err => {
@@ -193,6 +203,8 @@ export class PostgresAdapter implements DatabaseAdapter {
       }
 
       client = await this.pool.connect();
+      // Set a higher statement timeout for migrations (120 seconds)
+      await client.query('SET statement_timeout TO 120000');
       await client.query('SELECT pg_advisory_lock($1)', [PostgresAdapter.MIGRATION_LOCK_ID]);
 
       await client.query(`

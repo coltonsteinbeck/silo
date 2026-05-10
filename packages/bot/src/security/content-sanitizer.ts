@@ -203,6 +203,7 @@ const BLOCK_CATEGORIES = [
   'violence/graphic',
   'self-harm/intent',
   'self-harm/instructions',
+  'prompt_injection/policy_bypass',
   'sexual/explicit_generation',
   'illicit/drugs_instructional',
   'hate/slur_evasion',
@@ -266,15 +267,35 @@ const LEETSPEAK_CHAR_MAP: Record<string, string> = {
 
 const PROMPT_INJECTION_PATTERNS = [
   /ignore\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|rules?)/i,
+  /ignore\s+(your|all)\s+(safety|guardrail|content|policy|moderation)\s+rules?/i,
   /disregard\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|rules?)/i,
   /forget\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|rules?)/i,
   /system\s*:\s*override/i,
   /developer\s*:\s*override/i,
+  /developer\s+mode/i,
   /jailbreak/i,
   /do\s+anything\s+now/i,
+  /unfiltered\s+chatbot/i,
+  /no\s+safety\s+rules?/i,
+  /i\s+am\s+your\s+admin/i,
+  /obey\s+any\s+instructions?\s+inside/i,
   /reveal\s+(the\s+)?system\s+prompt/i,
   /print\s+(the\s+)?(hidden|internal)\s+instructions?/i,
   /act\s+as\s+(?:the\s+)?system/i
+];
+
+const POLICY_BYPASS_PATTERNS = [
+  /roleplay.{0,180}(?:allowed\s+to\s+say|including).{0,120}(?:hateful|demeaning|offensive|slur)/i,
+  /academic\s+research.{0,180}(?:offensive\s+terms?|slurs?).{0,120}(?:protected\s+groups?|protected\s+classes?)/i,
+  /moderation\s+tool.{0,220}(?:abusive\s+messages?|slurs?)/i,
+  /(?:encode|convert|write).{0,200}(?:leetspeak|unicode\s+lookalike|spaces?\s+between\s+letters|base64|rot13|cipher|acrostic).{0,220}(?:slur|forbidden|protected(?:[-_\s]+class|[-_\s]+group)|insult)/i,
+  /(?:slur|forbidden(?:\s+words?)?|protected(?:[-_\s]+class|[-_\s]+group)|insult).{0,220}(?:leetspeak|unicode\s+lookalike|spaces?\s+between\s+letters|base64|rot13|cipher|acrostic)/i,
+  /translate.{0,180}(?:insult|offensive).{0,180}(?:protected\s+group|protected\s+class)/i,
+  /people\s+from\s+\[?protected[-_\s]?group\]?\s+are\s+_{2,}/i,
+  /mean\s+joke.{0,120}\[?protected[-_\s]?group\]?/i,
+  /(?:list|give|provide|output|say|generate|write|complete).{0,220}(?:offensive\s+terms?|abusive\s+messages?|slurs?).{0,160}(?:protected\s+groups?|protected\s+classes?)/i,
+  /only\s+testing\s+filters?.{0,180}(?:output|say|give).{0,80}(?:\[?slur|forbidden)/i,
+  /acrostic.{0,180}spells?\s+out\s+a\s+slur/i
 ];
 
 const EXPLICIT_SEX_TOPIC_PATTERN =
@@ -402,6 +423,19 @@ export function detectDeterministicHateEvasion(content: string): string[] {
   return [...new Set(categories)];
 }
 
+function detectDeterministicPolicyBypass(content: string): string[] {
+  const normalized = normalizeContentForEvasionDetection(content);
+
+  if (hasPromptInjectionPattern(normalized)) {
+    return ['prompt_injection/policy_bypass'];
+  }
+
+  const matchesPolicyBypassPattern = POLICY_BYPASS_PATTERNS.some(pattern =>
+    pattern.test(normalized)
+  );
+  return matchesPolicyBypassPattern ? ['prompt_injection/policy_bypass'] : [];
+}
+
 function detectDeterministicExplicitSex(content: string): string[] {
   const hasTopic = EXPLICIT_SEX_TOPIC_PATTERN.test(content);
   const hasIntent = EXPLICIT_SEX_INTENT_PATTERN.test(content);
@@ -430,6 +464,7 @@ export function detectDeterministicIllicitContent(content: string): string[] {
 
   return [
     ...new Set([
+      ...detectDeterministicPolicyBypass(content),
       ...detectDeterministicHateEvasion(content),
       ...detectDeterministicExplicitSex(content),
       ...detectDeterministicDrugIntent(content),

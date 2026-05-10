@@ -28,6 +28,9 @@ yarn-error.log*
 .DS_Store
 Thumbs.db
 
+# Process locks (dev mode only - skipped in production with PM2)
+.bot.lock
+
 # IDE
 .vscode/
 .idea/

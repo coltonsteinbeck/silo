@@ -37,6 +37,15 @@ function resolveUserConflictKey(
   return null;
 }
 
+export const userMemorySetInternals = {
+  hasPromptInjectionPattern,
+  detectDeterministicIllicitContent,
+  hasUnsafeSexualContext,
+  extractLoreEntities,
+  USER_CONTEXT_TRUST,
+  resolveUserConflictKey
+};
+
 export class UserMemorySetCommand implements Command {
   data = new SlashCommandBuilder()
     .setName('user-memory-set')
@@ -79,7 +88,15 @@ export class UserMemorySetCommand implements Command {
     const contextType = interaction.options.getString('type', true) as UserMemory['contextType'];
     const expiresInHours = interaction.options.getInteger('expires-in-hours');
 
-    const deterministicViolations = detectDeterministicIllicitContent(content);
+    if (userMemorySetInternals.hasPromptInjectionPattern(content)) {
+      await interaction.editReply(
+        'Memory looks like instruction override text. Please store factual context instead of control instructions.'
+      );
+      return;
+    }
+
+    const deterministicViolations =
+      userMemorySetInternals.detectDeterministicIllicitContent(content);
     if (deterministicViolations.length > 0) {
       await interaction.editReply(
         'Memory was rejected by safety policy. Please remove unsafe content and try again.'
@@ -87,16 +104,9 @@ export class UserMemorySetCommand implements Command {
       return;
     }
 
-    if (hasUnsafeSexualContext(content)) {
+    if (userMemorySetInternals.hasUnsafeSexualContext(content)) {
       await interaction.editReply(
         'Memory was rejected by safety policy. Please remove unsafe sexual content and try again.'
-      );
-      return;
-    }
-
-    if (hasPromptInjectionPattern(content)) {
-      await interaction.editReply(
-        'Memory looks like instruction override text. Please store factual context instead of control instructions.'
       );
       return;
     }
@@ -106,7 +116,7 @@ export class UserMemorySetCommand implements Command {
       expiresAt = new Date(Date.now() + expiresInHours * 60 * 60 * 1000);
     }
 
-    const entities = extractLoreEntities(content);
+    const entities = userMemorySetInternals.extractLoreEntities(content);
     const sentiment = await sentimentClassifier.classifyPrompt(content);
     const sentimentMetadata =
       sentiment && shouldApplySentiment(sentiment)
@@ -125,8 +135,8 @@ export class UserMemorySetCommand implements Command {
       entities,
       source: 'user_command',
       sourcePriority: 62,
-      trustScore: USER_CONTEXT_TRUST[contextType],
-      conflictKey: resolveUserConflictKey(contextType, entities),
+      trustScore: userMemorySetInternals.USER_CONTEXT_TRUST[contextType],
+      conflictKey: userMemorySetInternals.resolveUserConflictKey(contextType, entities),
       ...sentimentMetadata
     };
 

@@ -8,9 +8,21 @@ import { describe, test, expect, mock, beforeEach } from 'bun:test';
 import { createMockInteraction, createMockDatabaseAdapter } from '@silo/core/test-setup';
 import { logger } from '@silo/core';
 import { ViewMemoryCommand } from '../../commands/memory/view';
-import { UserMemorySetCommand } from '../../commands/memory/user-set';
+import { UserMemorySetCommand, userMemorySetInternals } from '../../commands/memory/user-set';
 import { ServerMemorySetCommand, serverMemorySetInternals } from '../../commands/memory/server-set';
 import { ClearMemoryCommand } from '../../commands/memory/clear';
+
+const ORIGINAL_USER_SAFETY_GATES = {
+  hasPromptInjectionPattern: userMemorySetInternals.hasPromptInjectionPattern,
+  detectDeterministicIllicitContent: userMemorySetInternals.detectDeterministicIllicitContent,
+  hasUnsafeSexualContext: userMemorySetInternals.hasUnsafeSexualContext
+};
+
+const ORIGINAL_SERVER_SAFETY_GATES = {
+  hasPromptInjectionPattern: serverMemorySetInternals.hasPromptInjectionPattern,
+  detectDeterministicIllicitContent: serverMemorySetInternals.detectDeterministicIllicitContent,
+  hasUnsafeSexualContext: serverMemorySetInternals.hasUnsafeSexualContext
+};
 
 describe('ViewMemoryCommand', () => {
   let command: ViewMemoryCommand;
@@ -158,6 +170,14 @@ describe('UserMemorySetCommand', () => {
         generateEmbeddings: mock(async () => [[0.1, 0.2, 0.3]])
       }))
     };
+
+    userMemorySetInternals.hasPromptInjectionPattern =
+      ORIGINAL_USER_SAFETY_GATES.hasPromptInjectionPattern;
+    userMemorySetInternals.detectDeterministicIllicitContent =
+      ORIGINAL_USER_SAFETY_GATES.detectDeterministicIllicitContent;
+    userMemorySetInternals.hasUnsafeSexualContext =
+      ORIGINAL_USER_SAFETY_GATES.hasUnsafeSexualContext;
+
     command = new UserMemorySetCommand(mockDb, mockRegistry);
   });
 
@@ -252,6 +272,113 @@ describe('UserMemorySetCommand', () => {
       expect(reply).toContain('expires');
     });
 
+    test('uses prompt-injection safety gate and returns override reply', async () => {
+      const promptGate = mock(() => true);
+      const deterministicGate = mock(() => [] as string[]);
+      const sexualGate = mock(() => false);
+
+      userMemorySetInternals.hasPromptInjectionPattern = promptGate as any;
+      userMemorySetInternals.detectDeterministicIllicitContent = deterministicGate as any;
+      userMemorySetInternals.hasUnsafeSexualContext = sexualGate as any;
+
+      const interaction = createMockInteraction({
+        options: {
+          content: 'benign content',
+          type: 'summary'
+        }
+      });
+
+      await command.execute(interaction as any);
+
+      expect(promptGate).toHaveBeenCalledWith('benign content');
+      expect(deterministicGate).not.toHaveBeenCalled();
+      expect(sexualGate).not.toHaveBeenCalled();
+      expect(mockDb.storeUserMemory).not.toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        'Memory looks like instruction override text. Please store factual context instead of control instructions.'
+      );
+    });
+
+    test('uses deterministic illicit safety gate and returns policy reply', async () => {
+      const promptGate = mock(() => false);
+      const deterministicGate = mock(() => ['illicit/drugs_instructional']);
+      const sexualGate = mock(() => false);
+
+      userMemorySetInternals.hasPromptInjectionPattern = promptGate as any;
+      userMemorySetInternals.detectDeterministicIllicitContent = deterministicGate as any;
+      userMemorySetInternals.hasUnsafeSexualContext = sexualGate as any;
+
+      const interaction = createMockInteraction({
+        options: {
+          content: 'benign content',
+          type: 'summary'
+        }
+      });
+
+      await command.execute(interaction as any);
+
+      expect(promptGate).toHaveBeenCalledWith('benign content');
+      expect(deterministicGate).toHaveBeenCalledWith('benign content');
+      expect(sexualGate).not.toHaveBeenCalled();
+      expect(mockDb.storeUserMemory).not.toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        'Memory was rejected by safety policy. Please remove unsafe content and try again.'
+      );
+    });
+
+    test('uses unsafe-sexual safety gate and returns unsafe sexual reply', async () => {
+      const promptGate = mock(() => false);
+      const deterministicGate = mock(() => [] as string[]);
+      const sexualGate = mock(() => true);
+
+      userMemorySetInternals.hasPromptInjectionPattern = promptGate as any;
+      userMemorySetInternals.detectDeterministicIllicitContent = deterministicGate as any;
+      userMemorySetInternals.hasUnsafeSexualContext = sexualGate as any;
+
+      const interaction = createMockInteraction({
+        options: {
+          content: 'benign content',
+          type: 'summary'
+        }
+      });
+
+      await command.execute(interaction as any);
+
+      expect(promptGate).toHaveBeenCalledWith('benign content');
+      expect(deterministicGate).toHaveBeenCalledWith('benign content');
+      expect(sexualGate).toHaveBeenCalledWith('benign content');
+      expect(mockDb.storeUserMemory).not.toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        'Memory was rejected by safety policy. Please remove unsafe sexual content and try again.'
+      );
+    });
+
+    test('proceeds on accepted content when all safety gates allow', async () => {
+      const promptGate = mock(() => false);
+      const deterministicGate = mock(() => [] as string[]);
+      const sexualGate = mock(() => false);
+
+      userMemorySetInternals.hasPromptInjectionPattern = promptGate as any;
+      userMemorySetInternals.detectDeterministicIllicitContent = deterministicGate as any;
+      userMemorySetInternals.hasUnsafeSexualContext = sexualGate as any;
+
+      const interaction = createMockInteraction({
+        options: {
+          content: 'I prefer dark mode',
+          type: 'preference'
+        }
+      });
+
+      await command.execute(interaction as any);
+
+      expect(promptGate).toHaveBeenCalledWith('I prefer dark mode');
+      expect(deterministicGate).toHaveBeenCalledWith('I prefer dark mode');
+      expect(sexualGate).toHaveBeenCalledWith('I prefer dark mode');
+      expect(mockDb.storeUserMemory).toHaveBeenCalled();
+      const reply = interaction._getReplies()[0] as string;
+      expect(reply).toContain('User memory stored successfully');
+    });
+
     test('rejects prompt-injection style memory content', async () => {
       const interaction = createMockInteraction({
         options: {
@@ -302,6 +429,14 @@ describe('ServerMemorySetCommand', () => {
         generateEmbeddings: mock(async () => [[0.3, 0.2, 0.1]])
       }))
     };
+
+    serverMemorySetInternals.hasPromptInjectionPattern =
+      ORIGINAL_SERVER_SAFETY_GATES.hasPromptInjectionPattern;
+    serverMemorySetInternals.detectDeterministicIllicitContent =
+      ORIGINAL_SERVER_SAFETY_GATES.detectDeterministicIllicitContent;
+    serverMemorySetInternals.hasUnsafeSexualContext =
+      ORIGINAL_SERVER_SAFETY_GATES.hasUnsafeSexualContext;
+
     command = new ServerMemorySetCommand(mockDb, mockPermissions, mockRegistry);
   });
 
@@ -407,6 +542,105 @@ describe('ServerMemorySetCommand', () => {
       expect(mockDb.storeServerMemory).not.toHaveBeenCalled();
       const reply = interaction._getReplies()[0] as string;
       expect(reply).toContain('rejected by safety policy');
+    });
+
+    test('uses prompt-injection safety gate and returns override reply', async () => {
+      const promptGate = mock(() => true);
+      const deterministicGate = mock(() => [] as string[]);
+      const sexualGate = mock(() => false);
+
+      serverMemorySetInternals.hasPromptInjectionPattern = promptGate as any;
+      serverMemorySetInternals.detectDeterministicIllicitContent = deterministicGate as any;
+      serverMemorySetInternals.hasUnsafeSexualContext = sexualGate as any;
+
+      const interaction = createMockInteraction({
+        options: {
+          content: 'benign content',
+          type: 'rule'
+        }
+      });
+
+      (interaction as any).guild = {
+        members: {
+          fetch: mock(async () => interaction.member)
+        }
+      };
+
+      await command.execute(interaction as any);
+
+      expect(promptGate).toHaveBeenCalledWith('benign content');
+      expect(deterministicGate).not.toHaveBeenCalled();
+      expect(sexualGate).not.toHaveBeenCalled();
+      expect(mockDb.storeServerMemory).not.toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        'Memory looks like instruction override text. Please store factual context instead of control instructions.'
+      );
+    });
+
+    test('uses deterministic illicit safety gate and returns policy reply', async () => {
+      const promptGate = mock(() => false);
+      const deterministicGate = mock(() => ['prompt_injection/policy_bypass']);
+      const sexualGate = mock(() => false);
+
+      serverMemorySetInternals.hasPromptInjectionPattern = promptGate as any;
+      serverMemorySetInternals.detectDeterministicIllicitContent = deterministicGate as any;
+      serverMemorySetInternals.hasUnsafeSexualContext = sexualGate as any;
+
+      const interaction = createMockInteraction({
+        options: {
+          content: 'benign content',
+          type: 'rule'
+        }
+      });
+
+      (interaction as any).guild = {
+        members: {
+          fetch: mock(async () => interaction.member)
+        }
+      };
+
+      await command.execute(interaction as any);
+
+      expect(promptGate).toHaveBeenCalledWith('benign content');
+      expect(deterministicGate).toHaveBeenCalledWith('benign content');
+      expect(sexualGate).not.toHaveBeenCalled();
+      expect(mockDb.storeServerMemory).not.toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        'Memory was rejected by safety policy. Please remove unsafe content and try again.'
+      );
+    });
+
+    test('uses unsafe-sexual safety gate and returns unsafe sexual reply', async () => {
+      const promptGate = mock(() => false);
+      const deterministicGate = mock(() => [] as string[]);
+      const sexualGate = mock(() => true);
+
+      serverMemorySetInternals.hasPromptInjectionPattern = promptGate as any;
+      serverMemorySetInternals.detectDeterministicIllicitContent = deterministicGate as any;
+      serverMemorySetInternals.hasUnsafeSexualContext = sexualGate as any;
+
+      const interaction = createMockInteraction({
+        options: {
+          content: 'benign content',
+          type: 'rule'
+        }
+      });
+
+      (interaction as any).guild = {
+        members: {
+          fetch: mock(async () => interaction.member)
+        }
+      };
+
+      await command.execute(interaction as any);
+
+      expect(promptGate).toHaveBeenCalledWith('benign content');
+      expect(deterministicGate).toHaveBeenCalledWith('benign content');
+      expect(sexualGate).toHaveBeenCalledWith('benign content');
+      expect(mockDb.storeServerMemory).not.toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        'Memory was rejected by safety policy. Please remove unsafe sexual content and try again.'
+      );
     });
 
     test('stores embedding and replies with RAG indicator when embedding succeeds', async () => {

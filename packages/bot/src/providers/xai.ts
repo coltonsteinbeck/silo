@@ -68,7 +68,7 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider {
 
   constructor(
     apiKey?: string,
-    model: string = 'grok-4-1-fast-non-reasoning',
+    model: string = 'grok-4.20-non-reasoning',
     imageModel: string = 'grok-imagine-image',
     videoModel: string = 'grok-imagine-video',
     baseURL: string = 'https://api.x.ai/v1'
