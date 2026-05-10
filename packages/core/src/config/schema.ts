@@ -4,7 +4,7 @@ export const ProviderConfigSchema = z.object({
   openai: z
     .object({
       apiKey: z.string().optional(),
-      model: z.string().default('gpt-4o-mini'),
+      model: z.string().default('gpt-5.4-nano'),
       imageModel: z.string().default('gpt-image-1'),
       baseURL: z.string().url().optional()
     })
@@ -12,13 +12,13 @@ export const ProviderConfigSchema = z.object({
   anthropic: z
     .object({
       apiKey: z.string().optional(),
-      model: z.string().default('claude-3-5-sonnet-20241022')
+      model: z.string().default('claude-sonnet-4-6')
     })
     .optional(),
   xai: z
     .object({
       apiKey: z.string().optional(),
-      model: z.string().default('grok-4-1-fast-non-reasoning'),
+      model: z.string().default('grok-4.20-non-reasoning'),
       imageModel: z.string().default('grok-imagine-image'),
       videoModel: z.string().default('grok-imagine-video'),
       baseURL: z.string().url().default('https://api.x.ai/v1')
@@ -34,7 +34,9 @@ export const ProviderConfigSchema = z.object({
   google: z
     .object({
       apiKey: z.string().optional(),
-      model: z.string().default('gemini-3.1-flash-image-preview')
+      model: z.string().optional(), // Deprecated: use textModel/imageModel
+      textModel: z.string().optional(),
+      imageModel: z.string().optional()
     })
     .optional()
 });

@@ -31,6 +31,8 @@ import {
   ModalSubmitInteraction
 } from 'discord.js';
 import dns from 'node:dns';
+import fs from 'node:fs';
+import path from 'node:path';
 import { ConfigLoader, logger } from '@silo/core';
 import { ProviderRegistry } from './providers/registry';
 import { PostgresAdapter } from './database/postgres';
@@ -139,6 +141,120 @@ process.on('unhandledRejection', reason => {
   console.error('[FATAL] Unhandled promise rejection:', reason);
   // Don't exit — log and let the process continue
 });
+
+/**
+ * Acquire a process lock to prevent duplicate bot instances
+ * Skips lock when running under PM2 (which manages process lifecycle)
+ * Uses Bun-optimized file operations when available
+ * Returns true if lock was successfully acquired (or skipped for PM2)
+ */
+function acquireProcessLock(): boolean {
+  // Skip lock mechanism if running under PM2
+  // PM2 manages process lifecycle and prevents duplicates itself
+  if (process.env.PM2_HOME || process.env.PM_ID !== undefined) {
+    console.log('[LOCK] Running under PM2 - skipping process lock (PM2 manages lifecycle)');
+    return true;
+  }
+
+  // Also check if this is production with self-hosted mode (likely using PM2 or another orchestrator)
+  if (process.env.DEPLOYMENT_MODE === 'production' || process.env.NODE_ENV === 'production') {
+    console.log('[LOCK] Production mode detected - skipping process lock (using orchestrator)');
+    return true;
+  }
+
+  const lockFile = path.join(process.cwd(), '.bot.lock');
+
+  const getErrorCode = (error: unknown): string | undefined => {
+    if (!error || typeof error !== 'object' || !('code' in error)) {
+      return undefined;
+    }
+
+    const maybeCode = (error as { code?: unknown }).code;
+    return typeof maybeCode === 'string' ? maybeCode : undefined;
+  };
+
+  try {
+    // Attempt atomic lock creation with 'wx' flag (exclusive write, fails if exists)
+    try {
+      fs.writeFileSync(lockFile, process.pid.toString(), { flag: 'wx' });
+      console.log(`[LOCK] Process lock acquired (PID ${process.pid})`);
+    } catch (err: unknown) {
+      // Handle existing lock file
+      if (getErrorCode(err) === 'EEXIST') {
+        try {
+          const content = fs.readFileSync(lockFile, 'utf-8').trim();
+          const pid = parseInt(content, 10);
+
+          if (!isNaN(pid) && pid !== process.pid) {
+            // Check if the process is still alive
+            try {
+              process.kill(pid, 0);
+              // If we get here, process exists - don't start
+              console.error(
+                `[LOCK] Another bot instance (PID ${pid}) is already running. Exiting to prevent duplicates.`
+              );
+              return false;
+            } catch (signalErr: unknown) {
+              // Process doesn't exist - remove stale lock and retry
+              if (getErrorCode(signalErr) === 'ESRCH') {
+                fs.unlinkSync(lockFile);
+                // Retry atomic creation once
+                try {
+                  fs.writeFileSync(lockFile, process.pid.toString(), { flag: 'wx' });
+                  console.log(
+                    `[LOCK] Process lock acquired (PID ${process.pid}) - cleaned up stale lock`
+                  );
+                } catch (retryErr: unknown) {
+                  if (getErrorCode(retryErr) === 'EEXIST') {
+                    console.error(
+                      '[LOCK] Failed to acquire lock after cleanup - another instance may have started'
+                    );
+                    return false;
+                  }
+                  throw retryErr;
+                }
+              }
+            }
+          }
+        } catch (readErr) {
+          console.error('[LOCK] Error reading/validating lock file:', readErr);
+          throw readErr;
+        }
+      } else {
+        throw err;
+      }
+    }
+
+    // Clean up lock file on exit
+    const cleanup = () => {
+      try {
+        if (fs.existsSync(lockFile)) {
+          fs.unlinkSync(lockFile);
+        }
+      } catch {
+        // Ignore cleanup errors
+      }
+    };
+
+    // Register cleanup handlers
+    // For Bun: use standard process events which are well-supported
+    process.on('exit', cleanup);
+    process.on('SIGTERM', () => {
+      cleanup();
+      process.exit(0);
+    });
+    process.on('SIGINT', () => {
+      cleanup();
+      process.exit(0);
+    });
+
+    return true;
+  } catch (err) {
+    console.error('[LOCK] Failed to acquire process lock:', err);
+    return false;
+  }
+}
+
 /**
  * Handle modal submissions (e.g., system prompt editor)
  */
@@ -242,6 +358,14 @@ async function handleModalSubmit(interaction: ModalSubmitInteraction, adminDb: A
 }
 
 async function main() {
+  // Acquire process lock to prevent duplicate instances
+  if (!acquireProcessLock()) {
+    console.error(
+      '[MAIN] Failed to acquire process lock. Exiting to prevent duplicate bot instances.'
+    );
+    process.exit(1);
+  }
+
   logger.info('Starting Silo Discord Bot...');
 
   if (process.env.DB_PREFER_IPV4 === 'true') {
@@ -654,6 +778,13 @@ async function main() {
       const visionProvider = providers.getVisionProvider(preferredProvider || undefined);
       const visionRouting = decideVisionRouting(conversationContext, visionProvider);
       const useVision = visionRouting.useVision;
+
+      // Log provider fallback if configured provider couldn't be used
+      if (preferredProvider && preferredProvider !== textProvider.name) {
+        logger.warn(
+          `Guild ${message.guildId} configured provider "${preferredProvider}" is not available or not configured. Falling back to ${textProvider.name}.`
+        );
+      }
 
       const blockedByVisionPrecheck = await enforceVisionRoutingPrecheck(message, visionRouting);
       if (blockedByVisionPrecheck) {
