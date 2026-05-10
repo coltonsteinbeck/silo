@@ -151,7 +151,7 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
     let maxOutputTokens =
       typeof options?.maxTokens === 'number' ? clampOutputTokens(options.maxTokens) : undefined;
 
-    // GPT-5.4 reasoning uses effort levels and max_output_tokens caps
+    // chat.completions for GPT-5 models expects max_completion_tokens
     if (options?.reasoning) {
       const effort = toReasoningEffort(options.reasoning);
       if (effort) {
@@ -166,7 +166,7 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
     }
 
     if (typeof maxOutputTokens === 'number') {
-      requestParams.max_output_tokens = maxOutputTokens;
+      requestParams.max_completion_tokens = maxOutputTokens;
     }
 
     const response = await this.client.chat.completions.create(
@@ -336,7 +336,7 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
           ]
         }
       ],
-      max_tokens: options?.maxTokens || 500
+      max_completion_tokens: options?.maxTokens || 500
     });
 
     const choice = response.choices[0];
