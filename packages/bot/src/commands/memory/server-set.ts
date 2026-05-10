@@ -112,6 +112,13 @@ export class ServerMemorySetCommand implements Command {
     const contextType = interaction.options.getString('type', true);
     const expiresInHours = interaction.options.getInteger('expires-in-hours');
 
+    if (hasPromptInjectionPattern(content)) {
+      await interaction.editReply(
+        'Memory looks like instruction override text. Please store factual context instead of control instructions.'
+      );
+      return;
+    }
+
     const deterministicViolations = detectDeterministicIllicitContent(content);
     if (deterministicViolations.length > 0) {
       await interaction.editReply(
@@ -123,13 +130,6 @@ export class ServerMemorySetCommand implements Command {
     if (hasUnsafeSexualContext(content)) {
       await interaction.editReply(
         'Memory was rejected by safety policy. Please remove unsafe sexual content and try again.'
-      );
-      return;
-    }
-
-    if (hasPromptInjectionPattern(content)) {
-      await interaction.editReply(
-        'Memory looks like instruction override text. Please store factual context instead of control instructions.'
       );
       return;
     }
