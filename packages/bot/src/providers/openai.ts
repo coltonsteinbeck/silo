@@ -1,5 +1,9 @@
 import OpenAI from 'openai';
 import type {
+  ChatCompletion,
+  ChatCompletionCreateParamsNonStreaming
+} from 'openai/resources/chat/completions';
+import type {
   TextProvider,
   ImageProvider,
   Message,
@@ -76,6 +80,36 @@ function redactSecrets(value: string): string {
     .replace(/\bBearer\s+[A-Za-z0-9_.-]+\b/gi, 'Bearer [redacted-token]');
 }
 
+type OpenAIReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+
+const MAX_OPENAI_OUTPUT_TOKENS = 16000;
+
+function toReasoningEffort(
+  reasoning: TextGenerationOptions['reasoning']
+): OpenAIReasoningEffort | null {
+  if (!reasoning) {
+    return null;
+  }
+
+  if (reasoning.type === 'enabled') {
+    return 'medium';
+  }
+
+  if (reasoning.type === 'budgeted') {
+    const budget = typeof reasoning.budget === 'number' ? reasoning.budget : 0;
+    if (budget <= 2000) return 'low';
+    if (budget <= 6000) return 'medium';
+    if (budget <= 12000) return 'high';
+    return 'xhigh';
+  }
+
+  return null;
+}
+
+function clampOutputTokens(value: number): number {
+  return Math.min(Math.max(1, Math.trunc(value)), MAX_OPENAI_OUTPUT_TOKENS);
+}
+
 export class OpenAIProvider implements TextProvider, ImageProvider {
   name = 'openai';
   capabilities = { vision: true, maxImagesPerRequest: 1, maxImageReferences: 5 };
@@ -83,7 +117,7 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
   private defaultModel: string;
   private defaultImageModel: string;
 
-  constructor(apiKey?: string, model: string = 'gpt-5-mini', imageModel: string = 'gpt-image-1') {
+  constructor(apiKey?: string, model: string = 'gpt-5.4-nano', imageModel: string = 'gpt-image-1') {
     this.defaultModel = model;
     this.defaultImageModel = imageModel;
     if (apiKey) {
@@ -103,32 +137,72 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
       throw new Error('OpenAI provider not configured');
     }
 
-    const response = await this.client.chat.completions.create({
+    // Build request payload
+    const requestParams: Record<string, unknown> = {
       model: options?.model || this.defaultModel,
       messages: messages.map(m => ({
         role: m.role,
         content: m.content
       })),
       temperature: options?.temperature ?? 0.8,
-      max_tokens: options?.maxTokens,
       stream: false
-    });
+    };
 
-    const choice = response.choices[0];
+    let maxOutputTokens =
+      typeof options?.maxTokens === 'number' ? clampOutputTokens(options.maxTokens) : undefined;
+
+    // GPT-5.4 reasoning uses effort levels and max_output_tokens caps
+    if (options?.reasoning) {
+      const effort = toReasoningEffort(options.reasoning);
+      if (effort) {
+        requestParams.reasoning = { effort };
+      }
+
+      if (options.reasoning.type === 'budgeted' && typeof options.reasoning.budget === 'number') {
+        const budgetCap = clampOutputTokens(options.reasoning.budget);
+        maxOutputTokens =
+          typeof maxOutputTokens === 'number' ? Math.min(maxOutputTokens, budgetCap) : budgetCap;
+      }
+    }
+
+    if (typeof maxOutputTokens === 'number') {
+      requestParams.max_output_tokens = maxOutputTokens;
+    }
+
+    const response = await this.client.chat.completions.create(
+      requestParams as unknown as ChatCompletionCreateParamsNonStreaming
+    );
+
+    // Type guard: stream is false, so response is ChatCompletion, not Stream
+    const chatResponse = response as ChatCompletion & { _request_id?: string | null };
+
+    const choice = chatResponse.choices[0];
     if (!choice?.message?.content) {
       throw new Error('No response from OpenAI');
     }
 
+    // Extract thinking content if available (for models with extended thinking)
+    const thinking = (choice.message as unknown as Record<string, unknown>).reasoning as
+      | string
+      | undefined;
+
     return {
       content: choice.message.content,
-      usage: response.usage
+      thinking,
+      usage: chatResponse.usage
         ? {
-            promptTokens: response.usage.prompt_tokens,
-            completionTokens: response.usage.completion_tokens,
-            totalTokens: response.usage.total_tokens
+            promptTokens: chatResponse.usage.prompt_tokens,
+            completionTokens: chatResponse.usage.completion_tokens,
+            totalTokens: chatResponse.usage.total_tokens,
+            reasoningTokens: (chatResponse.usage as unknown as Record<string, unknown>)
+              .reasoning_tokens as number | undefined,
+            cacheCreationTokens: (chatResponse.usage as unknown as Record<string, unknown>)
+              .cache_creation_input_tokens as number | undefined,
+            cacheReadTokens: (chatResponse.usage as unknown as Record<string, unknown>)
+              .cache_read_input_tokens as number | undefined
           }
         : undefined,
-      model: response.model
+      model: chatResponse.model
     };
   }
 
