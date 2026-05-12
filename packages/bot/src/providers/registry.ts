@@ -18,7 +18,7 @@ export class ProviderRegistry {
   private videoProviders: VideoProvider[] = [];
   private embeddingProvider: EmbeddingProvider | null = null;
 
-  constructor(config: Config) {
+  constructor(private readonly config: Config) {
     if (config.providers.openai?.apiKey) {
       const provider = new OpenAIProvider(
         config.providers.openai.apiKey,
@@ -96,6 +96,45 @@ export class ProviderRegistry {
       throw new Error('No text provider configured. Add API keys to .env');
     }
     return configured;
+  }
+
+  getConfiguredTextModel(name: string): string | undefined {
+    switch (name) {
+      case 'openai':
+        return this.config.providers.openai?.model;
+      case 'anthropic':
+        return this.config.providers.anthropic?.model;
+      case 'xai':
+        return this.config.providers.xai?.model;
+      case 'google':
+        return this.config.providers.google?.textModel || this.config.providers.google?.model;
+      case 'local':
+        return this.config.providers.local?.model;
+      default:
+        return undefined;
+    }
+  }
+
+  getConfiguredImageModel(name: string): string | undefined {
+    switch (name) {
+      case 'openai':
+        return this.config.providers.openai?.imageModel;
+      case 'xai':
+        return this.config.providers.xai?.imageModel;
+      case 'google':
+        return this.config.providers.google?.imageModel || this.config.providers.google?.model;
+      default:
+        return undefined;
+    }
+  }
+
+  getConfiguredVideoModel(name: string): string | undefined {
+    switch (name) {
+      case 'xai':
+        return this.config.providers.xai?.videoModel;
+      default:
+        return undefined;
+    }
   }
 
   getImageProvider(name?: string): ImageProvider {

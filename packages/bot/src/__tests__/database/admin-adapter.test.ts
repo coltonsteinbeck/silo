@@ -184,4 +184,37 @@ describe('AdminAdapter cost helpers', () => {
     const params = (pool.query.mock.calls[0]?.[1] || []) as unknown[];
     expect(params).toEqual(['guild-1', false, null]);
   });
+
+  test('getServerRuntimeConfig returns config and prompt state from one query', async () => {
+    pool._setQueryResults([
+      {
+        rows: [
+          {
+            guild_id: 'guild-1',
+            default_provider: 'xai',
+            auto_thread: true,
+            memory_retention_days: 14,
+            rate_limit_multiplier: 1,
+            features_enabled: { edgyModeEnabled: false },
+            channel_configs: {},
+            system_prompt: 'Respond like a Roman emperor.',
+            voice_system_prompt: 'Speak like a Roman emperor.',
+            system_prompt_enabled: false,
+            created_at: new Date('2026-01-01T00:00:00Z'),
+            updated_at: new Date('2026-01-01T00:00:00Z')
+          }
+        ],
+        rowCount: 1
+      }
+    ]);
+
+    const result = await adapter.getServerRuntimeConfig('guild-1');
+
+    expect(pool.query).toHaveBeenCalledTimes(1);
+    expect(result.serverConfig?.defaultProvider).toBe('xai');
+    expect(result.systemPrompt).toEqual({
+      prompt: 'Respond like a Roman emperor.',
+      enabled: false
+    });
+  });
 });

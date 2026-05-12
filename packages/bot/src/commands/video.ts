@@ -15,6 +15,8 @@ import {
   moderateCommandPrompt,
   type PromptModerationGuard
 } from '../security/command-prompt-moderation';
+import { withLangfuseGeneration, summarizeTextForTrace } from '../telemetry/langfuse-client';
+import { buildLangfuseTags, buildLangfuseTraceMetadata } from '../telemetry/langfuse-metadata';
 
 const XAI_VIDEO_MODEL = 'grok-imagine-video';
 const FIXED_VIDEO_OUTPUT_COUNT = 1;
@@ -308,13 +310,62 @@ export class VideoCommand implements Command {
         return;
       }
 
-      const result = await provider.generateVideo(effectivePrompt, {
+      const generationMetadataInput = {
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        interactionId: interaction.id,
+        messageType: 'slash-command' as const,
+        commandName: 'video',
+        provider: provider.name,
         model: XAI_VIDEO_MODEL,
-        duration,
-        resolution: effectiveResolution,
-        aspectRatio,
-        referenceImages: references
-      });
+        adapter: provider.name,
+        usesTools: false,
+        supportsImages: references.length > 0,
+        supportsVideo: true,
+        supportsAudio: false,
+        isLocalModel: provider.name === 'local'
+      };
+
+      const result = await withLangfuseGeneration(
+        {
+          name: 'slash-command-video',
+          tags: buildLangfuseTags(generationMetadataInput),
+          input: {
+            promptPreview: summarizeTextForTrace(effectivePrompt),
+            duration,
+            resolution: effectiveResolution,
+            aspectRatio,
+            referenceCount: references.length,
+            quotaCost
+          },
+          model: XAI_VIDEO_MODEL,
+          metadata: buildLangfuseTraceMetadata(generationMetadataInput)
+        },
+        async generation => {
+          const providerResult = await provider.generateVideo(effectivePrompt, {
+            model: XAI_VIDEO_MODEL,
+            duration,
+            resolution: effectiveResolution,
+            aspectRatio,
+            referenceImages: references
+          });
+
+          generation?.update({
+            model: providerResult.model || XAI_VIDEO_MODEL,
+            output: {
+              hasContent: Boolean(providerResult.url),
+              duration: providerResult.duration || duration,
+              moderationPassed: providerResult.moderationPassed ?? true
+            },
+            metadata: buildLangfuseTraceMetadata({
+              ...generationMetadataInput,
+              model: providerResult.model || XAI_VIDEO_MODEL
+            })
+          });
+
+          return providerResult;
+        }
+      );
 
       const embed = new EmbedBuilder()
         .setTitle('Video Generated')

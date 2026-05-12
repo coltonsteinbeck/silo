@@ -130,6 +130,32 @@ LOCAL_MODEL=llama3.1
 # LOCAL_API_KEY=optional (many local endpoints ignore it)
 ```
 
+### Langfuse Observability
+
+Langfuse tracing is optional, but recommended if you want request-level visibility into model routing, prompt lineage, guardrails, and generation behavior.
+
+Example self-hosted/dev settings:
+
+```bash
+APP_NAME=silo
+APP_ENV=development
+HOST_NAME=hostname
+PROMPT_VERSION=silo-dev-v1
+
+LANGFUSE_ENABLED=true
+LANGFUSE_BASE_URL=https://langfuse.example.com
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_RELEASE=silo-dev-local
+LANGFUSE_USER_HASH_SALT=replace-with-stable-random-value
+```
+
+Notes:
+
+- `PROMPT_VERSION` identifies the deployed prompt/version family. It is separate from the runtime prompt hash used for effective prompt lineage.
+- Discord user IDs are hashed before they are sent to Langfuse. Set `LANGFUSE_USER_HASH_SALT` to a stable random value per deployment.
+- The app uses `LANGFUSE_BASE_URL`. If you use the Langfuse CLI separately, you may also want `LANGFUSE_HOST` set to the same value.
+
 ### Docker Deployment
 
 ```bash

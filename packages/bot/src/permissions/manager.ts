@@ -5,18 +5,9 @@ import { ROLE_RATE_LIMITS, RateLimits } from '@silo/core';
 export class PermissionManager {
   constructor(private adminAdapter: AdminAdapter) {}
 
-  async getUserRoleTier(
-    guildId: string,
-    userId: string,
+  resolveRoleTierFromMember(
     member: GuildMember
-  ): Promise<'admin' | 'moderator' | 'trusted' | 'member' | 'restricted'> {
-    // Check custom role assignment first
-    const customRole = await this.adminAdapter.getUserRole(guildId, userId);
-    if (customRole) {
-      return customRole.roleTier;
-    }
-
-    // Check Discord permissions
+  ): 'admin' | 'moderator' | 'trusted' | 'member' | 'restricted' {
     if (member.permissions.has(PermissionFlagsBits.Administrator)) {
       return 'admin';
     }
@@ -31,13 +22,25 @@ export class PermissionManager {
       return 'moderator';
     }
 
-    // Check if user has been timed out or has restricted role
     if (member.communicationDisabledUntil && member.communicationDisabledUntil > new Date()) {
       return 'restricted';
     }
 
-    // Default to member
     return 'member';
+  }
+
+  async getUserRoleTier(
+    guildId: string,
+    userId: string,
+    member: GuildMember
+  ): Promise<'admin' | 'moderator' | 'trusted' | 'member' | 'restricted'> {
+    // Check custom role assignment first
+    const customRole = await this.adminAdapter.getUserRole(guildId, userId);
+    if (customRole) {
+      return customRole.roleTier;
+    }
+
+    return this.resolveRoleTierFromMember(member);
   }
 
   async getRateLimits(guildId: string, userId: string, member: GuildMember): Promise<RateLimits> {

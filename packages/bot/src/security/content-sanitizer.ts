@@ -813,6 +813,21 @@ class ContentSanitizer {
     return sanitized;
   }
 
+  async prewarmRuntime(): Promise<void> {
+    if (!process.env.OPENAI_API_KEY) {
+      return;
+    }
+
+    try {
+      await getOpenAIClient().moderations.create({
+        model: 'omni-moderation-latest',
+        input: 'Warmup safety check.'
+      });
+    } catch (error) {
+      logger.debug('Content moderation prewarm failed', error);
+    }
+  }
+
   /**
    * Full content processing pipeline
    */
