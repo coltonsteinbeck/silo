@@ -45,7 +45,8 @@ describe('sentiment-classifier', () => {
     cleanup = withEnv({
       SENTIMENT_ENABLED: 'true',
       SENTIMENT_MODE: 'hybrid',
-      OPENAI_API_KEY: 'test-key'
+      OPENAI_API_KEY: 'test-key',
+      SENTIMENT_PROMPT_FAST_PATH: 'false'
     });
 
     setSentimentRuntimeForTests({
@@ -65,6 +66,66 @@ describe('sentiment-classifier', () => {
     expect(result?.source).toBe('ai');
     expect(result?.confidence).toBe(0.87);
     expect(shouldApplySentiment(result || null)).toBe(true);
+  });
+
+  test('uses heuristic fast path for short prompt traffic even when AI is available', async () => {
+    cleanup = withEnv({
+      SENTIMENT_ENABLED: 'true',
+      SENTIMENT_MODE: 'hybrid',
+      OPENAI_API_KEY: 'test-key'
+    });
+
+    let aiCalls = 0;
+    setSentimentRuntimeForTests({
+      classifyWithAi: async () => {
+        aiCalls += 1;
+        return {
+          label: 'positive',
+          score: 0.5,
+          confidence: 0.9,
+          urgency: 0,
+          frustration: 0,
+          confusion: 0,
+          source: 'ai'
+        };
+      }
+    });
+
+    const result = await sentimentClassifier.classifyPrompt('hail caesar');
+
+    expect(result?.source).toBe('heuristic');
+    expect(aiCalls).toBe(0);
+  });
+
+  test('still uses AI for longer ambiguous prompts when fast path does not apply', async () => {
+    cleanup = withEnv({
+      SENTIMENT_ENABLED: 'true',
+      SENTIMENT_MODE: 'hybrid',
+      OPENAI_API_KEY: 'test-key'
+    });
+
+    let aiCalls = 0;
+    setSentimentRuntimeForTests({
+      classifyWithAi: async () => {
+        aiCalls += 1;
+        return {
+          label: 'neutral',
+          score: 0,
+          confidence: 0.82,
+          urgency: 0.1,
+          frustration: 0.1,
+          confusion: 0.2,
+          source: 'ai'
+        };
+      }
+    });
+
+    const result = await sentimentClassifier.classifyPrompt(
+      'I want to understand how you should respond to nuanced requests across several cases where the tone is not obvious and the intent is mixed.'
+    );
+
+    expect(result?.source).toBe('ai');
+    expect(aiCalls).toBe(1);
   });
 
   test('times out AI path and falls back to heuristic', async () => {

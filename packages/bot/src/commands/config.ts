@@ -343,7 +343,10 @@ export class ConfigCommand implements Command {
             }
 
             case 'enable': {
-              await this.adminDb.toggleSystemPrompt(interaction.guildId, true);
+              await this.adminDb.toggleSystemPrompt(interaction.guildId, true, {
+                actorUserId: interaction.user.id,
+                promptType: forVoice ? 'voice' : 'text'
+              });
               await interaction.reply({
                 content: `✅ ${typeLabel.charAt(0).toUpperCase() + typeLabel.slice(1)} system prompt **enabled**`,
                 ephemeral: true
@@ -352,7 +355,10 @@ export class ConfigCommand implements Command {
             }
 
             case 'disable': {
-              await this.adminDb.toggleSystemPrompt(interaction.guildId, false);
+              await this.adminDb.toggleSystemPrompt(interaction.guildId, false, {
+                actorUserId: interaction.user.id,
+                promptType: forVoice ? 'voice' : 'text'
+              });
               await interaction.reply({
                 content: `⏸️ ${typeLabel.charAt(0).toUpperCase() + typeLabel.slice(1)} system prompt **disabled** (prompt preserved)`,
                 ephemeral: true
@@ -361,7 +367,10 @@ export class ConfigCommand implements Command {
             }
 
             case 'clear': {
-              await this.adminDb.setSystemPrompt(interaction.guildId, null, { forVoice });
+              await this.adminDb.setSystemPrompt(interaction.guildId, null, {
+                forVoice,
+                actorUserId: interaction.user.id
+              });
               await interaction.reply({
                 content: `🗑️ ${typeLabel.charAt(0).toUpperCase() + typeLabel.slice(1)} system prompt **cleared**`,
                 ephemeral: true
