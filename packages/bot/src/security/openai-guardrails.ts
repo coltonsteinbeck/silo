@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { logger } from '@silo/core';
 import { deploymentDetector } from './deployment';
+import { hashPrompt } from './prompt-policy';
 
 type GuardrailsModule = typeof import('@openai/guardrails');
 type GuardrailsRunner = Pick<GuardrailsModule, 'runGuardrails'>;
@@ -27,6 +28,14 @@ const DEFAULT_GUARDRAILS_MODEL = 'gpt-4.1-mini';
 const DEFAULT_JAILBREAK_THRESHOLD = 0.7;
 const DEFAULT_CONTENT_THRESHOLD = 0.7;
 const DEFAULT_MAX_TURNS = 1;
+const DEFAULT_CUSTOM_PROMPT_CACHE_TTL_MS = 15 * 60 * 1000;
+const LOW_RISK_INPUT_MAX_CHARS = 80;
+const LOW_RISK_INPUT_MAX_WORDS = 6;
+const DEFAULT_CUSTOM_PROMPT_WARMUP_TEXT = 'You are a helpful Discord assistant.';
+const DEFAULT_ASSISTANT_OUTPUT_WARMUP_TEXT = 'Hello! How can I help you today?';
+
+const SUSPICIOUS_SHORT_PROMPT_PATTERN =
+  /ignore|forget|disregard|override|system\s*:|\[system\]|instruction|prompt|developer|jailbreak|roleplay|pretend\s+you\s+are|reveal|show\s+the\s+prompt|show\s+the\s+instructions/i;
 
 const USER_PROMPT_PIPELINE: PipelineKey = 'user_prompt';
 const CUSTOM_PROMPT_PIPELINE: PipelineKey = 'custom_prompt';
@@ -55,12 +64,17 @@ const guardrailBundleCache = new Map<
   PipelineKey,
   { version: number; guardrails: GuardrailSpec[] }
 >();
+const customPromptDecisionCache = new Map<
+  string,
+  { decision: GuardrailsPromptDecision; expiresAt: number }
+>();
 
 export function resetGuardrailsRuntimeForTests(): void {
   warnedMissingApiKey = false;
   guardrailsModulePromise = null;
   guardrailLlmClientPromise = null;
   guardrailBundleCache.clear();
+  customPromptDecisionCache.clear();
 }
 
 export function setGuardrailsRuntimeForTests(params: {
@@ -80,6 +94,23 @@ function parseThreshold(value: string | undefined, fallback: number): number {
   }
 
   return Math.min(1, Math.max(0, parsed));
+}
+
+function parseBoolean(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+    return true;
+  }
+
+  if (['0', 'false', 'no', 'off'].includes(normalized)) {
+    return false;
+  }
+
+  return fallback;
 }
 
 function parseMaxTurns(value: string | undefined): number {
@@ -234,6 +265,67 @@ function shouldFailClosed(options: GuardrailsCheckOptions): boolean {
   }
 
   return shouldRaiseGuardrailErrors();
+}
+
+function getCustomPromptCacheTtlMs(): number {
+  const parsed = Number(process.env.OPENAI_GUARDRAILS_CUSTOM_PROMPT_CACHE_TTL_MS);
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_CUSTOM_PROMPT_CACHE_TTL_MS;
+  }
+
+  return Math.max(0, Math.trunc(parsed));
+}
+
+function countWords(text: string): number {
+  return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
+function shouldUseLowRiskUserPromptFastPath(text: string): boolean {
+  if (!parseBoolean(process.env.OPENAI_GUARDRAILS_INPUT_FAST_PATH, true)) {
+    return false;
+  }
+
+  if (text.length > LOW_RISK_INPUT_MAX_CHARS) {
+    return false;
+  }
+
+  if (countWords(text) > LOW_RISK_INPUT_MAX_WORDS) {
+    return false;
+  }
+
+  return !SUSPICIOUS_SHORT_PROMPT_PATTERN.test(text);
+}
+
+function getCachedCustomPromptDecision(prompt: string): GuardrailsPromptDecision | null {
+  const ttlMs = getCustomPromptCacheTtlMs();
+  if (ttlMs <= 0) {
+    return null;
+  }
+
+  const cacheKey = hashPrompt(prompt);
+  const cached = customPromptDecisionCache.get(cacheKey);
+  if (!cached) {
+    return null;
+  }
+
+  if (cached.expiresAt <= Date.now()) {
+    customPromptDecisionCache.delete(cacheKey);
+    return null;
+  }
+
+  return cached.decision;
+}
+
+function cacheCustomPromptDecision(prompt: string, decision: GuardrailsPromptDecision): void {
+  const ttlMs = getCustomPromptCacheTtlMs();
+  if (ttlMs <= 0 || decision.executionFailed) {
+    return;
+  }
+
+  customPromptDecisionCache.set(hashPrompt(prompt), {
+    decision,
+    expiresAt: Date.now() + ttlMs
+  });
 }
 
 function extractGuardrailName(result: unknown): string | undefined {
@@ -418,6 +510,10 @@ export async function evaluateUserPromptGuardrails(
     return { allowed: true };
   }
 
+  if (shouldUseLowRiskUserPromptFastPath(normalized)) {
+    return { allowed: true };
+  }
+
   return evaluateWithPipeline(USER_PROMPT_PIPELINE, normalized, options);
 }
 
@@ -430,7 +526,59 @@ export async function evaluateCustomSystemPromptGuardrails(
     return { allowed: true };
   }
 
-  return evaluateWithPipeline(CUSTOM_PROMPT_PIPELINE, normalized, options);
+  const cached = getCachedCustomPromptDecision(normalized);
+  if (cached) {
+    return cached;
+  }
+
+  const decision = await evaluateWithPipeline(CUSTOM_PROMPT_PIPELINE, normalized, options);
+  cacheCustomPromptDecision(normalized, decision);
+  return decision;
+}
+
+export async function prewarmGuardrailsRuntime(
+  params: {
+    customPrompts?: string[];
+  } = {}
+): Promise<void> {
+  if (!isGuardrailsEnabled() || !process.env.OPENAI_API_KEY) {
+    return;
+  }
+
+  await Promise.all([getGuardrailsModule(), getGuardrailLlmClient()]);
+  getGuardrailBundle(USER_PROMPT_PIPELINE);
+  getGuardrailBundle(CUSTOM_PROMPT_PIPELINE);
+  getGuardrailBundle(ASSISTANT_OUTPUT_PIPELINE);
+
+  const customPrompts = Array.from(
+    new Set(
+      (params.customPrompts || []).map(prompt => prompt.trim()).filter(prompt => prompt.length > 0)
+    )
+  );
+
+  const warmupTasks: Promise<unknown>[] = [
+    evaluateWithPipeline(ASSISTANT_OUTPUT_PIPELINE, DEFAULT_ASSISTANT_OUTPUT_WARMUP_TEXT, {
+      failClosedOnError: false
+    })
+  ];
+
+  if (customPrompts.length > 0) {
+    warmupTasks.push(
+      ...customPrompts.map(prompt =>
+        evaluateCustomSystemPromptGuardrails(prompt, {
+          failClosedOnError: false
+        })
+      )
+    );
+  } else {
+    warmupTasks.push(
+      evaluateWithPipeline(CUSTOM_PROMPT_PIPELINE, DEFAULT_CUSTOM_PROMPT_WARMUP_TEXT, {
+        failClosedOnError: false
+      })
+    );
+  }
+
+  await Promise.allSettled(warmupTasks);
 }
 
 export async function evaluateAssistantOutputGuardrails(

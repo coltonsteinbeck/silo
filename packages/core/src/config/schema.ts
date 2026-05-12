@@ -52,6 +52,13 @@ export const RedisConfigSchema = z.object({
   maxRetries: z.number().int().default(3)
 });
 
+export const AppConfigSchema = z.object({
+  name: z.string().min(1).default('silo'),
+  environment: z.string().min(1).default('development'),
+  hostName: z.string().min(1).default('unknown'),
+  promptVersion: z.string().min(1).optional()
+});
+
 export const RateLimitConfigSchema = z.object({
   commandsPerUser: z.number().int().positive().default(10),
   aiRequestsPerGuild: z.number().int().positive().default(50),
@@ -104,7 +111,49 @@ export const SecurityConfigSchema = z.object({
     })
 });
 
+export const LangfuseConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    publicKey: z.string().min(1).optional(),
+    secretKey: z.string().min(1).optional(),
+    userHashSalt: z.string().min(1).optional(),
+    baseUrl: z.string().url().default('https://cloud.langfuse.com'),
+    sampleRate: z.number().min(0).max(1).default(1),
+    environment: z.string().min(1).default('development'),
+    release: z.string().min(1).optional(),
+    timeout: z.number().int().positive().default(5),
+    flushAt: z.number().int().positive().default(15),
+    flushInterval: z.number().int().positive().default(5),
+    exportMode: z.enum(['batched', 'immediate']).default('batched')
+  })
+  .superRefine((value, ctx) => {
+    if (!value.enabled) {
+      return;
+    }
+
+    if (!value.publicKey) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['publicKey'],
+        message: 'LANGFUSE_PUBLIC_KEY is required when Langfuse tracing is enabled.'
+      });
+    }
+
+    if (!value.secretKey) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['secretKey'],
+        message: 'LANGFUSE_SECRET_KEY is required when Langfuse tracing is enabled.'
+      });
+    }
+  });
+
 export const ConfigSchema = z.object({
+  app: AppConfigSchema.default({
+    name: 'silo',
+    environment: 'development',
+    hostName: 'unknown'
+  }),
   discord: z.object({
     token: z.string().min(50),
     clientId: z.string().min(1),
@@ -127,11 +176,23 @@ export const ConfigSchema = z.object({
     entityWeight: 0.03
   }),
   mlService: MLServiceConfigSchema.optional(),
-  security: SecurityConfigSchema
+  security: SecurityConfigSchema,
+  langfuse: LangfuseConfigSchema.default({
+    enabled: false,
+    baseUrl: 'https://cloud.langfuse.com',
+    sampleRate: 1,
+    environment: 'development',
+    timeout: 5,
+    flushAt: 15,
+    flushInterval: 5,
+    exportMode: 'batched'
+  })
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
+export type AppConfig = z.infer<typeof AppConfigSchema>;
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
 export type DatabaseConfig = z.infer<typeof DatabaseConfigSchema>;
 export type RateLimitConfig = z.infer<typeof RateLimitConfigSchema>;
 export type MemoryConfig = z.infer<typeof MemoryConfigSchema>;
+export type LangfuseConfig = z.infer<typeof LangfuseConfigSchema>;

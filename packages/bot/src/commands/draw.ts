@@ -23,6 +23,8 @@ import {
   moderateCommandPrompt,
   type PromptModerationGuard
 } from '../security/command-prompt-moderation';
+import { summarizeTextForTrace, withLangfuseGeneration } from '../telemetry/langfuse-client';
+import { buildLangfuseTags, buildLangfuseTraceMetadata } from '../telemetry/langfuse-metadata';
 
 const DRAW_MODEL_CONFIG = {
   'gpt-image-1': {
@@ -77,6 +79,14 @@ interface DrawGeneration {
 interface DrawUrlSecurityOptions {
   policy?: UrlPolicyOptions;
   adminDb?: AdminAdapter;
+}
+
+interface DrawTraceContext {
+  guildId?: string | null;
+  channelId?: string | null;
+  interactionId?: string | null;
+  messageType: 'slash-command' | 'button-interaction';
+  commandName: string;
 }
 
 const DRAW_SESSION_TTL_MS = 30 * 60 * 1000;
@@ -328,15 +338,18 @@ export class DrawCommand implements Command {
     return references;
   }
 
-  private async generateImage(session: {
-    prompt: string;
-    model: DrawModelName;
-    size: string;
-    quality: string;
-    aspectRatio: string;
-    resolution: string;
-    references: string[];
-  }): Promise<DrawGeneration> {
+  private async generateImage(
+    session: {
+      prompt: string;
+      model: DrawModelName;
+      size: string;
+      quality: string;
+      aspectRatio: string;
+      resolution: string;
+      references: string[];
+    },
+    traceContext?: DrawTraceContext
+  ): Promise<DrawGeneration> {
     const modelConfig = DRAW_MODEL_CONFIG[session.model];
     const provider = this.registry.getImageProvider(modelConfig.provider);
     if (!provider) {
@@ -354,7 +367,59 @@ export class DrawCommand implements Command {
       inputFidelity: session.references.length > 0 ? ('high' as const) : ('low' as const)
     };
 
-    const result = await provider.generateImage(session.prompt, options);
+    const generationMetadataInput = {
+      guildId: traceContext?.guildId,
+      channelId: traceContext?.channelId,
+      interactionId: traceContext?.interactionId,
+      messageType: traceContext?.messageType || 'slash-command',
+      commandName: traceContext?.commandName || 'draw',
+      provider: provider.name,
+      model: session.model,
+      adapter: provider.name,
+      usesTools: false,
+      supportsImages: true,
+      supportsVideo: false,
+      supportsAudio: false,
+      isLocalModel: provider.name === 'local'
+    };
+
+    const result = await withLangfuseGeneration(
+      {
+        name: 'draw-image-generation',
+        tags: buildLangfuseTags(generationMetadataInput),
+        input: {
+          promptPreview: summarizeTextForTrace(session.prompt),
+          model: session.model,
+          referenceCount: session.references.length,
+          size: options.size,
+          quality: options.quality,
+          aspectRatio: options.aspectRatio,
+          resolution: options.resolution,
+          action: options.action
+        },
+        model: session.model,
+        metadata: buildLangfuseTraceMetadata(generationMetadataInput)
+      },
+      async generation => {
+        const providerResult = await provider.generateImage(session.prompt, options);
+
+        generation?.update({
+          model: providerResult.model || session.model,
+          output: {
+            hasContent: Boolean(providerResult.url),
+            revisedPromptApplied: Boolean(providerResult.revisedPrompt),
+            moderationPassed: providerResult.moderationPassed ?? true,
+            referenceCount: session.references.length
+          },
+          metadata: buildLangfuseTraceMetadata({
+            ...generationMetadataInput,
+            model: providerResult.model || session.model
+          })
+        });
+
+        return providerResult;
+      }
+    );
 
     const files: AttachmentBuilder[] = [];
     let imageUrl = result.url;
@@ -471,15 +536,24 @@ export class DrawCommand implements Command {
     }
 
     try {
-      const generation = await this.generateImage({
-        prompt: effectivePrompt,
-        model,
-        size,
-        quality,
-        aspectRatio,
-        resolution,
-        references
-      });
+      const generation = await this.generateImage(
+        {
+          prompt: effectivePrompt,
+          model,
+          size,
+          quality,
+          aspectRatio,
+          resolution,
+          references
+        },
+        {
+          guildId: interaction.guildId,
+          channelId: interaction.channelId,
+          interactionId: interaction.id,
+          messageType: 'slash-command',
+          commandName: 'draw'
+        }
+      );
 
       const sessionId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
       const controls = this.createControls(sessionId);
@@ -616,15 +690,24 @@ export class DrawCommand implements Command {
         }
       }
 
-      const generation = await this.generateImage({
-        prompt: promptDecision.processedPrompt,
-        model: session.model,
-        size: session.size,
-        quality: session.quality,
-        aspectRatio: session.aspectRatio,
-        resolution: session.resolution,
-        references: session.references
-      });
+      const generation = await this.generateImage(
+        {
+          prompt: promptDecision.processedPrompt,
+          model: session.model,
+          size: session.size,
+          quality: session.quality,
+          aspectRatio: session.aspectRatio,
+          resolution: session.resolution,
+          references: session.references
+        },
+        {
+          guildId: interaction.guildId,
+          channelId: interaction.channelId,
+          interactionId: interaction.id,
+          messageType: 'button-interaction',
+          commandName: 'draw_regen'
+        }
+      );
 
       await interaction.message.edit({
         embeds: [generation.embed],
@@ -734,15 +817,24 @@ export class DrawCommand implements Command {
     await interaction.deferReply({ ephemeral: true });
 
     try {
-      const generation = await this.generateImage({
-        prompt: promptDecision.processedPrompt,
-        model: session.model,
-        size: session.size,
-        quality: session.quality,
-        aspectRatio: session.aspectRatio,
-        resolution: session.resolution,
-        references: session.references
-      });
+      const generation = await this.generateImage(
+        {
+          prompt: promptDecision.processedPrompt,
+          model: session.model,
+          size: session.size,
+          quality: session.quality,
+          aspectRatio: session.aspectRatio,
+          resolution: session.resolution,
+          references: session.references
+        },
+        {
+          guildId: interaction.guildId,
+          channelId: interaction.channelId,
+          interactionId: interaction.id,
+          messageType: 'button-interaction',
+          commandName: 'draw_edit'
+        }
+      );
 
       session.prompt = promptDecision.processedPrompt;
       session.createdAt = Date.now();

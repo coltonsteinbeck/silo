@@ -36,6 +36,7 @@ export {
   evaluateUserPromptGuardrails,
   evaluateCustomSystemPromptGuardrails,
   evaluateAssistantOutputGuardrails,
+  prewarmGuardrailsRuntime,
   isGuardrailsEnabled
 } from './openai-guardrails';
 export type { GuardrailsPromptDecision } from './openai-guardrails';

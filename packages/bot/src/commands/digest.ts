@@ -4,6 +4,8 @@ import {
   EmbedBuilder,
   ChannelType
 } from 'discord.js';
+import { summarizeTextForTrace, withLangfuseGeneration } from '../telemetry/langfuse-client';
+import { buildLangfuseTags, buildLangfuseTraceMetadata } from '../telemetry/langfuse-metadata';
 import { Command } from './types';
 import { ProviderRegistry } from '../providers/registry';
 import { AdminAdapter } from '../database/admin-adapter';
@@ -95,24 +97,82 @@ export class DigestCommand implements Command {
 
     // Generate AI summary
     const provider = this.registry.getTextProvider(preferredProvider);
+    const requestedModel = this.registry.getConfiguredTextModel(provider.name);
     const context = allMessages.join('\n');
+    const generationMetadataInput = {
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      interactionId: interaction.id,
+      messageType: 'slash-command' as const,
+      commandName: 'digest',
+      provider: provider.name,
+      model: requestedModel,
+      adapter: provider.name,
+      hasConversationHistory: false,
+      conversationMessageCount: 0,
+      usesTools: false,
+      supportsImages: Boolean(provider.capabilities?.vision),
+      supportsVideo: Boolean(provider.capabilities?.videoGeneration),
+      supportsAudio: false,
+      isLocalModel: provider.name === 'local'
+    };
 
-    const response = await provider.generateText(
-      [
-        {
-          role: 'system',
-          content: `You are summarizing Discord server activity. Provide a concise, engaging summary highlighting:
+    const response = await withLangfuseGeneration(
+      {
+        name: 'slash-command-digest',
+        tags: buildLangfuseTags(generationMetadataInput),
+        input: {
+          period,
+          includeStats,
+          totalMessages,
+          sampledMessageCount: allMessages.length,
+          contextPreview: summarizeTextForTrace(context)
+        },
+        model: requestedModel || provider.name,
+        modelParameters: {
+          maxTokens: 500
+        },
+        metadata: {
+          ...buildLangfuseTraceMetadata(generationMetadataInput),
+          sampleWindowHours: hours,
+          activeChannelCount: messagesByChannel.size,
+          activeUserCount: messagesByUser.size
+        }
+      },
+      async generation => {
+        const providerResponse = await provider.generateText(
+          [
+            {
+              role: 'system',
+              content: `You are summarizing Discord server activity. Provide a concise, engaging summary highlighting:
 - Main topics discussed
 - Notable moments or interesting exchanges
 - Overall server mood/activity level
 Keep it under 300 words and conversational.`
-        },
-        {
-          role: 'user',
-          content: `Summarize this server activity from the last ${this.getPeriodLabel(period)}:\n\n${context.slice(0, 4000)}`
-        }
-      ],
-      { maxTokens: 500 }
+            },
+            {
+              role: 'user',
+              content: `Summarize this server activity from the last ${this.getPeriodLabel(period)}:\n\n${context.slice(0, 4000)}`
+            }
+          ],
+          { maxTokens: 500 }
+        );
+
+        generation?.update({
+          model: providerResponse.model || requestedModel || provider.name,
+          usageDetails: providerResponse.usage,
+          output: {
+            outputCharacters: providerResponse.content.length,
+            hasContent: Boolean(providerResponse.content.trim())
+          },
+          metadata: buildLangfuseTraceMetadata({
+            ...generationMetadataInput,
+            model: providerResponse.model || requestedModel || provider.name
+          })
+        });
+
+        return providerResponse;
+      }
     );
 
     // Build embed

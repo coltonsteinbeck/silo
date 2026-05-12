@@ -10,6 +10,7 @@ import {
   ChannelConfig,
   logger
 } from '@silo/core';
+import { hashPrompt } from '../security/prompt-policy';
 
 const QUOTA_LOCAL_DATE_SQL = `quota_local_date()`;
 
@@ -64,6 +65,39 @@ export class AdminAdapter {
 
     const row = result.rows[0];
     return this.mapServerConfigRow(row);
+  }
+
+  async getServerRuntimeConfig(
+    guildId: string,
+    forVoice = false
+  ): Promise<{
+    serverConfig: ServerConfig | null;
+    systemPrompt: { prompt: string | null; enabled: boolean };
+  }> {
+    const result = await this.pool.query('SELECT * FROM server_config WHERE guild_id = $1', [
+      guildId
+    ]);
+
+    if (result.rows.length === 0) {
+      return {
+        serverConfig: null,
+        systemPrompt: { prompt: null, enabled: true }
+      };
+    }
+
+    const row = result.rows[0];
+    const enabled = row.system_prompt_enabled ?? true;
+
+    return {
+      serverConfig: this.mapServerConfigRow(row),
+      systemPrompt: {
+        prompt:
+          forVoice && row.voice_system_prompt
+            ? row.voice_system_prompt
+            : (row.system_prompt ?? null),
+        enabled
+      }
+    };
   }
 
   async setServerConfig(
@@ -209,10 +243,16 @@ export class AdminAdapter {
   async setSystemPrompt(
     guildId: string,
     prompt: string | null,
-    options: { forVoice?: boolean; enabled?: boolean } = {}
+    options: { forVoice?: boolean; enabled?: boolean; actorUserId?: string } = {}
   ): Promise<void> {
-    const { forVoice = false, enabled } = options;
+    const { forVoice = false, enabled, actorUserId } = options;
     const column = forVoice ? 'voice_system_prompt' : 'system_prompt';
+    const previousPromptState = await this.getSystemPrompt(guildId, forVoice);
+    const nextEnabled = enabled ?? previousPromptState.enabled;
+    const previousPromptHash = previousPromptState.prompt
+      ? hashPrompt(previousPromptState.prompt)
+      : null;
+    const nextPromptHash = prompt ? hashPrompt(prompt) : null;
 
     // Build query dynamically based on what we're updating
     let query: string;
@@ -241,12 +281,18 @@ export class AdminAdapter {
     // Log the change
     await this.logAction({
       guildId,
-      userId: 'system',
+      userId: actorUserId || 'system',
       action: forVoice ? 'voice_system_prompt_updated' : 'system_prompt_updated',
       details: {
+        promptType: forVoice ? 'voice' : 'text',
+        previousPromptHash,
+        nextPromptHash,
+        previousEnabled: previousPromptState.enabled,
         promptLength: prompt?.length ?? 0,
-        enabled: enabled ?? true,
-        clearedPrompt: prompt === null
+        enabled: nextEnabled,
+        clearedPrompt: prompt === null,
+        effectivePromptChanged:
+          previousPromptHash !== nextPromptHash || previousPromptState.enabled !== nextEnabled
       }
     });
   }
@@ -254,11 +300,30 @@ export class AdminAdapter {
   /**
    * Toggle system prompt enabled/disabled
    */
-  async toggleSystemPrompt(guildId: string, enabled: boolean): Promise<void> {
+  async toggleSystemPrompt(
+    guildId: string,
+    enabled: boolean,
+    options: { actorUserId?: string; promptType?: 'text' | 'voice' } = {}
+  ): Promise<void> {
+    const previousPromptState = await this.getSystemPrompt(guildId, options.promptType === 'voice');
+
     await this.pool.query(
       `UPDATE server_config SET system_prompt_enabled = $2, updated_at = NOW() WHERE guild_id = $1`,
       [guildId, enabled]
     );
+
+    await this.logAction({
+      guildId,
+      userId: options.actorUserId || 'system',
+      action: 'system_prompt_toggled',
+      details: {
+        promptType: options.promptType || 'text',
+        promptHash: previousPromptState.prompt ? hashPrompt(previousPromptState.prompt) : null,
+        previousEnabled: previousPromptState.enabled,
+        enabled,
+        effectivePromptChanged: previousPromptState.enabled !== enabled
+      }
+    });
   }
 
   // Audit Logging
@@ -794,49 +859,47 @@ export class AdminAdapter {
     usageType: 'text_tokens' | 'images' | 'voice_minutes' | 'vision_tokens' | 'video_tokens',
     amount: number
   ): Promise<{ allowed: boolean; remaining: number; max: number }> {
-    // Get quota limit for this guild
-    const quotaResult = await this.pool.query(
-      `SELECT 
-        CASE $2
-          WHEN 'text_tokens' THEN COALESCE(daily_text_tokens, 50000)
-          WHEN 'images' THEN COALESCE(daily_images, 5)
-          WHEN 'voice_minutes' THEN COALESCE(daily_voice_minutes, 15)
-          WHEN 'vision_tokens' THEN COALESCE(daily_vision_tokens, 20000)
-          WHEN 'video_tokens' THEN COALESCE(daily_video_tokens, 500)
-        END as quota_limit
-      FROM guild_quotas WHERE guild_id = $1`,
+    const result = await this.pool.query(
+      `SELECT
+         COALESCE(
+           (
+             SELECT CASE $2
+               WHEN 'text_tokens' THEN COALESCE(gq.daily_text_tokens, 50000)
+               WHEN 'images' THEN COALESCE(gq.daily_images, 5)
+               WHEN 'voice_minutes' THEN COALESCE(gq.daily_voice_minutes, 15)
+               WHEN 'vision_tokens' THEN COALESCE(gq.daily_vision_tokens, 20000)
+               WHEN 'video_tokens' THEN COALESCE(gq.daily_video_tokens, 500)
+             END
+             FROM guild_quotas gq
+             WHERE gq.guild_id = $1
+           ),
+           CASE $2
+             WHEN 'text_tokens' THEN 50000
+             WHEN 'images' THEN 5
+             WHEN 'voice_minutes' THEN 15
+             WHEN 'vision_tokens' THEN 20000
+             WHEN 'video_tokens' THEN 500
+           END
+         ) AS quota_limit,
+         COALESCE(
+           (
+             SELECT CASE $2
+               WHEN 'text_tokens' THEN COALESCE(gdu.total_text_tokens, 0)
+               WHEN 'images' THEN COALESCE(gdu.total_images, 0)
+               WHEN 'voice_minutes' THEN COALESCE(gdu.total_voice_minutes, 0)
+               WHEN 'vision_tokens' THEN COALESCE(gdu.total_vision_tokens, 0)
+               WHEN 'video_tokens' THEN COALESCE(gdu.total_video_tokens, 0)
+             END
+             FROM guild_daily_usage gdu
+             WHERE gdu.guild_id = $1 AND gdu.usage_date = ${QUOTA_LOCAL_DATE_SQL}
+           ),
+           0
+         ) AS current_usage`,
       [guildId, usageType]
     );
 
-    const rawQuotaLimit =
-      quotaResult.rows[0]?.quota_limit ||
-      (usageType === 'text_tokens'
-        ? 50000
-        : usageType === 'images'
-          ? 5
-          : usageType === 'voice_minutes'
-            ? 15
-            : usageType === 'vision_tokens'
-              ? 20000
-              : 500);
-    const quotaLimit = Number(rawQuotaLimit) || 0;
-
-    // Get current usage for today
-    const usageResult = await this.pool.query(
-      `SELECT 
-        CASE $2
-          WHEN 'text_tokens' THEN COALESCE(total_text_tokens, 0)
-          WHEN 'images' THEN COALESCE(total_images, 0)
-          WHEN 'voice_minutes' THEN COALESCE(total_voice_minutes, 0)
-          WHEN 'vision_tokens' THEN COALESCE(total_vision_tokens, 0)
-          WHEN 'video_tokens' THEN COALESCE(total_video_tokens, 0)
-        END as current_usage
-      FROM guild_daily_usage 
-      WHERE guild_id = $1 AND usage_date = ${QUOTA_LOCAL_DATE_SQL}`,
-      [guildId, usageType]
-    );
-
-    const currentUsage = Number(usageResult.rows[0]?.current_usage || 0);
+    const quotaLimit = Number(result.rows[0]?.quota_limit || 0);
+    const currentUsage = Number(result.rows[0]?.current_usage || 0);
     const remaining = Math.max(0, quotaLimit - currentUsage);
     const allowed = currentUsage + amount <= quotaLimit;
 
