@@ -61,13 +61,11 @@ export class AdminCommand implements Command {
       .addSubcommand(subcommand =>
         subcommand
           .setName('safety-toggle')
-          .setDescription('Toggle edgy input mode and deterministic sentiment review')
+          .setDescription('Toggle safe edgy mode and deterministic sentiment review')
           .addBooleanOption(option =>
             option
               .setName('edgy-mode')
-              .setDescription(
-                'Allow mild user profanity while keeping strict harmful-content blocks'
-              )
+              .setDescription('Allow mild profanity and light roasting with strict safety blocks')
               .setRequired(true)
           )
           .addBooleanOption(option =>
@@ -549,7 +547,7 @@ export class AdminCommand implements Command {
     await interaction.editReply({
       content: [
         'Updated safety policy toggles:',
-        `• Edgy input mode: ${edgyModeEnabled ? 'enabled' : 'disabled'}`,
+        `• Safe edgy mode: ${edgyModeEnabled ? 'enabled' : 'disabled'}`,
         `• Deterministic sentiment review: ${deterministicSentimentReviewEnabled ? 'enabled' : 'disabled'}`
       ].join('\n')
     });
@@ -565,7 +563,7 @@ export class AdminCommand implements Command {
     await interaction.editReply({
       content: [
         'Current safety policy toggles:',
-        `• Edgy input mode: ${features.edgyModeEnabled ? 'enabled' : 'disabled'}`,
+        `• Safe edgy mode: ${features.edgyModeEnabled ? 'enabled' : 'disabled'}`,
         `• Deterministic sentiment review: ${features.deterministicSentimentReviewEnabled ? 'enabled' : 'disabled'}`
       ].join('\n')
     });

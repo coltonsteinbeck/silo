@@ -1,10 +1,6 @@
 import { logger } from '@silo/core';
-import {
-  contentSanitizer,
-  detectDeterministicIllicitContent,
-  hasPromptInjectionPattern,
-  type ContentType
-} from './content-sanitizer';
+import { contentSanitizer, type ContentType } from './content-sanitizer';
+import { buildPromptSafetyWarningMessage, evaluatePromptSafety } from './prompt-safety';
 
 export interface CommandPromptModerationDecision {
   allowed: boolean;
@@ -21,16 +17,13 @@ export type PromptModerationGuard = (params: {
   contentType?: ContentType;
 }) => Promise<CommandPromptModerationDecision>;
 
-const BLOCKED_PROMPT_MESSAGE =
-  '⚠️ Prompt blocked by content policy. Please rephrase with safer wording.';
-
 export const moderateCommandPrompt: PromptModerationGuard = async ({
   prompt,
   guildId,
   userId,
   command,
   phase,
-  contentType = 'prompt'
+  contentType: _contentType = 'prompt'
 }) => {
   const trimmed = prompt.trim();
   if (!trimmed) {
@@ -49,34 +42,30 @@ export const moderateCommandPrompt: PromptModerationGuard = async ({
   }
 
   try {
-    const moderationResult = await contentSanitizer.processContent(
-      trimmed,
-      guildId,
-      userId,
-      contentType,
-      { failClosedOnError: true }
-    );
+    const safetyResult = await evaluatePromptSafety(trimmed, {
+      profile: 'strict_tool_input',
+      source: `${command}:${phase}`,
+      userId
+    });
 
-    if (!moderationResult.moderation.allowed || !moderationResult.processedContent.trim()) {
+    if (!safetyResult.allowed) {
       logger.warn(
-        `Blocked ${command} prompt (${phase}) for guild ${guildId}, user ${userId}: ${moderationResult.moderation.flaggedCategories.join(', ') || 'empty_after_sanitize'}`
+        `Blocked ${command} prompt (${phase}) for guild ${guildId}, user ${userId}: ${[...safetyResult.reasons, ...safetyResult.moderationCategories].join(', ') || 'empty_after_sanitize'}`
       );
       return {
         allowed: false,
         processedPrompt: '',
-        userMessage: BLOCKED_PROMPT_MESSAGE
+        userMessage: buildPromptSafetyWarningMessage({
+          profile: 'strict_tool_input',
+          reasons: safetyResult.reasons,
+          moderationCategories: safetyResult.moderationCategories
+        })
       };
-    }
-
-    if (moderationResult.moderation.action === 'warned') {
-      logger.warn(
-        `Warned ${command} prompt (${phase}) for guild ${guildId}, user ${userId}: ${moderationResult.moderation.flaggedCategories.join(', ')}`
-      );
     }
 
     return {
       allowed: true,
-      processedPrompt: moderationResult.processedContent
+      processedPrompt: contentSanitizer.sanitizePrompt(trimmed)
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -98,15 +87,6 @@ export const moderateCommandPrompt: PromptModerationGuard = async ({
           error
         }
       );
-    }
-
-    const deterministicCategories = detectDeterministicIllicitContent(trimmed);
-    if (deterministicCategories.length > 0 || hasPromptInjectionPattern(trimmed)) {
-      return {
-        allowed: false,
-        processedPrompt: '',
-        userMessage: BLOCKED_PROMPT_MESSAGE
-      };
     }
 
     return {
