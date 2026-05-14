@@ -1,19 +1,25 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { contentSanitizer } from '../../security/content-sanitizer';
 import { moderateCommandPrompt } from '../../security/command-prompt-moderation';
+import {
+  resetPromptSafetyRuntimeForTests,
+  setPromptSafetyRuntimeForTests
+} from '../../security/prompt-safety';
 
 describe('moderateCommandPrompt', () => {
-  const originalProcessContent = contentSanitizer.processContent;
   const originalSanitizePrompt = contentSanitizer.sanitizePrompt;
+  const originalGuardrailsEnabled = process.env.OPENAI_GUARDRAILS_ENABLED;
 
   beforeEach(() => {
-    (contentSanitizer as any).processContent = originalProcessContent;
     (contentSanitizer as any).sanitizePrompt = originalSanitizePrompt;
+    process.env.OPENAI_GUARDRAILS_ENABLED = 'false';
+    resetPromptSafetyRuntimeForTests();
   });
 
   afterEach(() => {
-    (contentSanitizer as any).processContent = originalProcessContent;
     (contentSanitizer as any).sanitizePrompt = originalSanitizePrompt;
+    process.env.OPENAI_GUARDRAILS_ENABLED = originalGuardrailsEnabled;
+    resetPromptSafetyRuntimeForTests();
   });
 
   test('rejects empty prompt after trimming', async () => {
@@ -58,19 +64,8 @@ describe('moderateCommandPrompt', () => {
     expect(result.processedPrompt).toBe('Keep this prompt');
   });
 
-  test('returns allowed with processedPrompt from successful moderation', async () => {
-    const processContentMock = mock(async () => ({
-      processedContent: 'sanitized text',
-      moderation: {
-        allowed: true,
-        action: 'allowed',
-        flaggedCategories: [],
-        scores: {},
-        contentHash: 'hash-1'
-      }
-    }));
-
-    (contentSanitizer as any).processContent = processContentMock;
+  test('returns allowed with sanitized prompt when strict safety allows it', async () => {
+    (contentSanitizer as any).sanitizePrompt = mock(() => 'sanitized text');
 
     const result = await moderateCommandPrompt({
       prompt: 'original prompt',
@@ -83,26 +78,16 @@ describe('moderateCommandPrompt', () => {
 
     expect(result.allowed).toBe(true);
     expect(result.processedPrompt).toBe('sanitized text');
-
-    const call = (processContentMock as any).mock.calls[0] as any[];
-    expect(call?.[0]).toBe('original prompt');
-    expect(call?.[1]).toBe('guild-1');
-    expect(call?.[2]).toBe('user-1');
-    expect(call?.[3]).toBe('prompt');
-    expect(call?.[4]).toEqual({ failClosedOnError: true });
   });
 
-  test('returns blocked decision for blocked moderation result', async () => {
-    (contentSanitizer as any).processContent = mock(async () => ({
-      processedContent: '',
-      moderation: {
-        allowed: false,
-        action: 'blocked',
-        flaggedCategories: ['hate'],
-        scores: {},
-        contentHash: 'hash-2'
-      }
-    }));
+  test('returns blocked decision for strict-tool moderation categories', async () => {
+    process.env.OPENAI_GUARDRAILS_ENABLED = 'true';
+    setPromptSafetyRuntimeForTests({
+      moderationRunner: async () => ({
+        flaggedCategories: ['harassment'],
+        scores: { harassment: 0.88 }
+      })
+    });
 
     const result = await moderateCommandPrompt({
       prompt: 'blocked prompt',
@@ -115,20 +100,18 @@ describe('moderateCommandPrompt', () => {
 
     expect(result.allowed).toBe(false);
     expect(result.processedPrompt).toBe('');
-    expect(result.userMessage).toContain('Prompt blocked by content policy');
+    expect(result.userMessage).toContain('too abusive or violent');
   });
 
-  test('returns allowed processed prompt for warned moderation result', async () => {
-    (contentSanitizer as any).processContent = mock(async () => ({
-      processedContent: 'warned but allowed prompt',
-      moderation: {
-        allowed: true,
-        action: 'warned',
-        flaggedCategories: ['harassment'],
-        scores: { harassment: 0.2 },
-        contentHash: 'hash-3'
-      }
-    }));
+  test('allows prompts when moderation flags categories outside strict-tool profile', async () => {
+    process.env.OPENAI_GUARDRAILS_ENABLED = 'true';
+    setPromptSafetyRuntimeForTests({
+      moderationRunner: async () => ({
+        flaggedCategories: ['self-harm'],
+        scores: { 'self-harm': 0.4 }
+      })
+    });
+    (contentSanitizer as any).sanitizePrompt = mock(() => 'warned but allowed prompt');
 
     const result = await moderateCommandPrompt({
       prompt: 'warned prompt',
@@ -159,7 +142,7 @@ describe('moderateCommandPrompt', () => {
 
     expect(result.allowed).toBe(false);
     expect(result.processedPrompt).toBe('');
-    expect(result.userMessage).toContain('Prompt blocked by content policy');
+    expect(result.userMessage).toContain('bypass safety rules');
   });
 
   test('uses deterministic fallback to sanitize and allow benign prompts when moderation throws', async () => {

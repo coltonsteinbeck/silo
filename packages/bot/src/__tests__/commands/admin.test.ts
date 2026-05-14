@@ -312,7 +312,7 @@ describe('AdminCommand', () => {
 
       const replies = interaction._getReplies();
       expect(replies.length).toBeGreaterThan(0);
-      expect((replies[0] as { content: string }).content).toContain('Edgy input mode: enabled');
+      expect((replies[0] as { content: string }).content).toContain('Safe edgy mode: enabled');
     });
   });
 });

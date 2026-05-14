@@ -19,10 +19,15 @@ export type { DeploymentMode, DeploymentConfig, EnvironmentType } from './deploy
 export { guildManager } from './guild-manager';
 export type { GuildInfo, WaitlistEntry, JoinResult } from './guild-manager';
 
-export { contentSanitizer, buildUserMessageForBlockedInput } from './content-sanitizer';
+export {
+  contentSanitizer,
+  buildSafetyResponseInstruction,
+  buildUserMessageForBlockedInput
+} from './content-sanitizer';
 export type {
   ContentType,
   ModerationAction,
+  ModerationResponseDirective,
   ModerationResult,
   ModerationLogEntry
 } from './content-sanitizer';
@@ -40,6 +45,13 @@ export {
   isGuardrailsEnabled
 } from './openai-guardrails';
 export type { GuardrailsPromptDecision } from './openai-guardrails';
+export {
+  evaluatePromptSafety,
+  buildPromptSafetyWarningMessage,
+  resetPromptSafetyRuntimeForTests,
+  setPromptSafetyRuntimeForTests
+} from './prompt-safety';
+export type { GuardrailProfile, PromptSafetyResult } from './prompt-safety';
 
 export { composeSystemPromptWithSafety, IMMUTABLE_SAFETY_POLICY } from './safety-policy';
 export { resolvePromptPolicy } from './prompt-policy';

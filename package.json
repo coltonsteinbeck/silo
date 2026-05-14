@@ -31,6 +31,7 @@
     "test": "bun test",
     "test:watch": "bun test --watch",
     "test:coverage": "bun test --coverage",
+    "langfuse:evals:safety": "bun packages/bot/src/evals/run-langfuse-safety-evals.ts",
     "migrate": "bash scripts/migrate.sh",
     "migrate:status": "bash scripts/migrate.sh --status",
     "migrate:dry-run": "bash scripts/migrate.sh --dry-run",
