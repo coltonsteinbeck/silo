@@ -48,8 +48,9 @@ import {
   deploymentDetector,
   systemPromptManager,
   evaluateCustomSystemPromptGuardrails,
-  evaluateAssistantOutputGuardrails,
+  evaluatePromptSafety,
   prewarmGuardrailsRuntime,
+  buildSafetyResponseInstruction,
   buildUserMessageForBlockedInput,
   composeSystemPromptWithSafety,
   resolvePromptPolicy,
@@ -59,6 +60,7 @@ import {
   shouldApplySentiment,
   sanitizeAssistantProfanity
 } from './security';
+import { hashPrompt } from './security/prompt-policy';
 import { sanitizeAssistantOutput } from './security/output-sanitizer';
 import { QuotaMiddleware } from './middleware/quota';
 import { CostAggregator } from './services/cost-aggregator';
@@ -76,7 +78,8 @@ import {
   summarizeTextForTrace,
   withLangfuseGeneration,
   withLangfuseGuardrail,
-  withLangfuseRootTrace
+  withLangfuseRootTrace,
+  withLangfuseSpan
 } from './telemetry/langfuse-client';
 import {
   buildLangfuseTags,
@@ -137,6 +140,55 @@ function buildPromptFallbackNotice(reason: PromptFallbackNoticeReason): string {
   }
 
   return 'Note: The server custom system prompt is not active. Using base prompt defaults.';
+}
+
+async function evaluateCustomPromptGuardrailsWithTrace(params: {
+  prompt: string;
+  guildId?: string | null;
+  source: 'modal_submit' | 'runtime_config';
+  failClosedOnError: boolean;
+}) {
+  const promptHash = hashPrompt(params.prompt);
+
+  return withLangfuseSpan(
+    {
+      name: 'evaluate-custom-system-prompt',
+      input: {
+        promptCharacters: params.prompt.length,
+        promptHash,
+        source: params.source
+      },
+      metadata: {
+        ...buildLangfuseTraceMetadata({
+          guildId: params.guildId ?? undefined,
+          commandName: 'custom-prompt-guardrail'
+        }),
+        guardrailStage: 'custom_prompt',
+        customPromptHash: promptHash,
+        customPromptSource: params.source,
+        failClosedOnError: params.failClosedOnError
+      }
+    },
+    async observation => {
+      const result = await evaluateCustomSystemPromptGuardrails(params.prompt, {
+        failClosedOnError: params.failClosedOnError
+      });
+
+      observation?.update({
+        output: {
+          allowed: result.allowed,
+          category: result.category || null,
+          reason: result.reason || null,
+          executionFailed: result.executionFailed || false,
+          customPromptHash: promptHash,
+          customPromptSource: params.source,
+          fallbackApplied: !result.allowed
+        }
+      });
+
+      return result;
+    }
+  );
 }
 
 async function collectStartupCustomPrompts(
@@ -497,7 +549,10 @@ async function handleModalSubmit(interaction: ModalSubmitInteraction, adminDb: A
         );
       }
 
-      const customPromptGuardrails = await evaluateCustomSystemPromptGuardrails(sanitizedPrompt, {
+      const customPromptGuardrails = await evaluateCustomPromptGuardrailsWithTrace({
+        prompt: sanitizedPrompt,
+        guildId: interaction.guildId,
+        source: 'modal_submit',
         failClosedOnError: deploymentDetector.getConfig().isProduction
       });
 
@@ -1131,6 +1186,8 @@ async function main() {
                 attachmentCount: currentImageUrls.length
               },
               metadata: {
+                ...buildLangfuseTraceMetadata(rootTraceMetadataInput),
+                guardrailStage: 'input',
                 edgyModeEnabled,
                 deterministicSentimentReviewEnabled
               }
@@ -1151,7 +1208,13 @@ async function main() {
                 output: {
                   allowed: result.moderation.allowed,
                   action: result.moderation.action,
-                  categories: result.moderation.flaggedCategories
+                  categories: result.moderation.flaggedCategories,
+                  responseDirective: result.moderation.responseDirective || null,
+                  scores: result.moderation.scores,
+                  contentHash: result.moderation.contentHash,
+                  moderationError: result.moderation.moderationError || null,
+                  edgyModeEnabled,
+                  deterministicSentimentReviewEnabled
                 }
               });
 
@@ -1160,6 +1223,18 @@ async function main() {
           );
 
           const { processedContent, moderation } = moderationResult;
+
+          messageTrace?.update({
+            metadata: {
+              inputModerationAction: moderation.action,
+              inputModerationCategories: moderation.flaggedCategories,
+              inputResponseDirective: moderation.responseDirective || 'none',
+              inputModerationScores: moderation.scores,
+              inputModerationError: moderation.moderationError || null,
+              edgyModeEnabled,
+              deterministicSentimentReviewEnabled
+            }
+          });
 
           if (!moderation.allowed) {
             logger.warn('User message blocked by safety policy', {
@@ -1176,7 +1251,8 @@ async function main() {
               output: {
                 outcome: 'input_blocked',
                 action: moderation.action,
-                categories: moderation.flaggedCategories
+                categories: moderation.flaggedCategories,
+                responseDirective: moderation.responseDirective || null
               }
             });
 
@@ -1358,13 +1434,17 @@ async function main() {
             'You are a helpful Discord bot assistant. Be helpful, friendly, and conversational.';
 
           let runtimeCustomPrompt = promptConfig.prompt;
+          let runtimeCustomPromptGuardrails: Awaited<
+            ReturnType<typeof evaluateCustomPromptGuardrailsWithTrace>
+          > | null = null;
           if (runtimeCustomPrompt) {
-            const promptGuardrails = await evaluateCustomSystemPromptGuardrails(
-              runtimeCustomPrompt,
-              {
-                failClosedOnError: deploymentDetector.getConfig().isProduction
-              }
-            );
+            const promptGuardrails = await evaluateCustomPromptGuardrailsWithTrace({
+              prompt: runtimeCustomPrompt,
+              guildId,
+              source: 'runtime_config',
+              failClosedOnError: deploymentDetector.getConfig().isProduction
+            });
+            runtimeCustomPromptGuardrails = promptGuardrails;
 
             if (!promptGuardrails.allowed) {
               logger.warn(
@@ -1391,6 +1471,9 @@ async function main() {
           const plainStyleInstruction = userRequestedRichFormatting
             ? ''
             : '\n\nFormatting rule: Use plain text by default. Avoid markdown styling (bold/italics/lists) and avoid emojis unless the user explicitly asks for them.';
+          const edgyStyleInstruction = edgyModeEnabled
+            ? '\n\nEdgy mode rule: You may be witty, mildly profane, and lightly roastful when it fits the conversation. Keep it playful rather than hostile. Never use slurs, protected-class language, sexual content, threats, or harassment. If a joke would cross that line, stay sharp without saying it.'
+            : '';
           const sentimentStyleInstruction = buildSentimentStyleInstruction(promptSentiment);
 
           const promptHash = promptPolicy.promptHash;
@@ -1503,10 +1586,24 @@ async function main() {
           })();
 
           // Run history fetch and memory retrieval in parallel
-          const [history, memorySelection, urlContext] = await Promise.all([
-            db.getConversationHistory(message.channelId, promptHash, 10),
-            memoryPromise,
-            fetchUrlContextBlock(conversationContext.mergedUserContent, {
+          const urlContextPromise = (async () => {
+            const urlSafety = await evaluatePromptSafety(conversationContext.mergedUserContent, {
+              profile: 'strict_tool_input',
+              source: 'url_context',
+              userId: message.author.id
+            });
+
+            if (!urlSafety.allowed) {
+              logger.warn('Skipped URL context fetch due to strict prompt safety block', {
+                guildId,
+                userId: message.author.id,
+                reasons: urlSafety.reasons,
+                moderationCategories: urlSafety.moderationCategories
+              });
+              return { items: [], block: '' };
+            }
+
+            return fetchUrlContextBlock(conversationContext.mergedUserContent, {
               maxUrls: 2,
               maxCharsPerUrl: 700,
               timeoutMs: 2500,
@@ -1523,7 +1620,13 @@ async function main() {
                   metadata: event.metadata
                 });
               }
-            })
+            });
+          })();
+
+          const [history, memorySelection, urlContext] = await Promise.all([
+            db.getConversationHistory(message.channelId, promptHash, 10),
+            memoryPromise,
+            urlContextPromise
           ]);
 
           const {
@@ -1621,7 +1724,13 @@ async function main() {
               memoryItemCount,
               urlContextCount: urlContext.items.length,
               visionTargetCount: conversationContext.visionTargets.length,
-              hasPromptFallbackNotice: Boolean(promptFallbackNotice)
+              hasPromptFallbackNotice: Boolean(promptFallbackNotice),
+              customPromptGuardrailEvaluated: Boolean(runtimeCustomPromptGuardrails),
+              customPromptGuardrailAllowed: runtimeCustomPromptGuardrails?.allowed ?? null,
+              customPromptGuardrailCategory: runtimeCustomPromptGuardrails?.category || 'none',
+              customPromptGuardrailReason: runtimeCustomPromptGuardrails?.reason || null,
+              customPromptGuardrailExecutionFailed:
+                runtimeCustomPromptGuardrails?.executionFailed || false
             }
           });
 
@@ -1693,12 +1802,15 @@ async function main() {
               const enrichedUserPrompt = [mergedUserPrompt, urlContext.block]
                 .filter(Boolean)
                 .join('\n\n');
+              const safetyResponseInstruction = buildSafetyResponseInstruction({
+                responseDirective: moderation.responseDirective
+              });
 
               const providerResponse = await textProvider.generateText(
                 [
                   {
                     role: 'system',
-                    content: `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${sentimentStyleInstruction}${memoryMentionInstruction}${loreMemoryFactsBlock}${memoryConflictInstruction}${externalContextInstruction}${memoryContext}`
+                    content: `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${edgyStyleInstruction}${sentimentStyleInstruction}${safetyResponseInstruction}${memoryMentionInstruction}${loreMemoryFactsBlock}${memoryConflictInstruction}${externalContextInstruction}${memoryContext}`
                   },
                   ...messages,
                   {
@@ -1752,40 +1864,36 @@ async function main() {
                 model: response.model || textProvider.name
               },
               metadata: {
-                provider: textProvider.name
+                ...buildLangfuseTraceMetadata({
+                  ...generationMetadataInput,
+                  model: response.model || requestedTextModel || undefined
+                }),
+                guardrailStage: 'output',
+                edgyModeEnabled,
+                deterministicSentimentReviewEnabled
               }
             },
             async guardrail => {
-              const [outputGuardrailsDecision, moderationResult] = await Promise.all([
-                evaluateAssistantOutputGuardrails(response.content, {
-                  failClosedOnError: true
-                }),
-                contentSanitizer.moderateContent(
-                  response.content,
-                  guildId,
-                  message.author.id,
-                  'message',
-                  { failClosedOnError: true }
-                )
-              ]);
-
-              const assistantModeration = outputGuardrailsDecision.allowed
-                ? moderationResult
+              const assistantModeration = await contentSanitizer.moderateContent(
+                response.content,
+                guildId,
+                message.author.id,
+                'message',
+                {
+                  profile: 'chat_output',
+                  source: 'chat_output'
+                }
+              );
+              const outputGuardrailsDecision = assistantModeration.allowed
+                ? { allowed: true }
                 : {
-                    ...moderationResult,
                     allowed: false,
-                    action:
-                      outputGuardrailsDecision.category === 'guardrails/api_error_fail_closed'
-                        ? ('api_error_fail_closed' as const)
-                        : ('blocked' as const),
-                    flaggedCategories: Array.from(
-                      new Set([
-                        ...moderationResult.flaggedCategories,
-                        outputGuardrailsDecision.category === 'guardrails/api_error_fail_closed'
-                          ? 'api_error_fail_closed'
-                          : outputGuardrailsDecision.category || 'guardrails/output_blocked'
-                      ])
-                    )
+                    category:
+                      assistantModeration.flaggedCategories[0] || 'guardrails/output_blocked',
+                    reason:
+                      assistantModeration.reasons?.join(', ') ||
+                      assistantModeration.flaggedCategories.join(', ') ||
+                      undefined
                   };
 
               guardrail?.update({
@@ -1793,7 +1901,15 @@ async function main() {
                   allowed: assistantModeration.allowed,
                   guardrailsAllowed: outputGuardrailsDecision.allowed,
                   action: assistantModeration.action,
-                  categories: assistantModeration.flaggedCategories
+                  categories: assistantModeration.flaggedCategories,
+                  responseDirective: assistantModeration.responseDirective || null,
+                  scores: assistantModeration.scores,
+                  contentHash: assistantModeration.contentHash,
+                  moderationError: assistantModeration.moderationError || null,
+                  outputGuardrailCategory: outputGuardrailsDecision.category || null,
+                  outputGuardrailReason: outputGuardrailsDecision.reason || null,
+                  edgyModeEnabled,
+                  deterministicSentimentReviewEnabled
                 }
               });
 
@@ -1896,12 +2012,15 @@ async function main() {
             allowedMentions: { repliedUser: false }
           });
 
+          const outputWasReplaced = responseContent !== response.content;
+
           messageTrace?.update({
             output: {
               outcome: 'success',
               responsePreview: summarizeTextForTrace(responseContent),
               responseCharacters: responseContent.length,
               moderationAction: assistantModeration.action,
+              outputWasReplaced,
               totalResponseTimeMs: Date.now() - requestStart
             },
             metadata: {
@@ -1911,6 +2030,16 @@ async function main() {
               }),
               usedVision,
               memoryItemCount,
+              edgyModeEnabled,
+              deterministicSentimentReviewEnabled,
+              inputModerationAction: moderation.action,
+              inputModerationCategories: moderation.flaggedCategories,
+              inputResponseDirective: moderation.responseDirective || 'none',
+              outputModerationAction: assistantModeration.action,
+              outputModerationCategories: assistantModeration.flaggedCategories,
+              outputResponseDirective: assistantModeration.responseDirective || 'none',
+              outputGuardrailCategory: outputGuardrailsDecision.category || 'none',
+              outputContentReplaced: outputWasReplaced,
               langfuseTraceId: langfuseTraceId || undefined
             }
           });

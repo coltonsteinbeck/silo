@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import { logger } from '@silo/core';
 import { deploymentDetector } from './deployment';
 import { hashPrompt } from './prompt-policy';
+import { evaluatePromptSafety, type PromptSafetyResult } from './prompt-safety';
 
 type GuardrailsModule = typeof import('@openai/guardrails');
 type GuardrailsRunner = Pick<GuardrailsModule, 'runGuardrails'>;
@@ -10,6 +11,8 @@ type PipelineKey = 'user_prompt' | 'custom_prompt' | 'assistant_output';
 
 interface GuardrailsCheckOptions {
   failClosedOnError?: boolean;
+  source?: string;
+  userId?: string;
 }
 
 export interface GuardrailsPromptDecision {
@@ -403,6 +406,51 @@ function toTripwireDecision(pipeline: PipelineKey, result: unknown): GuardrailsP
   };
 }
 
+function toPromptSafetyDecision(result: PromptSafetyResult): GuardrailsPromptDecision {
+  const executionFailed = Boolean(result.moderationError);
+
+  if (result.allowed) {
+    return {
+      allowed: true,
+      executionFailed
+    };
+  }
+
+  if (result.reasons.includes('prompt_injection/policy_bypass')) {
+    return {
+      allowed: false,
+      category: 'guardrails/jailbreak',
+      reason: result.reasons.join(', '),
+      executionFailed
+    };
+  }
+
+  if (result.moderationCategories.length > 0) {
+    return {
+      allowed: false,
+      category:
+        result.profile === ASSISTANT_OUTPUT_PIPELINE_PROFILE
+          ? 'guardrails/output_moderation'
+          : 'guardrails/moderation',
+      reason: result.moderationCategories.join(', '),
+      executionFailed
+    };
+  }
+
+  return {
+    allowed: false,
+    category:
+      result.profile === ASSISTANT_OUTPUT_PIPELINE_PROFILE
+        ? 'guardrails/output_blocked'
+        : 'guardrails/input_blocked',
+    reason: result.reasons.join(', '),
+    executionFailed
+  };
+}
+
+const USER_PROMPT_PIPELINE_PROFILE = 'chat_input';
+const ASSISTANT_OUTPUT_PIPELINE_PROFILE = 'chat_output';
+
 async function evaluateWithPipeline(
   pipeline: PipelineKey,
   text: string,
@@ -510,11 +558,17 @@ export async function evaluateUserPromptGuardrails(
     return { allowed: true };
   }
 
-  if (shouldUseLowRiskUserPromptFastPath(normalized)) {
-    return { allowed: true };
+  const result = await evaluatePromptSafety(normalized, {
+    profile: USER_PROMPT_PIPELINE_PROFILE,
+    source: options.source || USER_PROMPT_PIPELINE,
+    userId: options.userId
+  });
+
+  if (shouldUseLowRiskUserPromptFastPath(normalized) && result.allowed) {
+    return { allowed: true, executionFailed: Boolean(result.moderationError) };
   }
 
-  return evaluateWithPipeline(USER_PROMPT_PIPELINE, normalized, options);
+  return toPromptSafetyDecision(result);
 }
 
 export async function evaluateCustomSystemPromptGuardrails(
@@ -590,5 +644,11 @@ export async function evaluateAssistantOutputGuardrails(
     return { allowed: true };
   }
 
-  return evaluateWithPipeline(ASSISTANT_OUTPUT_PIPELINE, normalized, options);
+  const result = await evaluatePromptSafety(normalized, {
+    profile: ASSISTANT_OUTPUT_PIPELINE_PROFILE,
+    source: options.source || ASSISTANT_OUTPUT_PIPELINE,
+    userId: options.userId
+  });
+
+  return toPromptSafetyDecision(result);
 }

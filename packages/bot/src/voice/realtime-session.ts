@@ -9,6 +9,7 @@ import {
 import type { VoiceConnection } from '@discordjs/voice';
 import { Readable } from 'stream';
 import { OpusEncoder } from 'mediaplex';
+import { buildPromptSafetyWarningMessage, evaluatePromptSafety } from '../security/prompt-safety';
 
 const REALTIME_API_URL = 'wss://api.openai.com/v1/realtime?model=gpt-4o-mini-realtime-preview';
 
@@ -188,6 +189,9 @@ export class RealtimeSession {
         case 'conversation.item.input_audio_transcription.completed':
           // Transcription of user's speech is complete
           console.log('[RealtimeSession] User said:', message.transcript);
+          if (message.transcript) {
+            void this.handleVoiceTranscript(message.transcript);
+          }
           break;
 
         case 'error': {
@@ -247,24 +251,7 @@ export class RealtimeSession {
    * Send a text message for the AI to respond to (with voice)
    */
   sendText(text: string): void {
-    this.send({
-      type: 'conversation.item.create',
-      item: {
-        type: 'message',
-        role: 'user',
-        content: [
-          {
-            type: 'input_text',
-            text
-          }
-        ]
-      }
-    });
-
-    // Trigger response generation
-    this.send({
-      type: 'response.create'
-    });
+    void this.sendTextGuarded(text);
   }
 
   /**
@@ -291,6 +278,86 @@ export class RealtimeSession {
     });
 
     // Trigger the greeting response
+    this.send({
+      type: 'response.create'
+    });
+  }
+
+  private async sendTextGuarded(text: string): Promise<void> {
+    const safetyResult = await evaluatePromptSafety(text, {
+      profile: 'strict_tool_input',
+      source: 'voice_text',
+      userId: this.userId
+    });
+
+    if (!safetyResult.allowed) {
+      this.emitVoiceSafetyFallback(safetyResult.reasons, safetyResult.moderationCategories);
+      return;
+    }
+
+    this.send({
+      type: 'conversation.item.create',
+      item: {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text
+          }
+        ]
+      }
+    });
+
+    this.send({
+      type: 'response.create'
+    });
+  }
+
+  private async handleVoiceTranscript(transcript: string): Promise<void> {
+    const safetyResult = await evaluatePromptSafety(transcript, {
+      profile: 'strict_tool_input',
+      source: 'voice_transcript',
+      userId: this.userId
+    });
+
+    if (safetyResult.allowed) {
+      return;
+    }
+
+    console.warn('[RealtimeSession] Blocked unsafe voice transcript', {
+      userId: this.userId,
+      reasons: safetyResult.reasons,
+      moderationCategories: safetyResult.moderationCategories
+    });
+
+    this.emitVoiceSafetyFallback(safetyResult.reasons, safetyResult.moderationCategories);
+  }
+
+  private emitVoiceSafetyFallback(reasons: string[], moderationCategories: string[]): void {
+    const warning = buildPromptSafetyWarningMessage({
+      profile: 'strict_tool_input',
+      reasons,
+      moderationCategories
+    }).replace(/^⚠️\s*/, '');
+
+    this.interruptPlayback();
+    this.send({
+      type: 'response.cancel'
+    });
+    this.send({
+      type: 'conversation.item.create',
+      item: {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: `Respond briefly in voice. State that you can't help with that request, use this explanation if helpful: ${warning} Do not repeat the unsafe content. Offer one safer alternative in the same response.`
+          }
+        ]
+      }
+    });
     this.send({
       type: 'response.create'
     });
