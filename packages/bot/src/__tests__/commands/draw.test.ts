@@ -326,6 +326,32 @@ describe('DrawCommand', () => {
       expect(reply.embeds[0].data.description).toContain('Enhanced');
     });
 
+    test('neutralizes mass mentions in generated image embed prompt text', async () => {
+      const mockProvider = {
+        name: 'openai',
+        isConfigured: () => true,
+        generateImage: mock(async () => ({
+          url: 'https://example.com/image.png',
+          revisedPrompt: '@everyone review this image'
+        }))
+      };
+      mockRegistry.getImageProvider = mock(() => mockProvider);
+
+      const interaction = createMockInteraction({
+        options: {
+          prompt: '@here draw a banner'
+        }
+      });
+
+      await command.execute(interaction as any);
+
+      const reply = interaction._getReplies()[0] as { embeds: any[] };
+      const description = reply.embeds[0].data.description as string;
+      expect(description).toContain('Prompt: everyone review this image');
+      expect(description).not.toContain('@everyone');
+      expect(description).not.toContain('@here');
+    });
+
     test('shows generic success message when no revised prompt', async () => {
       const mockProvider = {
         name: 'openai',

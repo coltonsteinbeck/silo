@@ -5,6 +5,7 @@ import {
   ChannelType
 } from 'discord.js';
 import type { Command } from './types';
+import { logger } from '@silo/core';
 import { voiceSessionManager } from '../voice';
 import { AdminAdapter } from '../database/admin-adapter';
 import { systemPromptManager } from '../security';
@@ -171,7 +172,7 @@ export class SpeakCommand implements Command {
         content: `Voice session started in **${voiceChannel.name}**. Speak naturally and Silo will respond. ${speakerInfo}\n\nUse \`/stopspeaking\` when you're done.`
       });
     } catch (error) {
-      console.error('[SpeakCommand] Error:', error);
+      logger.error('[SpeakCommand] Error:', error);
 
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       await interaction.editReply({

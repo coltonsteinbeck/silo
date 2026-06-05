@@ -115,4 +115,26 @@ describe('resolveReplyContext', () => {
     expect(result.directReplyMessageId).toBeNull();
     expect(result.textContext).toBe('');
   });
+
+  test('neutralizes Discord mass mentions in referenced context', async () => {
+    const referenced = createMockMessage({
+      id: 'm_ref_1',
+      userId: 'bot_user',
+      content: '@everyone and @HERE should not become active mentions'
+    });
+
+    const message = createMockMessage({
+      id: 'm_current',
+      content: 'make it harsher',
+      referenceMessageId: 'm_ref_1',
+      referenced
+    });
+
+    const result = await resolveReplyContext(message, 2);
+
+    expect(result.chain[0]?.content).toBe('everyone and here should not become active mentions');
+    expect(result.textContext).not.toContain('@everyone');
+    expect(result.textContext).not.toContain('@HERE');
+    expect(result.textContext).toContain('everyone and here');
+  });
 });

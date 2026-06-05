@@ -9,6 +9,7 @@ import { buildLangfuseTags, buildLangfuseTraceMetadata } from '../telemetry/lang
 import { Command } from './types';
 import { ProviderRegistry } from '../providers/registry';
 import { AdminAdapter } from '../database/admin-adapter';
+import { sanitizeDiscordMassMentions } from '../security/output-sanitizer';
 
 export class DigestCommand implements Command {
   data = new SlashCommandBuilder()
@@ -174,11 +175,12 @@ Keep it under 300 words and conversational.`
         return providerResponse;
       }
     );
+    const digestContent = sanitizeDiscordMassMentions(response.content);
 
     // Build embed
     const embed = new EmbedBuilder()
       .setTitle(`📊 Server Digest - ${this.getPeriodLabel(period)}`)
-      .setDescription(response.content)
+      .setDescription(digestContent)
       .setColor(0x5865f2)
       .setTimestamp();
 

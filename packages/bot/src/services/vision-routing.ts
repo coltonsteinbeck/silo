@@ -11,7 +11,10 @@ export interface VisionRoutingDecision {
 }
 
 export interface VisionRoutingReplyTarget {
-  reply(payload: { content: string; allowedMentions: { repliedUser: boolean } }): Promise<unknown>;
+  reply(payload: {
+    content: string;
+    allowedMentions: { repliedUser: boolean; parse: [] };
+  }): Promise<unknown>;
 }
 
 export function decideVisionRouting(
@@ -53,7 +56,7 @@ export async function enforceVisionRoutingPrecheck(
 
   await target.reply({
     content: decision.errorMessage,
-    allowedMentions: { repliedUser: false }
+    allowedMentions: { repliedUser: false, parse: [] }
   });
 
   return true;

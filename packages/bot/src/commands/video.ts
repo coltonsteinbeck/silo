@@ -15,6 +15,7 @@ import {
   moderateCommandPrompt,
   type PromptModerationGuard
 } from '../security/command-prompt-moderation';
+import { sanitizeDiscordMassMentions } from '../security/output-sanitizer';
 import { withLangfuseGeneration, summarizeTextForTrace } from '../telemetry/langfuse-client';
 import { buildLangfuseTags, buildLangfuseTraceMetadata } from '../telemetry/langfuse-metadata';
 
@@ -367,11 +368,12 @@ export class VideoCommand implements Command {
         }
       );
 
+      const displayPrompt = sanitizeDiscordMassMentions(effectivePrompt);
       const embed = new EmbedBuilder()
         .setTitle('Video Generated')
         .setDescription(
           [
-            `Prompt: ${effectivePrompt}`,
+            `Prompt: ${displayPrompt}`,
             `Model: ${result.model || XAI_VIDEO_MODEL}`,
             `Duration: ${result.duration || duration}s`,
             `Resolution: ${effectiveResolution}`,

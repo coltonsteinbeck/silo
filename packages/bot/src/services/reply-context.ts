@@ -1,4 +1,5 @@
 import type { Message } from 'discord.js';
+import { sanitizeDiscordMassMentions } from '../security/output-sanitizer';
 
 export interface ResolvedReplyMessage {
   messageId: string;
@@ -15,7 +16,7 @@ export interface ResolvedReplyContext {
 }
 
 function normalizeContent(content: string): string {
-  return content.replace(/\s+/g, ' ').trim();
+  return sanitizeDiscordMassMentions(content).replace(/\s+/g, ' ').trim();
 }
 
 function getImageUrls(message: Message<boolean>): string[] {

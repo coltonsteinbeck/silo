@@ -2,6 +2,7 @@ import { ConfigSchema, type Config } from './schema';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { logger } from '../utils/logger';
 
 let envLoaded = false;
 
@@ -308,10 +309,9 @@ export class ConfigLoader {
     const result = ConfigSchema.safeParse(rawConfig);
 
     if (!result.success) {
-      console.error('\n❌ Configuration validation failed:\n');
       const formatted = result.error.format();
-      console.error(JSON.stringify(formatted, null, 2));
-      console.error('\nCheck your .env file for missing or invalid values.\n');
+      logger.error('Configuration validation failed', formatted);
+      logger.error('Check your .env file for missing or invalid values.');
       throw new Error('Invalid configuration. Check .env file.');
     }
 

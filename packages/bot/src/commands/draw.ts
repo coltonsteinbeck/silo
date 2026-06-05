@@ -23,6 +23,7 @@ import {
   moderateCommandPrompt,
   type PromptModerationGuard
 } from '../security/command-prompt-moderation';
+import { sanitizeDiscordMassMentions } from '../security/output-sanitizer';
 import { summarizeTextForTrace, withLangfuseGeneration } from '../telemetry/langfuse-client';
 import { buildLangfuseTags, buildLangfuseTraceMetadata } from '../telemetry/langfuse-metadata';
 
@@ -436,11 +437,13 @@ export class DrawCommand implements Command {
       imageUrl = `attachment://${fileName}`;
     }
 
+    const displayPrompt = sanitizeDiscordMassMentions(result.revisedPrompt || session.prompt);
+
     const embed = new EmbedBuilder()
       .setTitle('Image Generated')
       .setDescription(
         [
-          `Prompt: ${result.revisedPrompt || session.prompt}`,
+          `Prompt: ${displayPrompt}`,
           `Model: ${session.model}`,
           session.references.length > 0
             ? `References: ${session.references.length}`
