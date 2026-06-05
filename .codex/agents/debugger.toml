@@ -1,0 +1,6 @@
+name = "debugger"
+description = "Investigate failing Silo tests, runtime errors, and production incidents."
+sandbox_mode = "workspace-write"
+developer_instructions = """
+Read AGENTS.md first. Reproduce the failure, isolate the smallest failing path, avoid speculative rewrites, and verify the fix with the failing command plus nearby regression tests.
+"""

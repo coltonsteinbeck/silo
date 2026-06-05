@@ -1,6 +1,7 @@
 interface SanitizeAssistantOutputOptions {
   stripInternalMetadata?: boolean;
   stripXmlLikeTags?: boolean;
+  neutralizeMassMentions?: boolean;
 }
 
 const INTERNAL_METADATA_PATTERNS: RegExp[] = [
@@ -11,14 +12,27 @@ const INTERNAL_METADATA_PATTERNS: RegExp[] = [
 
 const XML_LIKE_TAG_PATTERN = /<\/?[a-z][a-z0-9_:-]*(?:\s[^<>]*?)?\/?>/gi;
 const DANGLING_TAG_TOKEN_PATTERN = /(^|\s)<[a-z][a-z0-9_:-]*(?=\s|$)/gim;
+const DISCORD_MASS_MENTION_PATTERN = /@(?:everyone|here)\b/gi;
+
+export function sanitizeDiscordMassMentions(content: string): string {
+  return content.replace(DISCORD_MASS_MENTION_PATTERN, match => match.slice(1).toLowerCase());
+}
 
 export function sanitizeAssistantOutput(
   content: string,
   options: SanitizeAssistantOutputOptions = {}
 ): string {
-  const { stripInternalMetadata = true, stripXmlLikeTags = true } = options;
+  const {
+    stripInternalMetadata = true,
+    stripXmlLikeTags = true,
+    neutralizeMassMentions = true
+  } = options;
 
   let sanitized = content;
+
+  if (neutralizeMassMentions) {
+    sanitized = sanitizeDiscordMassMentions(sanitized);
+  }
 
   if (stripInternalMetadata) {
     for (const pattern of INTERNAL_METADATA_PATTERNS) {

@@ -55,6 +55,31 @@ export type LangfuseMetadataInput = {
   promptEnabled?: boolean;
   promptUpdatedAt?: string | null;
   promptRevision?: string | number | null;
+
+  graphName?: string | null;
+  graphVersion?: string | null;
+  graphNode?: string | null;
+  graphStep?: number | null;
+  graphRecursionLimit?: number | null;
+  intent?: string | null;
+  intentConfidence?: number | null;
+  intentReason?: string | null;
+  questionType?: string | null;
+  questionCount?: number | null;
+  searchableQuestionCount?: number | null;
+  conversationalQuestionCount?: number | null;
+  requestedTools?: string[];
+  toolBudget?: Record<string, number | string | boolean | null> | null;
+  toolsAllowed?: string[];
+  searchProvider?: string | null;
+  searchQuery?: string | null;
+  searchResultCount?: number | null;
+  sourceDomains?: string[];
+  mediaProvider?: string | null;
+  mediaModel?: string | null;
+  falsePositiveGuard?: string | null;
+  safetyState?: string | null;
+  graphOutcome?: string | null;
 };
 
 type LangfuseMetadataDefaults = Pick<
@@ -325,6 +350,75 @@ export function buildLangfuseTraceMetadata(input: LangfuseMetadataInput): TraceM
           typeof input.promptRevision === 'string' ? input.promptRevision : undefined
         )
   );
+
+  addMetadataField(metadata, 'graphName', normalizeOptionalString(input.graphName));
+  addMetadataField(metadata, 'graphVersion', normalizeOptionalString(input.graphVersion));
+  addMetadataField(metadata, 'graphNode', normalizeTagValue(input.graphNode));
+  addMetadataField(
+    metadata,
+    'graphStep',
+    typeof input.graphStep === 'number' ? normalizeFiniteNumber(input.graphStep) : undefined
+  );
+  addMetadataField(
+    metadata,
+    'graphRecursionLimit',
+    typeof input.graphRecursionLimit === 'number'
+      ? normalizeFiniteNumber(input.graphRecursionLimit)
+      : undefined
+  );
+  addMetadataField(metadata, 'intent', normalizeTagValue(input.intent));
+  addMetadataField(
+    metadata,
+    'intentConfidence',
+    typeof input.intentConfidence === 'number' ? input.intentConfidence : undefined
+  );
+  addMetadataField(metadata, 'intentReason', normalizeOptionalString(input.intentReason));
+  addMetadataField(metadata, 'questionType', normalizeTagValue(input.questionType));
+  addMetadataField(
+    metadata,
+    'questionCount',
+    typeof input.questionCount === 'number' ? normalizeFiniteNumber(input.questionCount) : undefined
+  );
+  addMetadataField(
+    metadata,
+    'searchableQuestionCount',
+    typeof input.searchableQuestionCount === 'number'
+      ? normalizeFiniteNumber(input.searchableQuestionCount)
+      : undefined
+  );
+  addMetadataField(
+    metadata,
+    'conversationalQuestionCount',
+    typeof input.conversationalQuestionCount === 'number'
+      ? normalizeFiniteNumber(input.conversationalQuestionCount)
+      : undefined
+  );
+  if (input.requestedTools) {
+    addMetadataField(metadata, 'requestedTools', normalizeStringArray(input.requestedTools));
+  }
+  if (input.toolBudget) {
+    addMetadataField(metadata, 'toolBudget', input.toolBudget as TraceMetadataValue);
+  }
+  if (input.toolsAllowed) {
+    addMetadataField(metadata, 'toolsAllowed', normalizeStringArray(input.toolsAllowed));
+  }
+  addMetadataField(metadata, 'searchProvider', normalizeProvider(input.searchProvider));
+  addMetadataField(metadata, 'searchQuery', normalizeOptionalString(input.searchQuery));
+  addMetadataField(
+    metadata,
+    'searchResultCount',
+    typeof input.searchResultCount === 'number'
+      ? normalizeFiniteNumber(input.searchResultCount)
+      : undefined
+  );
+  if (input.sourceDomains) {
+    addMetadataField(metadata, 'sourceDomains', normalizeStringArray(input.sourceDomains));
+  }
+  addMetadataField(metadata, 'mediaProvider', normalizeProvider(input.mediaProvider));
+  addMetadataField(metadata, 'mediaModel', normalizeOptionalString(input.mediaModel));
+  addMetadataField(metadata, 'falsePositiveGuard', normalizeTagValue(input.falsePositiveGuard));
+  addMetadataField(metadata, 'safetyState', normalizeTagValue(input.safetyState));
+  addMetadataField(metadata, 'graphOutcome', normalizeTagValue(input.graphOutcome));
 
   return metadata;
 }

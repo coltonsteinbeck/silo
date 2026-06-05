@@ -1,5 +1,22 @@
 # Discord Integration & Admin Features
 
+## Current Trust & Safety Policy
+
+- Bot-generated replies, generated command embeds, AI-generated thread names, stored assistant context, and reply-context text neutralize `@everyone` and `@here`.
+- Normal user and role mentions are preserved, but AI-generated Discord replies use `allowedMentions: { repliedUser: false, parse: [] }`.
+- Routine `/health` checks and Healthchecks.io success heartbeats do not create Discord noise. Discord health posts are reserved for sustained outage, shutdown, and recovery after an alerted outage.
+- The optional LangGraph message path is bounded and feature-flagged. It keeps natural-language Discord replies on a fixed graph with no autonomous tool loop.
+
+## Natural-Language Agent Path
+
+The current message path supports natural Discord conversation through direct provider generation by default. When `AGENT_GRAPH_ENABLED=true` and `AGENT_GRAPH_MODE=on` or `staging`, the message response is routed through the bounded graph:
+
+```text
+ingress -> input_safety -> context -> intent_routing -> tool_planning -> tool_execution -> synthesis -> output_safety -> persistence
+```
+
+All configured text providers remain supported through the existing registry: OpenAI, Anthropic, xAI, Google, and local OpenAI-compatible endpoints. Graph v2 detects provider capabilities and enforces one tool round with explicit budgets. Provider-native OpenAI/xAI web search runs when `AGENT_SEARCH_ENABLED=true`, and explicit natural-language image/video generation runs when `AGENT_MEDIA_NL_ENABLED=true`. Dedicated `/draw` and `/video` command handlers remain supported for compatibility and precise controls.
+
 ## Admin & Moderation Features
 
 ### 1. Admin Control Panel Command
@@ -260,21 +277,20 @@ Organize commands into categories:
 ### High Priority (High Value, Low Complexity)
 
 - **Enhanced Analytics Dashboard** - Add real-time charts and export functionality to `/analytics` command
-  - *Rationale:* High user demand, builds on existing analytics foundation
+  - _Rationale:_ High user demand, builds on existing analytics foundation
 - **Conversation Context Windows** - Implement sliding context window for long conversations
-  - *Rationale:* Improves conversation quality, prevents context overflow
+  - _Rationale:_ Improves conversation quality, prevents context overflow
 
 ### Medium Priority (Moderate Value/Complexity)
 
 - **Custom Commands System** - Allow server admins to create custom slash commands
-  - *Rationale:* High flexibility, requires command registration framework
-- **Web Search Integration** - Add web search capability via external API
-  - *Rationale:* Enhances knowledge base, needs careful rate limiting
+  - _Rationale:_ High flexibility, requires command registration framework
+- **Graph Search Rollout** - Stage provider-native OpenAI/xAI search in Langfuse-observed guilds
+  - _Rationale:_ Improves current factual accuracy while keeping tool calls bounded
 
 ### Low Priority (Lower Value or High Complexity)
 
 - **Multi-Language Support** - Internationalization for bot responses
-  - *Rationale:* Broad appeal but significant localization effort
+  - _Rationale:_ Broad appeal but significant localization effort
 - **Advanced Voice Features** - Voice activity detection, noise cancellation
-  - *Rationale:* Niche use case, complex audio processing requirements
-````
+  - _Rationale:_ Niche use case, complex audio processing requirements

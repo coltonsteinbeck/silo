@@ -3,16 +3,20 @@ import type {
   ChatCompletion,
   ChatCompletionCreateParamsNonStreaming
 } from 'openai/resources/chat/completions';
-import type {
-  TextProvider,
-  ImageProvider,
-  Message,
-  TextGenerationOptions,
-  TextGenerationResponse,
-  ImageGenerationOptions,
-  ImageGenerationResponse,
-  ImageAnalysisOptions,
-  ImageAnalysisResponse
+import {
+  logger,
+  type TextProvider,
+  type ImageProvider,
+  type Message,
+  type TextGenerationOptions,
+  type TextGenerationResponse,
+  type ImageGenerationOptions,
+  type ImageGenerationResponse,
+  type ImageAnalysisOptions,
+  type ImageAnalysisResponse,
+  type WebSearchOptions,
+  type WebSearchProvider,
+  type WebSearchResponse
 } from '@silo/core';
 
 type OpenAIImageToolQuality = 'auto' | 'high' | 'medium' | 'low';
@@ -55,6 +59,36 @@ interface OpenAIImageGenerationCall {
 
 interface OpenAIResponsesCreateResult {
   output?: OpenAIImageGenerationCall[];
+}
+
+interface OpenAIWebSearchAnnotation {
+  type?: string;
+  url?: string;
+  title?: string;
+  start_index?: number;
+  end_index?: number;
+}
+
+interface OpenAIWebSearchContentItem {
+  type?: string;
+  text?: string;
+  annotations?: OpenAIWebSearchAnnotation[];
+}
+
+interface OpenAIWebSearchOutputItem {
+  type?: string;
+  content?: OpenAIWebSearchContentItem[];
+}
+
+interface OpenAIWebSearchResult {
+  output_text?: string;
+  output?: OpenAIWebSearchOutputItem[];
+  model?: string;
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    total_tokens?: number;
+  };
 }
 
 type OpenAIImageSize = '256x256' | '512x512' | '1024x1024' | '1024x1536' | '1536x1024' | 'auto';
@@ -110,7 +144,7 @@ function clampOutputTokens(value: number): number {
   return Math.min(Math.max(1, Math.trunc(value)), MAX_OPENAI_OUTPUT_TOKENS);
 }
 
-export class OpenAIProvider implements TextProvider, ImageProvider {
+export class OpenAIProvider implements TextProvider, ImageProvider, WebSearchProvider {
   name = 'openai';
   capabilities = { vision: true, maxImagesPerRequest: 1, maxImageReferences: 5 };
   private client: OpenAI | null = null;
@@ -263,7 +297,7 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
         };
       }
 
-      console.log('[OpenAI] Generating image:', {
+      logger.info('[OpenAI] Generating image:', {
         model: options?.model || this.defaultImageModel,
         prompt: prompt.substring(0, 100),
         size: options?.size,
@@ -310,9 +344,59 @@ export class OpenAIProvider implements TextProvider, ImageProvider {
       };
     } catch (error) {
       const message = redactSecrets(error instanceof Error ? error.message : String(error));
-      console.error('[OpenAI] Image generation failed:', message);
+      logger.error('[OpenAI] Image generation failed:', message);
       throw new Error(`OpenAI image generation failed: ${message}`);
     }
+  }
+
+  async searchWeb(query: string, options?: WebSearchOptions): Promise<WebSearchResponse> {
+    if (!this.client) {
+      throw new Error('OpenAI provider not configured');
+    }
+
+    const response = (await this.client.responses.create({
+      model: options?.model || this.defaultModel,
+      input: query,
+      tools: [{ type: 'web_search' }],
+      max_output_tokens: 1200
+    } as any)) as OpenAIWebSearchResult;
+
+    const outputText =
+      response.output_text ||
+      (response.output || [])
+        .flatMap(item => item.content || [])
+        .map(item => item.text || '')
+        .join('')
+        .trim();
+
+    const citations = (response.output || [])
+      .flatMap(item => item.content || [])
+      .flatMap(item => item.annotations || [])
+      .filter(annotation => annotation.type === 'url_citation' && annotation.url)
+      .slice(0, options?.maxResults || 5)
+      .map(annotation => ({
+        url: annotation.url as string,
+        title: annotation.title,
+        startIndex: annotation.start_index,
+        endIndex: annotation.end_index
+      }));
+
+    if (!outputText) {
+      throw new Error('OpenAI web search returned no answer text');
+    }
+
+    return {
+      content: outputText,
+      citations,
+      model: response.model || options?.model || this.defaultModel,
+      usage: response.usage
+        ? {
+            promptTokens: response.usage.input_tokens || 0,
+            completionTokens: response.usage.output_tokens || 0,
+            totalTokens: response.usage.total_tokens || 0
+          }
+        : undefined
+    };
   }
 
   async analyzeImage(

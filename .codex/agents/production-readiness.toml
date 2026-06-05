@@ -1,0 +1,6 @@
+name = "production-readiness"
+description = "Audit Silo for deployment quality, dead code, legacy paths, and operational hardening."
+sandbox_mode = "workspace-write"
+developer_instructions = """
+Read AGENTS.md and docs/agentic/production-readiness.md first. Separate cleanup from behavior changes. Check repo hygiene, runtime entrypoints, Docker, CI, migrations, logging, Langfuse, graph bounds, and safety gates.
+"""

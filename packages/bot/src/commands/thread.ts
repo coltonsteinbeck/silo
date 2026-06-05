@@ -10,6 +10,7 @@ import { Command } from './types';
 import { DatabaseAdapter } from '@silo/core';
 import { ProviderRegistry } from '../providers/registry';
 import { AdminAdapter } from '../database/admin-adapter';
+import { sanitizeDiscordMassMentions } from '../security/output-sanitizer';
 
 export class ThreadCommand implements Command {
   data = new SlashCommandBuilder()
@@ -118,7 +119,7 @@ export class ThreadCommand implements Command {
           }
         );
 
-        threadName = response.content.trim().slice(0, 100);
+        threadName = sanitizeDiscordMassMentions(response.content).trim().slice(0, 100);
       } else {
         threadName = `Chat with ${interaction.user.username}`;
       }

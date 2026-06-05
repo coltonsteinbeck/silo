@@ -1,7 +1,11 @@
 import OpenAI from 'openai';
 import { deploymentDetector } from './deployment';
 
-export type GuardrailProfile = 'chat_input' | 'chat_output' | 'strict_tool_input';
+export type GuardrailProfile =
+  | 'chat_input'
+  | 'chat_output'
+  | 'assistant_output'
+  | 'strict_tool_input';
 
 export interface PromptSafetyEvaluationOptions {
   profile: GuardrailProfile;
@@ -55,6 +59,16 @@ type PromptSafetyModerationRunner = (
 const PROFILE_MODERATION_CATEGORIES: Record<GuardrailProfile, readonly string[]> = {
   chat_input: ['hate', 'hate/threatening', 'sexual/minors'],
   chat_output: ['hate', 'hate/threatening', 'sexual/minors'],
+  assistant_output: [
+    'sexual',
+    'sexual/minors',
+    'harassment',
+    'harassment/threatening',
+    'hate',
+    'hate/threatening',
+    'violence',
+    'violence/graphic'
+  ],
   strict_tool_input: [
     'sexual',
     'sexual/minors',
@@ -198,6 +212,14 @@ const EXPLICIT_SEX_TOPIC_PATTERN =
 
 const EXPLICIT_SEX_INTENT_PATTERN =
   /\b(talk\s+to\s+me\s+about|describe|write|roleplay|act\s+like|tell\s+me|fantas(?:y|ize)|dirty\s+talk|moan|explain|how\s+to|techniques?|tips?|advice)\b/i;
+
+const ASSISTANT_UNSAFE_SEXUAL_PERSONA_PATTERN = /\b(?:doctor\s+cock|dr\.?\s+dick|doctor\s+dick)\b/i;
+
+const ASSISTANT_EXPLICIT_SEXUAL_OUTPUT_PATTERN =
+  /\b(?:cock|dick|cum|cumming|balls?-deep|thrust(?:ing|s)?|pound(?:ing|s)?|deepthroat|blowjob|handjob|anal|frenulum|semen|erection|prostate\s+(?:switch|pleasure|massage)|sexual\s+roleplay|erp)\b/i;
+
+const ASSISTANT_SEXUAL_VIOLENCE_CONTEXT_PATTERN =
+  /\b(?:corpse|corpses|morgue|crematorium|flatline|bleeding\s+out|dead|gag|chok(?:e|ing)|scalpel|blade|bone\s+saw|carve|impaled)\b/i;
 
 const ILLICIT_DRUG_TOPIC_PATTERN =
   /\b(cocaine|meth(?:amphetamine)?|heroin|fentanyl|mdma|ecstasy|lsd|acid|crack|opioids?|molly)\b/i;
@@ -406,6 +428,25 @@ function detectStrictToolReasons(content: string): string[] {
   return reasons;
 }
 
+function detectAssistantOutputReasons(content: string): string[] {
+  const reasons: string[] = [];
+  const hasExplicitSexualOutput = ASSISTANT_EXPLICIT_SEXUAL_OUTPUT_PATTERN.test(content);
+
+  if (ASSISTANT_UNSAFE_SEXUAL_PERSONA_PATTERN.test(content)) {
+    reasons.push('sexual/unsafe_persona');
+  }
+
+  if (hasExplicitSexualOutput) {
+    reasons.push('sexual/explicit_generation');
+  }
+
+  if (hasExplicitSexualOutput && ASSISTANT_SEXUAL_VIOLENCE_CONTEXT_PATTERN.test(content)) {
+    reasons.push('sexual/violent_output');
+  }
+
+  return reasons;
+}
+
 async function runModeration(input: string): Promise<{
   flaggedCategories: string[];
   scores: Record<string, number>;
@@ -520,6 +561,8 @@ export async function evaluatePromptSafety(
     options.profile === 'chat_output' ? [] : detectProtectedGroupRequestReason(trimmed);
   const strictToolReasons =
     options.profile === 'strict_tool_input' ? detectStrictToolReasons(trimmed) : [];
+  const assistantOutputReasons =
+    options.profile === 'assistant_output' ? detectAssistantOutputReasons(trimmed) : [];
   const sexualMinorsReason = SEXUAL_MINORS_PATTERN.test(trimmed) ? ['sexual/minors'] : [];
   const allowContextualSlurUse =
     options.profile !== 'chat_output' && canTreatSlurUseAsContext(trimmed, signals);
@@ -537,7 +580,12 @@ export async function evaluatePromptSafety(
     reasons.push('hate/slur_obfuscation_request');
   }
 
-  reasons.push(...protectedGroupReasons, ...sexualMinorsReason, ...strictToolReasons);
+  reasons.push(
+    ...protectedGroupReasons,
+    ...sexualMinorsReason,
+    ...strictToolReasons,
+    ...assistantOutputReasons
+  );
 
   if (jailbreakMatches.length > 0) {
     reasons.push('prompt_injection/policy_bypass');
@@ -555,6 +603,7 @@ export async function evaluatePromptSafety(
     ...hateEvasionMatches,
     ...protectedGroupReasons,
     ...strictToolReasons,
+    ...assistantOutputReasons,
     ...sexualMinorsReason,
     ...(directSlurRequest ? ['slur_generation_request'] : [])
   ]);
