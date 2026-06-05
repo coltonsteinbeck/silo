@@ -155,6 +155,32 @@ Notes:
 - `PROMPT_VERSION` identifies the deployed prompt/version family. It is separate from the runtime prompt hash used for effective prompt lineage.
 - Discord user IDs are hashed before they are sent to Langfuse. Set `LANGFUSE_USER_HASH_SALT` to a stable random value per deployment.
 - The app uses `LANGFUSE_BASE_URL`. If you use the Langfuse CLI separately, you may also want `LANGFUSE_HOST` set to the same value.
+- When the bounded agent graph is enabled, the same Langfuse wrapper records graph node spans, safety guardrails, model generations, tool budgets, and graph outcomes. No separate Langfuse callback stack is required.
+
+### Bounded Agent Graph
+
+Discord message responses can run through a feature-flagged LangGraph orchestration layer. It is disabled by default while the direct provider path remains the production default.
+
+```bash
+AGENT_GRAPH_ENABLED=false
+AGENT_GRAPH_MODE=off
+AGENT_GRAPH_RECURSION_LIMIT=16
+AGENT_GRAPH_MAX_TOOL_ROUNDS=1
+AGENT_GRAPH_MAX_TOOL_CALLS=3
+AGENT_GRAPH_MAX_WEB_SEARCHES=2
+AGENT_GRAPH_MAX_PAGES_FETCHED=3
+AGENT_GRAPH_MAX_IMAGE_GENERATIONS=1
+AGENT_GRAPH_MAX_VIDEO_GENERATIONS=1
+AGENT_SEARCH_ENABLED=false
+AGENT_MEDIA_NL_ENABLED=false
+AGENT_SEARCH_FALLBACK_PROVIDER=disabled
+```
+
+Graph v2 is acyclic: ingress -> input safety -> context -> deterministic tool planning -> bounded tool execution -> model generation/synthesis -> output safety -> persistence. It does not run autonomous ReAct loops. Provider support continues to come from the existing registry, so configured OpenAI, Anthropic, xAI, Google, and local OpenAI-compatible text models use the same provider implementations as the non-graph path. Provider-native search is available for OpenAI and xAI when `AGENT_SEARCH_ENABLED=true`; set `AGENT_SEARCH_FALLBACK_PROVIDER=openai` or `xai` in staging/production so current-information prompts can search even when the selected text provider does not expose web search. Explicit natural-language image/video generation is available when `AGENT_MEDIA_NL_ENABLED=true`. Unsupported tools return deterministic tool results instead of breaking the turn.
+
+Assistant output uses a stricter `assistant_output` guardrail profile than normal chat input. This lets current user turns remain passable while generated unsafe personas, explicit sexual continuations, sexualized violence, hate, harassment, and similar bad assistant answers are blocked before Discord delivery and persistence.
+
+For rollout and trace details, see [docs/AGENT_GRAPH.md](docs/AGENT_GRAPH.md).
 
 ### Docker Deployment
 
@@ -264,6 +290,7 @@ Migration safety rules:
 
 - **Multi-Provider AI**: OpenAI (gpt-5-mini), Anthropic, xAI, Google, local OpenAI-compatible (Ollama/LM Studio)
 - **Conversational AI**: @mention bot for natural conversations with context
+- **Mention Safety**: Bot-generated text neutralizes `@everyone` and `@here`, and generated Discord replies disable mention parsing
 - **Realtime Voice**: Talk to Silo in voice channels with multiple voice options (alloy, ash, ballad, coral, echo, sage, shimmer, verse)
 - **Advanced Memory**: User and server memory systems with search
 - **Image Generation**: gpt-image-1 with low/medium/high quality options
@@ -274,6 +301,8 @@ Migration safety rules:
 - **Audit Logging**: Track all admin actions and moderation events
 - **Analytics**: Command usage, AI costs, response times, user feedback
 - **Safety Guardrails**: Immutable system safety layer, prompt-hash allowlisting option, input moderation, and output moderation fail-closed mode
+- **Outage-Only Health Alerts**: `/health` and Healthchecks.io heartbeats stay active, while Discord health alerts post only for sustained outage, shutdown, and recovery after an alerted outage
+- **Bounded Agent Graph**: Optional LangGraph message path with fixed nodes, one tool round, explicit budgets, and Langfuse graph metadata
 
 ### Commands
 

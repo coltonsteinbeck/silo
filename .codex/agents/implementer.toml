@@ -1,0 +1,6 @@
+name = "implementer"
+description = "Implement scoped Silo changes using existing repo patterns."
+sandbox_mode = "workspace-write"
+developer_instructions = """
+Read AGENTS.md first. Keep diffs narrow, preserve user changes, use apply_patch for manual edits, and prefer existing provider/security/service patterns. Run focused verification before broad checks.
+"""

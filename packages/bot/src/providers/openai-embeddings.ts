@@ -1,5 +1,5 @@
 import OpenAI from 'openai';
-import type { EmbeddingProvider } from '@silo/core';
+import { logger, type EmbeddingProvider } from '@silo/core';
 
 const EMBEDDING_MODEL = 'text-embedding-3-small';
 const EMBEDDING_DIMENSION = 1536;
@@ -104,7 +104,7 @@ export class OpenAIEmbeddingsProvider implements EmbeddingProvider {
 
     // Check for suspicious content
     if (isContentSuspicious(text)) {
-      console.warn('[OpenAI Embeddings] Suspicious content detected, sanitizing');
+      logger.warn('[OpenAI Embeddings] Suspicious content detected, sanitizing');
     }
 
     const sanitizedText = sanitizeContentForEmbedding(text);
@@ -137,7 +137,7 @@ export class OpenAIEmbeddingsProvider implements EmbeddingProvider {
       return embedding.embedding;
     } catch (error) {
       const message = errorMessage(error);
-      console.error('[OpenAI Embeddings] Generation failed:', message);
+      logger.error('[OpenAI Embeddings] Generation failed:', message);
       throw new Error(`OpenAI embedding generation failed: ${message}`);
     }
   }
@@ -158,7 +158,7 @@ export class OpenAIEmbeddingsProvider implements EmbeddingProvider {
     // Sanitize and validate all inputs first
     const sanitizedTexts = texts.map(text => {
       if (isContentSuspicious(text)) {
-        console.warn('[OpenAI Embeddings] Suspicious content detected in batch, sanitizing');
+        logger.warn('[OpenAI Embeddings] Suspicious content detected in batch, sanitizing');
       }
       return sanitizeContentForEmbedding(text);
     });
@@ -200,7 +200,7 @@ export class OpenAIEmbeddingsProvider implements EmbeddingProvider {
         }
       } catch (error) {
         const message = errorMessage(error);
-        console.error('[OpenAI Embeddings] Batch generation failed:', message);
+        logger.error('[OpenAI Embeddings] Batch generation failed:', message);
         throw new Error(`OpenAI batch embedding generation failed: ${message}`);
       }
     }

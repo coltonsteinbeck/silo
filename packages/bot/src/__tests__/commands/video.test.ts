@@ -166,6 +166,45 @@ describe('VideoCommand', () => {
     expect(interaction.editReply).toHaveBeenCalled();
   });
 
+  test('neutralizes mass mentions in generated video embed prompt text', async () => {
+    const generateVideo = mock(async () => ({
+      url: 'https://example.com/video.mp4',
+      model: 'grok-imagine-video',
+      duration: 8
+    }));
+
+    registry.getVideoProvider = mock(() => ({
+      name: 'xai',
+      isConfigured: () => true,
+      generateVideo
+    }));
+
+    const promptGuard: PromptModerationGuard = mock(async () => ({
+      allowed: true,
+      processedPrompt: '@everyone cinematic update'
+    })) as unknown as PromptModerationGuard;
+
+    command = new VideoCommand(registry, undefined, undefined, promptGuard);
+
+    const interaction = createMockInteraction({
+      options: {
+        prompt: '@here cinematic update'
+      }
+    }) as any;
+
+    interaction.options.getAttachment = mock(() => null);
+
+    await command.execute(interaction);
+
+    const reply = interaction._getReplies().find((entry: unknown) => {
+      return typeof entry === 'object' && entry !== null && 'embeds' in entry;
+    }) as { embeds: any[] };
+    const description = reply.embeds[0].data.description as string;
+    expect(description).toContain('Prompt: everyone cinematic update');
+    expect(description).not.toContain('@everyone');
+    expect(description).not.toContain('@here');
+  });
+
   test('redacts provider errors from user-facing video failures', async () => {
     const generateVideo = mock(async () => {
       throw new Error('xAI internal provider trace with sensitive details');

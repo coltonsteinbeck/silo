@@ -9,6 +9,7 @@ import {
 import type { VoiceConnection } from '@discordjs/voice';
 import { Readable } from 'stream';
 import { OpusEncoder } from 'mediaplex';
+import { logger } from '@silo/core';
 import { buildPromptSafetyWarningMessage, evaluatePromptSafety } from '../security/prompt-safety';
 
 const REALTIME_API_URL = 'wss://api.openai.com/v1/realtime?model=gpt-4o-mini-realtime-preview';
@@ -68,7 +69,7 @@ export class RealtimeSession {
     });
 
     this.audioPlayer.on('error', (error: Error) => {
-      console.error('[RealtimeSession] Audio player error:', error);
+      logger.error('[RealtimeSession] Audio player error:', error);
       this.isPlaying = false;
       this.playNextInQueue();
     });
@@ -104,7 +105,7 @@ export class RealtimeSession {
 
       this.ws.on('error', (error: Error) => {
         clearTimeout(timeout);
-        console.error('[RealtimeSession] WebSocket error:', error);
+        logger.error('[RealtimeSession] WebSocket error:', error);
         this.options.onError?.(error);
         reject(error);
       });
@@ -188,9 +189,13 @@ export class RealtimeSession {
 
         case 'conversation.item.input_audio_transcription.completed':
           // Transcription of user's speech is complete
-          console.log('[RealtimeSession] User said:', message.transcript);
+          logger.debug('[RealtimeSession] User transcript received', {
+            characters: String(message.transcript || '').length
+          });
           if (message.transcript) {
-            void this.handleVoiceTranscript(message.transcript);
+            this.handleVoiceTranscript(message.transcript).catch(error => {
+              this.handleVoiceSafetyError('Failed to handle voice transcript', error);
+            });
           }
           break;
 
@@ -201,7 +206,7 @@ export class RealtimeSession {
             // This just means we tried to cancel when no response was active - not an error
             break;
           }
-          console.error('[RealtimeSession] API error:', message.error);
+          logger.error('[RealtimeSession] API error:', message.error);
           this.options.onError?.(new Error(message.error?.message || 'Unknown error'));
           break;
         }
@@ -209,11 +214,11 @@ export class RealtimeSession {
         default:
           // Log unknown message types for debugging
           if (process.env.DEBUG_VOICE) {
-            console.log('[RealtimeSession] Unknown message type:', message.type);
+            logger.debug('[RealtimeSession] Unknown message type:', message.type);
           }
       }
     } catch (error) {
-      console.error('[RealtimeSession] Error parsing message:', error);
+      logger.error('[RealtimeSession] Error parsing message:', error);
     }
   }
 
@@ -251,7 +256,9 @@ export class RealtimeSession {
    * Send a text message for the AI to respond to (with voice)
    */
   sendText(text: string): void {
-    void this.sendTextGuarded(text);
+    this.sendTextGuarded(text).catch(error => {
+      this.handleVoiceSafetyError('Failed to send guarded voice text', error);
+    });
   }
 
   /**
@@ -284,11 +291,18 @@ export class RealtimeSession {
   }
 
   private async sendTextGuarded(text: string): Promise<void> {
-    const safetyResult = await evaluatePromptSafety(text, {
-      profile: 'strict_tool_input',
-      source: 'voice_text',
-      userId: this.userId
-    });
+    let safetyResult;
+
+    try {
+      safetyResult = await evaluatePromptSafety(text, {
+        profile: 'strict_tool_input',
+        source: 'voice_text',
+        userId: this.userId
+      });
+    } catch (error) {
+      this.handleVoiceSafetyError('Voice text guardrail evaluation failed', error);
+      return;
+    }
 
     if (!safetyResult.allowed) {
       this.emitVoiceSafetyFallback(safetyResult.reasons, safetyResult.moderationCategories);
@@ -315,23 +329,38 @@ export class RealtimeSession {
   }
 
   private async handleVoiceTranscript(transcript: string): Promise<void> {
-    const safetyResult = await evaluatePromptSafety(transcript, {
-      profile: 'strict_tool_input',
-      source: 'voice_transcript',
-      userId: this.userId
-    });
+    let safetyResult;
+
+    try {
+      safetyResult = await evaluatePromptSafety(transcript, {
+        profile: 'strict_tool_input',
+        source: 'voice_transcript',
+        userId: this.userId
+      });
+    } catch (error) {
+      this.handleVoiceSafetyError('Voice transcript guardrail evaluation failed', error);
+      return;
+    }
 
     if (safetyResult.allowed) {
       return;
     }
 
-    console.warn('[RealtimeSession] Blocked unsafe voice transcript', {
+    logger.warn('[RealtimeSession] Blocked unsafe voice transcript', {
       userId: this.userId,
       reasons: safetyResult.reasons,
       moderationCategories: safetyResult.moderationCategories
     });
 
     this.emitVoiceSafetyFallback(safetyResult.reasons, safetyResult.moderationCategories);
+  }
+
+  private handleVoiceSafetyError(context: string, error: unknown): void {
+    logger.error(`[RealtimeSession] ${context}`, {
+      userId: this.userId,
+      error
+    });
+    this.emitVoiceSafetyFallback([], []);
   }
 
   private emitVoiceSafetyFallback(reasons: string[], moderationCategories: string[]): void {
@@ -459,25 +488,25 @@ export class RealtimeSession {
 
     const receiver = this.connection.receiver;
     if (!receiver) {
-      console.error('[RealtimeSession] Voice receiver not available');
+      logger.error('[RealtimeSession] Voice receiver not available');
       return;
     }
 
     this.isListening = true;
-    console.log(`[RealtimeSession] Started listening for user ${this.userId}`);
+    logger.info(`[RealtimeSession] Started listening for user ${this.userId}`);
 
     // Listen for when the specific user starts speaking
     receiver.speaking.on('start', (speakingUserId: string) => {
       if (speakingUserId !== this.userId) return;
 
-      console.log(`[RealtimeSession] User ${this.userId} started speaking`);
+      logger.debug(`[RealtimeSession] User ${this.userId} started speaking`);
       this.startRecording();
     });
 
     receiver.speaking.on('end', (speakingUserId: string) => {
       if (speakingUserId !== this.userId) return;
 
-      console.log(`[RealtimeSession] User ${this.userId} stopped speaking`);
+      logger.debug(`[RealtimeSession] User ${this.userId} stopped speaking`);
       // Audio stream will end automatically due to EndBehaviorType.AfterSilence
     });
   }
@@ -518,20 +547,20 @@ export class RealtimeSession {
         } catch (error) {
           // Silently ignore decode errors for malformed packets
           if (process.env.DEBUG_VOICE) {
-            console.error('[RealtimeSession] Error decoding opus packet:', error);
+            logger.error('[RealtimeSession] Error decoding opus packet:', error);
           }
         }
       });
 
       audioStream.on('end', () => {
-        console.log(`[RealtimeSession] Audio stream ended for user ${this.userId}`);
+        logger.debug(`[RealtimeSession] Audio stream ended for user ${this.userId}`);
       });
 
       audioStream.on('error', (error: Error) => {
-        console.error('[RealtimeSession] Audio stream error:', error);
+        logger.error('[RealtimeSession] Audio stream error:', error);
       });
     } catch (error) {
-      console.error('[RealtimeSession] Error setting up audio recording:', error);
+      logger.error('[RealtimeSession] Error setting up audio recording:', error);
     }
   }
 

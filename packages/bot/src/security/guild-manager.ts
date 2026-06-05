@@ -16,6 +16,7 @@ import {
   EmbedBuilder
 } from 'discord.js';
 import { Pool } from 'pg';
+import { logger } from '@silo/core';
 import { deploymentDetector } from './deployment';
 
 export interface GuildInfo {
@@ -86,10 +87,10 @@ class GuildManager {
     // Fetch channels if cache is empty (common on initial join)
     if (guild.channels.cache.size === 0) {
       try {
-        console.log(`Fetching channels for ${guild.name} (cache was empty)`);
+        logger.info(`Fetching channels for ${guild.name} (cache was empty)`);
         await guild.channels.fetch();
       } catch (error) {
-        console.error(`Could not fetch channels for ${guild.name}:`, error);
+        logger.error(`Could not fetch channels for ${guild.name}:`, error);
       }
     }
 
@@ -99,7 +100,7 @@ class GuildManager {
       try {
         botMember = await guild.members.fetchMe();
       } catch (error) {
-        console.error(`Could not fetch bot member for ${guild.name}:`, error);
+        logger.error(`Could not fetch bot member for ${guild.name}:`, error);
         // Fall back to just returning first available text channel
         const textChannels = guild.channels.cache
           .filter(c => c.type === ChannelType.GuildText)
@@ -125,7 +126,7 @@ class GuildManager {
       .filter(c => c.type === ChannelType.GuildText)
       .sort((a, b) => a.position - b.position);
 
-    console.log(`Found ${textChannels.size} text channels in ${guild.name}`);
+    logger.info(`Found ${textChannels.size} text channels in ${guild.name}`);
 
     for (const [, channel] of textChannels) {
       const textChannel = channel as TextChannel;
@@ -137,13 +138,13 @@ class GuildManager {
 
     // Last resort: return first text channel without permission check
     if (textChannels.size > 0) {
-      console.warn(
+      logger.warn(
         `No channels with verified permissions in ${guild.name}, trying first text channel`
       );
       return textChannels.first() as TextChannel;
     }
 
-    console.error(`No text channels found in ${guild.name}`);
+    logger.error(`No text channels found in ${guild.name}`);
     return null;
   }
 
@@ -184,7 +185,7 @@ class GuildManager {
 
       // Send welcome message (don't await to not block the response)
       this.sendWelcomeMessage(guild).catch(err => {
-        console.error(`[Welcome] Error sending welcome message:`, err);
+        logger.error(`[Welcome] Error sending welcome message:`, err);
       });
 
       return {
@@ -202,7 +203,7 @@ class GuildManager {
 
       // Send welcome message (don't await to not block the response)
       this.sendWelcomeMessage(guild).catch(err => {
-        console.error(`[Welcome] Error sending welcome message:`, err);
+        logger.error(`[Welcome] Error sending welcome message:`, err);
       });
 
       return {
@@ -289,18 +290,16 @@ class GuildManager {
    * Send welcome message when bot joins a guild
    */
   private async sendWelcomeMessage(guild: Guild): Promise<void> {
-    console.log(`[Welcome] Attempting to send welcome message to ${guild.name}`);
+    logger.info(`[Welcome] Attempting to send welcome message to ${guild.name}`);
 
     try {
       const channel = await this.findWarningChannel(guild);
       if (!channel) {
-        console.error(
-          `[Welcome] Could not find a channel to send welcome message in ${guild.name}`
-        );
+        logger.error(`[Welcome] Could not find a channel to send welcome message in ${guild.name}`);
         return;
       }
 
-      console.log(`[Welcome] Found channel #${channel.name} in ${guild.name}`);
+      logger.info(`[Welcome] Found channel #${channel.name} in ${guild.name}`);
 
       const embed = new EmbedBuilder()
         .setTitle('👋 Hello! Silo has joined your server!')
@@ -338,9 +337,9 @@ class GuildManager {
         .setTimestamp();
 
       await channel.send({ embeds: [embed] });
-      console.log(`[Welcome] Sent welcome message to ${guild.name} in #${channel.name}`);
+      logger.info(`[Welcome] Sent welcome message to ${guild.name} in #${channel.name}`);
     } catch (error) {
-      console.error(`[Welcome] Failed to send welcome message to ${guild.name}:`, error);
+      logger.error(`[Welcome] Failed to send welcome message to ${guild.name}:`, error);
     }
   }
 
@@ -389,7 +388,7 @@ class GuildManager {
     try {
       await channel.send({ embeds: [embed], components: [row] });
     } catch (error) {
-      console.error(`Failed to send waitlist notification to ${guild.name}:`, error);
+      logger.error(`Failed to send waitlist notification to ${guild.name}:`, error);
     }
   }
 
@@ -441,7 +440,7 @@ class GuildManager {
           await channel.send({ embeds: [embed] });
         }
       } catch (error) {
-        console.error(`Failed to send eviction notification to guild ${guildId}:`, error);
+        logger.error(`Failed to send eviction notification to guild ${guildId}:`, error);
       }
     }
 
@@ -506,7 +505,7 @@ class GuildManager {
           });
         }
       } catch (error) {
-        console.error(`Failed to send promotion notification:`, error);
+        logger.error(`Failed to send promotion notification:`, error);
       }
     }
 
@@ -543,10 +542,10 @@ class GuildManager {
         const info = await this.extractGuildInfo(guild);
         const mode = deploymentDetector.getConfig().isSelfHosted ? 'self-hosted' : 'hosted';
         await this.registerGuild(info, mode);
-        console.log(`[GuildManager] Auto-registered missing guild: ${guild.name} (${guildId})`);
+        logger.info(`[GuildManager] Auto-registered missing guild: ${guild.name} (${guildId})`);
       } catch (error) {
         // Guild may have been deleted or bot was kicked — just log and move on
-        console.warn(`[GuildManager] Could not auto-register guild ${guildId}:`, error);
+        logger.warn(`[GuildManager] Could not auto-register guild ${guildId}:`, error);
       }
     }
   }
@@ -558,7 +557,7 @@ class GuildManager {
    */
   async ensureGuildsRegistered(): Promise<{ synced: number; skipped: number }> {
     if (!this.client) {
-      console.warn('[GuildManager] Cannot sync guilds — client not set');
+      logger.warn('[GuildManager] Cannot sync guilds — client not set');
       return { synced: 0, skipped: 0 };
     }
 
@@ -584,9 +583,9 @@ class GuildManager {
         const mode = deploymentDetector.getConfig().isSelfHosted ? 'self-hosted' : 'hosted';
         await this.registerGuild(info, mode);
         synced++;
-        console.log(`[GuildSync] Registered missing guild: ${guild.name} (${guild.id})`);
+        logger.info(`[GuildSync] Registered missing guild: ${guild.name} (${guild.id})`);
       } catch (error) {
-        console.warn(`[GuildSync] Failed to sync guild ${guild.name}:`, error);
+        logger.warn(`[GuildSync] Failed to sync guild ${guild.name}:`, error);
         skipped++;
       }
     }
@@ -652,7 +651,7 @@ class GuildManager {
 
       return true;
     } catch (error) {
-      console.error(`Failed to send inactivity warning to guild ${guildId}:`, error);
+      logger.error(`Failed to send inactivity warning to guild ${guildId}:`, error);
       return false;
     }
   }
@@ -702,7 +701,7 @@ class GuildManager {
         const info = await this.extractGuildInfo(guild);
         await this.registerGuild(info, 'hosted');
       } catch (error) {
-        console.error(`Failed to register promoted guild ${guildId}:`, error);
+        logger.error(`Failed to register promoted guild ${guildId}:`, error);
         return false;
       }
     }

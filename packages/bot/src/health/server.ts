@@ -32,9 +32,10 @@ export class HealthServer {
   private discordNotifyInterval: Timer | null = null;
   private adminDb: AdminAdapter | null = null;
   private startTime = Date.now();
-  private lastHealthStatus: 'healthy' | 'unhealthy' | null = null;
   private lastHealthchecksStatus: 'healthy' | 'unhealthy' | null = null;
   private consecutiveUnhealthyChecks = 0;
+  private discordConsecutiveUnhealthyChecks = 0;
+  private discordOutageAlerted = false;
   private hasObservedHealthyCheck = false;
   private readonly healthchecksPingIntervalMs = 60_000;
   private readonly healthchecksStartupGraceMs = 3 * 60_000;
@@ -258,22 +259,72 @@ export class HealthServer {
    * Only sends notifications when health status changes
    */
   private startDiscordHealthNotifications(): void {
-    // Check health and notify every 5 minutes, but only on status change
+    // Check health every 5 minutes. Notify Discord only for sustained outages
+    // and recovery after an outage alert has been sent.
     this.discordNotifyInterval = setInterval(async () => {
       try {
-        const health = await this.getHealthStatus();
-
-        // Only notify on status change
-        if (this.lastHealthStatus !== health.status) {
-          await this.notifyDiscordChannels(health.status);
-          this.lastHealthStatus = health.status;
-        }
+        await this.runDiscordHealthNotificationCheck();
       } catch (error) {
         logger.error('Failed to check health for Discord notifications:', error);
       }
     }, 300000); // 5 minutes
 
     logger.info('Discord health notifications enabled');
+  }
+
+  private shouldSuppressDiscordOutageAlert(now: number): { suppress: boolean; reason?: string } {
+    if (now - this.startTime < this.healthchecksStartupGraceMs) {
+      return {
+        suppress: true,
+        reason: 'startup_grace'
+      };
+    }
+
+    if (this.discordConsecutiveUnhealthyChecks < this.healthchecksFailureThreshold) {
+      return {
+        suppress: true,
+        reason: 'failure_threshold'
+      };
+    }
+
+    if (this.discordOutageAlerted) {
+      return {
+        suppress: true,
+        reason: 'already_reported_unhealthy'
+      };
+    }
+
+    return { suppress: false };
+  }
+
+  private async runDiscordHealthNotificationCheck(): Promise<void> {
+    const health = await this.getHealthStatus();
+
+    if (health.status === 'healthy') {
+      this.discordConsecutiveUnhealthyChecks = 0;
+
+      if (this.discordOutageAlerted) {
+        await this.notifyDiscordChannels('healthy');
+        this.discordOutageAlerted = false;
+      }
+
+      return;
+    }
+
+    this.discordConsecutiveUnhealthyChecks += 1;
+
+    const suppression = this.shouldSuppressDiscordOutageAlert(Date.now());
+    if (suppression.suppress) {
+      logger.debug('Suppressing Discord health outage notification', {
+        reason: suppression.reason,
+        consecutiveUnhealthyChecks: this.discordConsecutiveUnhealthyChecks,
+        uptimeSeconds: Math.floor((Date.now() - this.startTime) / 1000)
+      });
+      return;
+    }
+
+    await this.notifyDiscordChannels('unhealthy');
+    this.discordOutageAlerted = true;
   }
 
   /**

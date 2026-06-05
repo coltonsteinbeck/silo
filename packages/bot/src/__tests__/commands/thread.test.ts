@@ -19,11 +19,16 @@ describe('ThreadCommand', () => {
     mockDb = createMockDatabaseAdapter();
     mockRegistry = {
       getTextProvider: mock(() => ({
-        generateText: mock(async () => 'AI Generated Name')
+        name: 'openai',
+        capabilities: {},
+        generateText: mock(async () => ({ content: 'AI Generated Name', model: 'test-model' }))
       })),
       getProvider: mock(() => ({
-        generateText: mock(async () => 'AI Generated Name')
+        name: 'openai',
+        capabilities: {},
+        generateText: mock(async () => ({ content: 'AI Generated Name', model: 'test-model' }))
       })),
+      getConfiguredTextModel: mock(() => 'test-model'),
       isConfigured: mock(() => true)
     };
     command = new ThreadCommand(mockDb, mockRegistry);
@@ -86,6 +91,51 @@ describe('ThreadCommand', () => {
       await command.execute(interaction as any);
 
       expect(interaction.deferReply).toHaveBeenCalled();
+    });
+
+    test('neutralizes mass mentions in generated thread names', async () => {
+      mockDb.getConversationHistory = mock(async () => [
+        {
+          role: 'user',
+          content: 'Plan the launch update',
+          createdAt: new Date()
+        }
+      ]);
+      mockRegistry.getTextProvider = mock(() => ({
+        name: 'openai',
+        capabilities: {},
+        generateText: mock(async () => ({
+          content: '@everyone launch room',
+          model: 'test-model'
+        }))
+      }));
+
+      const createThread = mock(async ({ name }: { name: string }) => ({
+        id: 'thread123',
+        name,
+        toString: (): string => `<#thread123>`,
+        send: mock(async () => {})
+      }));
+      const mockChannel = {
+        id: 'channel123',
+        type: 0,
+        isTextBased: () => true,
+        threads: {
+          create: createThread
+        }
+      };
+
+      const interaction = createMockInteraction();
+      interaction.options.getString = mock(() => null);
+      // @ts-expect-error - adding mock channel
+      interaction.channel = mockChannel;
+
+      await command.execute(interaction as any);
+
+      expect(createThread).toHaveBeenCalled();
+      const [firstCall] = createThread.mock.calls;
+      expect(firstCall).toBeDefined();
+      expect(firstCall![0].name).toBe('everyone launch room');
     });
   });
 });

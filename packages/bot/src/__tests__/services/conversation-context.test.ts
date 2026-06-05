@@ -1,6 +1,8 @@
 import { describe, test, expect } from 'bun:test';
 import {
   assembleConversationContext,
+  buildConversationHistoryInstruction,
+  shouldIncludeConversationHistoryForPrompt,
   buildImageSummaryBlock
 } from '../../services/conversation-context';
 
@@ -96,5 +98,67 @@ describe('conversation-context', () => {
     expect(block).toContain('Image context summary:');
     expect(block).toContain('Image 1: [1|current] person dancing');
     expect(block).toContain('Image 2: [2|reply_level_1] meme panel');
+  });
+
+  test('omits prior history for standalone casual check-ins', () => {
+    expect(
+      shouldIncludeConversationHistoryForPrompt({
+        latestUserText: "how's it hanging?",
+        hasReplyContext: false,
+        hasVisionTargets: false
+      })
+    ).toBe(false);
+
+    expect(
+      shouldIncludeConversationHistoryForPrompt({
+        latestUserText: 'how are you?',
+        hasReplyContext: false,
+        hasVisionTargets: false
+      })
+    ).toBe(false);
+  });
+
+  test('keeps history for follow-ups, topical prompts, replies, and vision turns', () => {
+    expect(
+      shouldIncludeConversationHistoryForPrompt({
+        latestUserText: "how's it hanging with the NBA finals?",
+        hasReplyContext: false,
+        hasVisionTargets: false
+      })
+    ).toBe(true);
+
+    expect(
+      shouldIncludeConversationHistoryForPrompt({
+        latestUserText: 'what did you say earlier?',
+        hasReplyContext: false,
+        hasVisionTargets: false
+      })
+    ).toBe(true);
+
+    expect(
+      shouldIncludeConversationHistoryForPrompt({
+        latestUserText: "how's it hanging?",
+        hasReplyContext: true,
+        hasVisionTargets: false
+      })
+    ).toBe(true);
+
+    expect(
+      shouldIncludeConversationHistoryForPrompt({
+        latestUserText: "how's it hanging?",
+        hasReplyContext: false,
+        hasVisionTargets: true
+      })
+    ).toBe(true);
+  });
+
+  test('buildConversationHistoryInstruction keeps prior topics subtle', () => {
+    expect(buildConversationHistoryInstruction(true)).toContain(
+      'Use prior channel history quietly'
+    );
+    expect(buildConversationHistoryInstruction(true)).toContain(
+      'Do not proactively bring up older topics'
+    );
+    expect(buildConversationHistoryInstruction(false)).toContain('standalone casual check-in');
   });
 });
