@@ -262,6 +262,19 @@ export async function routeAgentIntent(input: IntentRouterInput): Promise<Intent
   const questionMetadata = buildQuestionMetadata(questionClassification);
 
   if (!text) {
+    if (input.hasImageAttachments) {
+      return {
+        intent: 'vision_analyze',
+        confidence: 0.86,
+        reason: 'image_only_vision_context',
+        questionType: 'conversational',
+        questionCount: 0,
+        searchableQuestionCount: 0,
+        conversationalQuestionCount: 0,
+        requestedTools: []
+      };
+    }
+
     return {
       intent: 'clarify',
       confidence: 1,

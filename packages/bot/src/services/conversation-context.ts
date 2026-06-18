@@ -66,9 +66,16 @@ export function buildImageSummaryBlock(summaries: string[]): string {
   }
 
   return [
-    'Image context summary:',
+    'Private image grounding:',
     ...summaries.map((summary, index) => `- Image ${index + 1}: ${summary}`)
   ].join('\n');
+}
+
+export function buildEffectiveUserPrompt(params: {
+  userText: string;
+  hasVisionTargets: boolean;
+}): string {
+  return params.userText.replace(/\s+/g, ' ').trim();
 }
 
 const CASUAL_CHECK_IN =
@@ -90,11 +97,16 @@ export function shouldIncludeConversationHistoryForPrompt(params: {
   hasReplyContext: boolean;
   hasVisionTargets: boolean;
 }): boolean {
+  const normalized = params.latestUserText.replace(/\s+/g, ' ').trim();
+  if (!normalized || isStandaloneCasualCheckIn(normalized)) {
+    return false;
+  }
+
   if (params.hasReplyContext || params.hasVisionTargets) {
     return true;
   }
 
-  return !isStandaloneCasualCheckIn(params.latestUserText);
+  return true;
 }
 
 export function buildConversationHistoryInstruction(historyIncluded: boolean): string {
