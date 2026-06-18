@@ -1,6 +1,7 @@
 import { describe, test, expect } from 'bun:test';
 import {
   assembleConversationContext,
+  buildEffectiveUserPrompt,
   buildConversationHistoryInstruction,
   shouldIncludeConversationHistoryForPrompt,
   buildImageSummaryBlock
@@ -95,9 +96,17 @@ describe('conversation-context', () => {
       '[1|current] person dancing',
       '[2|reply_level_1] meme panel'
     ]);
-    expect(block).toContain('Image context summary:');
+    expect(block).toContain('Private image grounding:');
     expect(block).toContain('Image 1: [1|current] person dancing');
     expect(block).toContain('Image 2: [2|reply_level_1] meme panel');
+  });
+
+  test('buildEffectiveUserPrompt leaves image-only turns directive-free', () => {
+    expect(buildEffectiveUserPrompt({ userText: '', hasVisionTargets: false })).toBe('');
+    expect(
+      buildEffectiveUserPrompt({ userText: '  what is this?  ', hasVisionTargets: true })
+    ).toBe('what is this?');
+    expect(buildEffectiveUserPrompt({ userText: '', hasVisionTargets: true })).toBe('');
   });
 
   test('omits prior history for standalone casual check-ins', () => {
@@ -118,7 +127,7 @@ describe('conversation-context', () => {
     ).toBe(false);
   });
 
-  test('keeps history for follow-ups, topical prompts, replies, and vision turns', () => {
+  test('keeps history for follow-ups, topical prompts, replies, and vision turns with text', () => {
     expect(
       shouldIncludeConversationHistoryForPrompt({
         latestUserText: "how's it hanging with the NBA finals?",
@@ -141,11 +150,19 @@ describe('conversation-context', () => {
         hasReplyContext: true,
         hasVisionTargets: false
       })
-    ).toBe(true);
+    ).toBe(false);
 
     expect(
       shouldIncludeConversationHistoryForPrompt({
-        latestUserText: "how's it hanging?",
+        latestUserText: '',
+        hasReplyContext: false,
+        hasVisionTargets: true
+      })
+    ).toBe(false);
+
+    expect(
+      shouldIncludeConversationHistoryForPrompt({
+        latestUserText: 'what is happening in this image?',
         hasReplyContext: false,
         hasVisionTargets: true
       })

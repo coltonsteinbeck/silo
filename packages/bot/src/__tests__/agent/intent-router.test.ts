@@ -82,6 +82,15 @@ describe('agent intent router', () => {
     }
   );
 
+  test('routes image-only attachment turns to vision analysis instead of empty prompt clarify', async () => {
+    const result = await routeAgentIntent({ text: '', hasImageAttachments: true });
+
+    expect(result.intent).toBe('vision_analyze');
+    expect(result.reason).toBe('image_only_vision_context');
+    expect(result.clarificationReason).toBeUndefined();
+    expect(result.requestedTools).toEqual([]);
+  });
+
   test.each(['describe this image', 'find an image URL for Ryu', 'what image model do you use?'])(
     'does not generate images for informational image prompt: %s',
     async prompt => {
