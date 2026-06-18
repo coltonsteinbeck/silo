@@ -51,11 +51,13 @@ import { CostAggregator } from './services/cost-aggregator';
 import { selectMemoryContext } from './services/memory-selector';
 import {
   assembleConversationContext,
+  buildEffectiveUserPrompt,
   buildConversationHistoryInstruction,
   buildImageSummaryBlock,
   shouldIncludeConversationHistoryForPrompt
 } from './services/conversation-context';
 import { resolveReplyContext } from './services/reply-context';
+import { shouldHandleAssistantMessage } from './services/message-trigger';
 import { fetchUrlContextBlock } from './services/url-context';
 import { decideVisionRouting, enforceVisionRoutingPrecheck } from './services/vision-routing';
 import {
@@ -956,8 +958,10 @@ export async function startBot(): Promise<void> {
   // Handle mentions for conversational AI
   client.on(Events.MessageCreate, async message => {
     if (message.author.bot) return;
-    if (!message.mentions.has(client.user!.id)) return;
     if (!message.guildId) return;
+    const botUserId = client.user?.id;
+    if (!botUserId) return;
+    if (!(await shouldHandleAssistantMessage(message, botUserId))) return;
 
     const guildId = message.guildId;
     const rootTraceMetadataInput = {
@@ -1005,7 +1009,8 @@ export async function startBot(): Promise<void> {
             logger.debug('Failed to send typing indicator', error);
           });
 
-          const userContent = message.content.replace(`<@${client.user!.id}>`, '').trim();
+          const botMentionPattern = new RegExp(`<@!?${botUserId}>`, 'g');
+          const userContent = message.content.replace(botMentionPattern, '').trim();
           const imageAttachments = message.attachments.filter(
             att => att.contentType?.startsWith('image/') && att.size <= 20 * 1024 * 1024
           );
@@ -1158,11 +1163,15 @@ export async function startBot(): Promise<void> {
             maxVisionTargets: 2,
             includeReplyImagesInVision: false
           });
+          const effectiveUserPrompt = buildEffectiveUserPrompt({
+            userText: conversationContext.mergedUserContent,
+            hasVisionTargets: conversationContext.visionTargets.length > 0
+          });
 
           messageTrace?.update({
             input: {
-              promptPreview: summarizeTextForTrace(processedContent),
-              promptCharacters: processedContent.length,
+              promptPreview: summarizeTextForTrace(effectiveUserPrompt || processedContent),
+              promptCharacters: effectiveUserPrompt.length || processedContent.length,
               currentImageCount: currentImageUrls.length,
               hasReplyContext: Boolean(conversationContext.directReplyMessageId),
               sentimentApplied,
@@ -1622,7 +1631,7 @@ export async function startBot(): Promise<void> {
               name: 'generate-assistant-response',
               tags: buildLangfuseTags(generationMetadataInput),
               input: {
-                promptPreview: summarizeTextForTrace(processedContent),
+                promptPreview: summarizeTextForTrace(effectiveUserPrompt || processedContent),
                 historyMessageCount: messages.length,
                 memoryItemCount: memorySelection.selected.length,
                 urlContextCount: urlContext.items.length,
@@ -1646,11 +1655,13 @@ export async function startBot(): Promise<void> {
                       ? `reply_level_${target.replyDepth}`
                       : 'current_message';
                   const visionPrompt = [
-                    'Summarize this image for downstream conversation grounding.',
-                    'Keep output factual, concise, and neutral (max 3 sentences).',
+                    "Analyze this image as private grounding for the assistant's next response.",
+                    'Extract only factual visual context, visible text, tone, and any implied user request.',
+                    'Do not write the final user-facing response here.',
+                    'Keep this grounding concise and neutral (max 3 sentences).',
                     'Include visible text if present.',
                     `Source: ${sourceLabel}.`,
-                    `User request: ${conversationContext.mergedUserContent || 'Describe image context.'}`
+                    ...(effectiveUserPrompt ? [`User text: ${effectiveUserPrompt}`] : [])
                   ].join('\n');
 
                   const visionResult = await visionProvider.analyzeImage(target.url, visionPrompt, {
@@ -1670,7 +1681,9 @@ export async function startBot(): Promise<void> {
               }
 
               imageSummaryBlock = buildImageSummaryBlock(imageSummaries);
-              const mergedUserPrompt = [conversationContext.mergedUserContent, imageSummaryBlock]
+              const imageOnlyUserMarker =
+                !effectiveUserPrompt && imageSummaryBlock ? '[Image attached]' : '';
+              const mergedUserPrompt = [effectiveUserPrompt || imageOnlyUserMarker]
                 .filter(Boolean)
                 .join('\n\n');
               const enrichedUserPrompt = [mergedUserPrompt, urlContext.block]
@@ -1683,7 +1696,7 @@ export async function startBot(): Promise<void> {
               const providerMessages = [
                 {
                   role: 'system' as const,
-                  content: `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${edgyStyleInstruction}${sentimentStyleInstruction}${safetyResponseInstruction}${conversationHistoryInstruction}${memoryMentionInstruction}${loreMemoryFactsBlock}${memoryConflictInstruction}${externalContextInstruction}${memoryContext}`
+                  content: `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${edgyStyleInstruction}${sentimentStyleInstruction}${safetyResponseInstruction}${conversationHistoryInstruction}${memoryMentionInstruction}${loreMemoryFactsBlock}${memoryConflictInstruction}${externalContextInstruction}${memoryContext}${imageSummaryBlock ? `\n\n${imageSummaryBlock}` : ''}`
                 },
                 ...messages,
                 {
@@ -1696,7 +1709,8 @@ export async function startBot(): Promise<void> {
                 agentGraphConfig.enabled &&
                 ['active', 'on', 'staging'].includes(agentGraphConfig.mode);
               const intentRouting = await routeAgentIntent({
-                text: conversationContext.mergedUserContent || processedContent,
+                text:
+                  effectiveUserPrompt || conversationContext.mergedUserContent || processedContent,
                 hasImageAttachments: conversationContext.visionTargets.length > 0,
                 textProvider
               });
