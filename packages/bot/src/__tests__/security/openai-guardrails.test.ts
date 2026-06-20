@@ -57,6 +57,23 @@ describe('openai-guardrails adapter', () => {
     expect(result.executionFailed).toBe(true);
   });
 
+  test('fails closed on moderation errors when requested for low-risk prompts', async () => {
+    cleanup = withEnv({ OPENAI_GUARDRAILS_ENABLED: 'true', OPENAI_API_KEY: 'test-key' });
+    setPromptSafetyRuntimeForTests({
+      moderationRunner: async () => {
+        throw new Error('moderation unavailable');
+      }
+    });
+
+    const result = await evaluateUserPromptGuardrails('hello world', {
+      failClosedOnError: true
+    });
+
+    expect(result.allowed).toBe(false);
+    expect(result.category).toBe('guardrails/api_error_fail_closed');
+    expect(result.executionFailed).toBe(true);
+  });
+
   test('maps chat_input moderation categories through the wrapper', async () => {
     cleanup = withEnv({ OPENAI_GUARDRAILS_ENABLED: 'true', OPENAI_API_KEY: 'test-key' });
     setPromptSafetyRuntimeForTests({

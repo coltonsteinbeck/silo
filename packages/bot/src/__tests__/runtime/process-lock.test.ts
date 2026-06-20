@@ -89,4 +89,20 @@ describe('process lock', () => {
 
     expect(release).toBeNull();
   });
+
+  test('does not release a lock owned by another process', () => {
+    const dir = makeTempDir();
+    const lockFile = path.join(dir, '.bot.lock');
+    const release = acquireProcessLock({
+      cwd: dir,
+      env: {},
+      pid: 123,
+      log: createLogger()
+    });
+
+    fs.writeFileSync(lockFile, '456');
+    release?.();
+
+    expect(fs.readFileSync(lockFile, 'utf8')).toBe('456');
+  });
 });

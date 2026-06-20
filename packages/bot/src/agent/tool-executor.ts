@@ -1,4 +1,5 @@
-import type {
+import {
+  logger,
   ImageGenerationResponse,
   TextGenerationResponse,
   VideoGenerationResponse,
@@ -139,7 +140,11 @@ export function createProviderToolExecutor(context: AgentToolExecutionContext): 
               usage: result.usage,
               query
             };
-          } catch {
+          } catch (error) {
+            logger.warn('Web search provider failed during fallback', {
+              provider: provider.name,
+              error
+            });
             failedProviders.push(provider.name);
           }
         }
@@ -221,10 +226,9 @@ export function createProviderToolExecutor(context: AgentToolExecutionContext): 
 
         const model =
           stringInput(request.input?.model, '') ||
-          context.registry.getConfiguredVideoModel(provider.name) ||
-          'grok-imagine-video';
+          context.registry.getConfiguredVideoModel(provider.name);
         const result = await provider.generateVideo(prompt, {
-          model,
+          model: model || undefined,
           duration: numberInput(request.input?.duration, 8),
           referenceImages: context.referenceImages || []
         });

@@ -1,4 +1,5 @@
 import type { logger as coreLogger } from '@silo/core';
+import { awaitTracingShutdown } from './tracing-shutdown';
 
 type Logger = typeof coreLogger;
 
@@ -13,40 +14,33 @@ export function installProcessErrorHandlers({
   exit?: (code?: number) => never;
   tracingShutdownTimeoutMs?: number;
 }): void {
-  async function waitForTracingShutdown(): Promise<'completed' | 'timed_out'> {
-    if (tracingShutdownTimeoutMs <= 0) {
-      await shutdownTracing();
-      return 'completed';
-    }
-
-    return Promise.race([
-      shutdownTracing().then(() => 'completed' as const),
-      new Promise<'timed_out'>(resolve => {
-        setTimeout(() => resolve('timed_out'), tracingShutdownTimeoutMs);
-      })
-    ]);
-  }
-
-  process.on('uncaughtException', error => {
+  function handleFatalRuntimeError(message: string, error: unknown): void {
     void (async () => {
-      log.error('Uncaught exception:', error);
+      log.error(message, error);
 
       try {
-        const tracingShutdownOutcome = await waitForTracingShutdown();
+        const tracingShutdownOutcome = await awaitTracingShutdown({
+          shutdownTracing,
+          timeoutMs: tracingShutdownTimeoutMs
+        });
         if (tracingShutdownOutcome === 'timed_out') {
-          log.warn('Tracing shutdown timed out after uncaught exception', {
+          log.warn('Tracing shutdown timed out after fatal runtime error', {
             tracingShutdownTimeoutMs
           });
         }
       } catch (shutdownError) {
-        log.warn('Tracing shutdown failed after uncaught exception', shutdownError);
+        log.warn('Tracing shutdown failed after fatal runtime error', shutdownError);
       }
 
       exit(1);
     })();
+  }
+
+  process.on('uncaughtException', error => {
+    handleFatalRuntimeError('Uncaught exception:', error);
   });
 
   process.on('unhandledRejection', reason => {
-    log.error('Unhandled promise rejection:', reason);
+    handleFatalRuntimeError('Unhandled promise rejection:', reason);
   });
 }

@@ -354,12 +354,24 @@ export class OpenAIProvider implements TextProvider, ImageProvider, WebSearchPro
       throw new Error('OpenAI provider not configured');
     }
 
-    const response = (await this.client.responses.create({
-      model: options?.model || this.defaultModel,
-      input: query,
-      tools: [{ type: 'web_search' }],
-      max_output_tokens: 1200
-    } as any)) as OpenAIWebSearchResult;
+    const model = options?.model || this.defaultModel;
+    let response: OpenAIWebSearchResult;
+
+    try {
+      response = (await this.client.responses.create({
+        model,
+        input: query,
+        tools: [{ type: 'web_search' }],
+        max_output_tokens: 1200
+      } as any)) as OpenAIWebSearchResult;
+    } catch (error) {
+      logger.error('[OpenAI] Web search failed', {
+        query,
+        model,
+        error
+      });
+      throw error;
+    }
 
     const outputText =
       response.output_text ||

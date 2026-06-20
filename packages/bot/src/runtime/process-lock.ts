@@ -15,11 +15,40 @@ function getErrorCode(error: unknown): string | undefined {
   return typeof maybeCode === 'string' ? maybeCode : undefined;
 }
 
-function cleanupTempLockFile(lockFile: string): void {
+function readLockPid(lockFile: string): number | null {
   try {
-    fs.rmSync(lockFile, { force: true });
-  } catch {
-    // Ignore best-effort cleanup errors.
+    const content = fs.readFileSync(lockFile, 'utf-8').trim();
+    const parsedPid = parseInt(content, 10);
+    return Number.isNaN(parsedPid) ? null : parsedPid;
+  } catch (error) {
+    if (getErrorCode(error) === 'ENOENT') {
+      return null;
+    }
+
+    throw error;
+  }
+}
+
+function writeLockFileExclusive(lockFile: string, pid: number): boolean {
+  try {
+    fs.writeFileSync(lockFile, pid.toString(), { flag: 'wx' });
+    return true;
+  } catch (error) {
+    if (getErrorCode(error) === 'EEXIST') {
+      return false;
+    }
+
+    throw error;
+  }
+}
+
+function removeLockFile(lockFile: string): void {
+  try {
+    fs.rmSync(lockFile);
+  } catch (error) {
+    if (getErrorCode(error) !== 'ENOENT') {
+      throw error;
+    }
   }
 }
 
@@ -32,36 +61,39 @@ function replaceStaleLock({
 }: {
   lockFile: string;
   pid: number;
-  existingPid: number;
+  existingPid: number | null;
   log: Logger;
   isProcessAlive: (pid: number) => boolean;
 }): boolean | null {
-  if (isProcessAlive(existingPid)) {
+  if (existingPid !== null && isProcessAlive(existingPid)) {
     log.error(`Another bot instance (PID ${existingPid}) is already running.`);
     return null;
   }
 
-  const tempLockFile = `${lockFile}.${pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tempLockFile, pid.toString(), { flag: 'wx' });
+  let stalePid = existingPid;
 
-  try {
-    fs.renameSync(tempLockFile, lockFile);
-    log.info(`Process lock acquired (PID ${pid}) after stale lock cleanup`);
-    return true;
-  } catch (error) {
-    cleanupTempLockFile(tempLockFile);
-    if (getErrorCode(error) !== 'EEXIST') {
-      throw error;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    removeLockFile(lockFile);
+
+    if (writeLockFileExclusive(lockFile, pid)) {
+      log.info(`Process lock acquired (PID ${pid}) after stale lock cleanup`);
+      return true;
     }
 
-    const currentPid = parseInt(fs.readFileSync(lockFile, 'utf-8').trim(), 10);
-    if (!Number.isNaN(currentPid) && currentPid !== pid && isProcessAlive(currentPid)) {
+    const currentPid = readLockPid(lockFile);
+    if (currentPid !== null && currentPid !== pid && isProcessAlive(currentPid)) {
       log.error(`Another bot instance (PID ${currentPid}) is already running.`);
       return null;
     }
 
-    return false;
+    stalePid = currentPid;
+    if (stalePid !== null && isProcessAlive(stalePid)) {
+      log.error(`Another bot instance (PID ${stalePid}) is already running.`);
+      return null;
+    }
   }
+
+  return false;
 }
 
 export function acquireProcessLock({
@@ -90,18 +122,13 @@ export function acquireProcessLock({
   const lockFile = path.join(cwd, '.bot.lock');
 
   try {
-    try {
-      fs.writeFileSync(lockFile, pid.toString(), { flag: 'wx' });
+    const acquiredLock = writeLockFileExclusive(lockFile, pid);
+    if (acquiredLock) {
       log.info(`Process lock acquired (PID ${pid})`);
-    } catch (error: unknown) {
-      if (getErrorCode(error) !== 'EEXIST') {
-        throw error;
-      }
+    } else {
+      const existingPid = readLockPid(lockFile);
 
-      const content = fs.readFileSync(lockFile, 'utf-8').trim();
-      const existingPid = parseInt(content, 10);
-
-      if (!Number.isNaN(existingPid) && existingPid !== pid) {
+      if (existingPid !== pid) {
         const replacedStaleLock = replaceStaleLock({
           lockFile,
           pid,
@@ -123,7 +150,8 @@ export function acquireProcessLock({
 
     const release = () => {
       try {
-        if (fs.existsSync(lockFile)) {
+        const lockOwnerPid = readLockPid(lockFile);
+        if (lockOwnerPid === pid) {
           fs.unlinkSync(lockFile);
         }
       } catch {

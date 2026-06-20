@@ -48,6 +48,20 @@ export const moderateCommandPrompt: PromptModerationGuard = async ({
       userId
     });
 
+    if (safetyResult.moderationError) {
+      logger.error(`Prompt moderation failed closed for ${command} (${phase})`, {
+        guildId,
+        userId,
+        moderationError: safetyResult.moderationError
+      });
+      return {
+        allowed: false,
+        processedPrompt: '',
+        userMessage:
+          '⚠️ Prompt moderation is temporarily unavailable. Please try again in a moment.'
+      };
+    }
+
     if (!safetyResult.allowed) {
       logger.warn(
         `Blocked ${command} prompt (${phase}) for guild ${guildId}, user ${userId}: ${[...safetyResult.reasons, ...safetyResult.moderationCategories].join(', ') || 'empty_after_sanitize'}`
@@ -70,28 +84,23 @@ export const moderateCommandPrompt: PromptModerationGuard = async ({
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     if (errorMessage.includes('ContentSanitizer not initialized')) {
-      logger.debug(
-        `Prompt moderation unavailable for ${command} (${phase}); using deterministic fallback`,
-        {
-          guildId,
-          userId,
-          error
-        }
-      );
+      logger.debug(`Prompt moderation unavailable for ${command} (${phase}); blocking prompt`, {
+        guildId,
+        userId,
+        error
+      });
     } else {
-      logger.error(
-        `Prompt moderation failed for ${command} (${phase}); using deterministic fallback`,
-        {
-          guildId,
-          userId,
-          error
-        }
-      );
+      logger.error(`Prompt moderation failed for ${command} (${phase}); blocking prompt`, {
+        guildId,
+        userId,
+        error
+      });
     }
 
     return {
-      allowed: true,
-      processedPrompt: contentSanitizer.sanitizePrompt(trimmed)
+      allowed: false,
+      processedPrompt: '',
+      userMessage: '⚠️ Prompt moderation is temporarily unavailable. Please try again in a moment.'
     };
   }
 };

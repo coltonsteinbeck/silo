@@ -37,6 +37,8 @@ export class ThreadCommand implements Command {
       return;
     }
 
+    const fallbackThreadName = `Chat with ${interaction.user.username}`;
+
     let threadName = interaction.options.getString('name');
 
     // AI-generate thread name if not provided
@@ -120,8 +122,11 @@ export class ThreadCommand implements Command {
         );
 
         threadName = sanitizeDiscordMassMentions(response.content).trim().slice(0, 100);
+        if (!threadName) {
+          threadName = fallbackThreadName;
+        }
       } else {
-        threadName = `Chat with ${interaction.user.username}`;
+        threadName = fallbackThreadName;
       }
     }
 
