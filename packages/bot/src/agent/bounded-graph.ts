@@ -12,7 +12,7 @@ import type {
 } from './types';
 import { executeBoundedToolPlan, resolveAllowedAgentTools } from './tool-registry';
 import { evaluatePromptSafety } from '../security/prompt-safety';
-import { sanitizeAssistantOutput } from '../security/output-sanitizer';
+import { sanitizeAssistantOutput, sanitizeDiscordMassMentions } from '../security/output-sanitizer';
 import {
   summarizeTextForTrace,
   withLangfuseGeneration,
@@ -536,7 +536,9 @@ async function outputSafetyNode(state: State): Promise<StateUpdate> {
       const modelResponse = {
         ...response,
         content: blocked
-          ? state.outputBlockedMessage?.trim() || OUTPUT_BLOCKED_CONTENT
+          ? sanitizeDiscordMassMentions(
+              state.outputBlockedMessage?.trim() || OUTPUT_BLOCKED_CONTENT
+            )
           : sanitizedContent
       };
 

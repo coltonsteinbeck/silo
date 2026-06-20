@@ -1,3 +1,5 @@
+import { getManagedGuildAssistantOutputBlockedMessages } from '../security/guild-persona-policy';
+
 export interface ConversationHistoryMessage {
   role: string;
   content: string;
@@ -46,7 +48,14 @@ function removeCustomEmoji(value: string): string {
 }
 
 export function isGenericSafetyFallbackContent(content: string): boolean {
-  return /i can(?:'|’)?t help with that request\. please rephrase/i.test(content);
+  if (/i can(?:'|’)?t help with that request\. please rephrase/i.test(content)) {
+    return true;
+  }
+
+  const normalized = normalizeHistoryContent(content);
+  return getManagedGuildAssistantOutputBlockedMessages().some(
+    message => normalizeHistoryContent(message) === normalized
+  );
 }
 
 function getUnsafeAssistantHistoryReason(content: string): string | null {

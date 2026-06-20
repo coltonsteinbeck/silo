@@ -61,6 +61,11 @@ function buildJimbProductionsPolicy(): ManagedGuildPersonaPolicy | null {
   };
 }
 
+export function getManagedGuildAssistantOutputBlockedMessages(): string[] {
+  const policy = buildJimbProductionsPolicy();
+  return policy ? [policy.assistantOutputBlockedMessage] : [];
+}
+
 export function resolveManagedGuildPersonaPolicy(
   guildId?: string | null
 ): ManagedGuildPersonaPolicy | null {
