@@ -43,8 +43,21 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
   return parsed;
 }
 
-function parseBoolean(value: string | undefined): boolean {
-  return ['1', 'true', 'yes', 'on'].includes((value || '').trim().toLowerCase());
+function parseBoolean(value: string | undefined, fallback = false): boolean {
+  const normalized = (value || '').trim().toLowerCase();
+  if (!normalized) {
+    return fallback;
+  }
+
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+    return true;
+  }
+
+  if (['0', 'false', 'no', 'off'].includes(normalized)) {
+    return false;
+  }
+
+  return fallback;
 }
 
 function parseMode(value: string | undefined, enabled: boolean): AgentGraphRuntimeConfig['mode'] {
@@ -75,7 +88,7 @@ function parseSearchFallbackProvider(
 export function createAgentGraphRuntimeConfig(
   env: Record<string, string | undefined> = process.env
 ): AgentGraphRuntimeConfig {
-  const enabled = parseBoolean(env.AGENT_GRAPH_ENABLED);
+  const enabled = parseBoolean(env.AGENT_GRAPH_ENABLED, true);
 
   return {
     enabled,
