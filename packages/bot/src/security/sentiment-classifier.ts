@@ -250,7 +250,7 @@ async function classify(
     return heuristic;
   }
 
-  if (shouldUsePromptHeuristicFastPath(trimmed, context, heuristic)) {
+  if (mode !== 'ai' && shouldUsePromptHeuristicFastPath(trimmed, context, heuristic)) {
     return heuristic;
   }
 

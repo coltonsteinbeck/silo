@@ -249,11 +249,15 @@ async function main(): Promise<void> {
   initializeEvalRuntime(config);
 
   if (args.syncDataset) {
-    if (!langfuseClient) {
+    if (!langfuseClient && !args.dryRun) {
       throw new Error('Langfuse credentials are required to sync the eval dataset.');
     }
 
-    await syncDataset(langfuseClient, config, datasetName, args.dryRun);
+    if (langfuseClient) {
+      await syncDataset(langfuseClient, config, datasetName, args.dryRun);
+    } else {
+      logger.info('Dry run: skipping Langfuse dataset sync because no client is configured.');
+    }
   }
 
   const summary = {

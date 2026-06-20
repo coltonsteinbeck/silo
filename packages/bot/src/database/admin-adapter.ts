@@ -41,6 +41,47 @@ function isUndefinedColumnError(error: unknown): error is { code: string; messag
 export class AdminAdapter {
   constructor(private pool: Pool) {}
 
+  private async getStoredSystemPromptState(guildId: string): Promise<{
+    systemPrompt: string | null;
+    voiceSystemPrompt: string | null;
+    enabled: boolean;
+  }> {
+    const result = await this.pool.query(
+      `SELECT system_prompt, voice_system_prompt, system_prompt_enabled 
+       FROM server_config WHERE guild_id = $1`,
+      [guildId]
+    );
+
+    if (result.rows.length === 0) {
+      return {
+        systemPrompt: null,
+        voiceSystemPrompt: null,
+        enabled: true
+      };
+    }
+
+    const row = result.rows[0];
+    return {
+      systemPrompt: row.system_prompt ?? null,
+      voiceSystemPrompt: row.voice_system_prompt ?? null,
+      enabled: row.system_prompt_enabled ?? true
+    };
+  }
+
+  private getEffectiveSystemPromptValue(
+    promptState: {
+      systemPrompt: string | null;
+      voiceSystemPrompt: string | null;
+    },
+    forVoice: boolean
+  ): string | null {
+    if (forVoice && promptState.voiceSystemPrompt) {
+      return promptState.voiceSystemPrompt;
+    }
+
+    return promptState.systemPrompt;
+  }
+
   private mapServerConfigRow(row: any): ServerConfig {
     return {
       guildId: row.guild_id,
@@ -214,24 +255,12 @@ export class AdminAdapter {
     guildId: string,
     forVoice = false
   ): Promise<{ prompt: string | null; enabled: boolean }> {
-    const result = await this.pool.query(
-      `SELECT system_prompt, voice_system_prompt, system_prompt_enabled 
-       FROM server_config WHERE guild_id = $1`,
-      [guildId]
-    );
+    const promptState = await this.getStoredSystemPromptState(guildId);
 
-    if (result.rows.length === 0) {
-      return { prompt: null, enabled: true };
-    }
-
-    const row = result.rows[0];
-    const enabled = row.system_prompt_enabled ?? true;
-
-    if (forVoice && row.voice_system_prompt) {
-      return { prompt: row.voice_system_prompt, enabled };
-    }
-
-    return { prompt: row.system_prompt, enabled };
+    return {
+      prompt: this.getEffectiveSystemPromptValue(promptState, forVoice),
+      enabled: promptState.enabled
+    };
   }
 
   /**
@@ -247,12 +276,26 @@ export class AdminAdapter {
   ): Promise<void> {
     const { forVoice = false, enabled, actorUserId } = options;
     const column = forVoice ? 'voice_system_prompt' : 'system_prompt';
-    const previousPromptState = await this.getSystemPrompt(guildId, forVoice);
+    const previousPromptState = await this.getStoredSystemPromptState(guildId);
     const nextEnabled = enabled ?? previousPromptState.enabled;
-    const previousPromptHash = previousPromptState.prompt
-      ? hashPrompt(previousPromptState.prompt)
-      : null;
+    const previousStoredPrompt = forVoice
+      ? previousPromptState.voiceSystemPrompt
+      : previousPromptState.systemPrompt;
+    const previousEffectivePrompt = this.getEffectiveSystemPromptValue(
+      previousPromptState,
+      forVoice
+    );
+    const nextPromptState = {
+      systemPrompt: forVoice ? previousPromptState.systemPrompt : prompt,
+      voiceSystemPrompt: forVoice ? prompt : previousPromptState.voiceSystemPrompt
+    };
+    const nextEffectivePrompt = this.getEffectiveSystemPromptValue(nextPromptState, forVoice);
+    const previousPromptHash = previousStoredPrompt ? hashPrompt(previousStoredPrompt) : null;
     const nextPromptHash = prompt ? hashPrompt(prompt) : null;
+    const previousEffectivePromptHash = previousEffectivePrompt
+      ? hashPrompt(previousEffectivePrompt)
+      : null;
+    const nextEffectivePromptHash = nextEffectivePrompt ? hashPrompt(nextEffectivePrompt) : null;
 
     // Build query dynamically based on what we're updating
     let query: string;
@@ -292,7 +335,8 @@ export class AdminAdapter {
         enabled: nextEnabled,
         clearedPrompt: prompt === null,
         effectivePromptChanged:
-          previousPromptHash !== nextPromptHash || previousPromptState.enabled !== nextEnabled
+          previousEffectivePromptHash !== nextEffectivePromptHash ||
+          previousPromptState.enabled !== nextEnabled
       }
     });
   }
@@ -305,10 +349,17 @@ export class AdminAdapter {
     enabled: boolean,
     options: { actorUserId?: string; promptType?: 'text' | 'voice' } = {}
   ): Promise<void> {
-    const previousPromptState = await this.getSystemPrompt(guildId, options.promptType === 'voice');
+    const forVoice = options.promptType === 'voice';
+    const previousPromptState = await this.getStoredSystemPromptState(guildId);
+    const previousStoredPrompt = forVoice
+      ? previousPromptState.voiceSystemPrompt
+      : previousPromptState.systemPrompt;
 
     await this.pool.query(
-      `UPDATE server_config SET system_prompt_enabled = $2, updated_at = NOW() WHERE guild_id = $1`,
+      `INSERT INTO server_config (guild_id, system_prompt_enabled)
+       VALUES ($1, $2)
+       ON CONFLICT (guild_id)
+       DO UPDATE SET system_prompt_enabled = $2, updated_at = NOW()`,
       [guildId, enabled]
     );
 
@@ -318,7 +369,7 @@ export class AdminAdapter {
       action: 'system_prompt_toggled',
       details: {
         promptType: options.promptType || 'text',
-        promptHash: previousPromptState.prompt ? hashPrompt(previousPromptState.prompt) : null,
+        promptHash: previousStoredPrompt ? hashPrompt(previousStoredPrompt) : null,
         previousEnabled: previousPromptState.enabled,
         enabled,
         effectivePromptChanged: previousPromptState.enabled !== enabled

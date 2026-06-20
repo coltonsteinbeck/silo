@@ -96,8 +96,46 @@ describe('installProcessErrorHandlers', () => {
     await new Promise(resolve => originalSetTimeout(resolve, 0));
 
     expect(exitCode).toBe(1);
-    expect(log.warn).toHaveBeenCalledWith('Tracing shutdown timed out after uncaught exception', {
+    expect(log.warn).toHaveBeenCalledWith('Tracing shutdown timed out after fatal runtime error', {
       tracingShutdownTimeoutMs: 5
     });
+  });
+
+  test('awaits tracing shutdown before exiting on unhandled rejection', async () => {
+    const handlers = new Map<string, (error: unknown) => void>();
+    process.on = ((event: string, handler: (error: unknown) => void) => {
+      handlers.set(event, handler);
+      return process;
+    }) as typeof process.on;
+
+    const log = createLogger();
+    let resolveShutdown: (() => void) | undefined;
+    const shutdownTracing = mock(
+      () =>
+        new Promise<void>(resolve => {
+          resolveShutdown = resolve;
+        })
+    );
+    let exitCode: number | undefined;
+
+    installProcessErrorHandlers({
+      log: log as any,
+      shutdownTracing,
+      exit: ((code?: number) => {
+        exitCode = code;
+        return undefined as never;
+      }) as (code?: number) => never
+    });
+
+    handlers.get('unhandledRejection')?.(new Error('boom'));
+
+    await Promise.resolve();
+    expect(exitCode).toBeUndefined();
+
+    resolveShutdown?.();
+    await new Promise(resolve => originalSetTimeout(resolve, 0));
+
+    expect(shutdownTracing).toHaveBeenCalledTimes(1);
+    expect(exitCode).toBe(1);
   });
 });
