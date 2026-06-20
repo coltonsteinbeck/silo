@@ -2,9 +2,9 @@
   "apps": [
     {
       "name": "silo",
-      "script": "packages/bot/src/index.ts",
-      "interpreter": "bun",
-      "interpreter_args": "run",
+      "script": "bun",
+      "args": "packages/bot/src/index.ts",
+      "interpreter": "none",
       "instances": 1,
       "exec_mode": "fork",
       "autorestart": true,
@@ -27,8 +27,6 @@
       ],
       "max_memory_restart": "1G",
       "kill_timeout": 30000,
-      "wait_ready": true,
-      "listen_timeout": 30000,
       "shutdown_with_message": true
     }
   ]
