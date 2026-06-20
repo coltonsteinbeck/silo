@@ -61,6 +61,11 @@ function buildManagedProductionsPolicy(): ManagedGuildPersonaPolicy | null {
   };
 }
 
+export function getManagedGuildAssistantOutputBlockedMessages(): string[] {
+  const policy = buildManagedProductionsPolicy();
+  return policy ? [policy.assistantOutputBlockedMessage] : [];
+}
+
 export function resolveManagedGuildPersonaPolicy(
   guildId?: string | null
 ): ManagedGuildPersonaPolicy | null {
