@@ -43,6 +43,7 @@ const AgentGraphAnnotation = Annotation.Root({
   intentReason: Annotation<string | undefined>,
   clarificationReason: Annotation<string | undefined>,
   falsePositiveGuard: Annotation<string | undefined>,
+  outputBlockedMessage: Annotation<string | undefined>,
   metadata: Annotation<LangfuseMetadataInput>,
   graphStep: Annotation<number>({
     reducer: (_current, update) => update,
@@ -534,7 +535,9 @@ async function outputSafetyNode(state: State): Promise<StateUpdate> {
           : state.outcome;
       const modelResponse = {
         ...response,
-        content: blocked ? OUTPUT_BLOCKED_CONTENT : sanitizedContent
+        content: blocked
+          ? state.outputBlockedMessage?.trim() || OUTPUT_BLOCKED_CONTENT
+          : sanitizedContent
       };
 
       observation?.update({

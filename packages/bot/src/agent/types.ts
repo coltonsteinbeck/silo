@@ -64,6 +64,7 @@ export interface AgentGraphInput {
   intentReason?: string;
   clarificationReason?: string;
   falsePositiveGuard?: string;
+  outputBlockedMessage?: string;
   requestedTools?: AgentToolRequest[];
   toolExecutor?: AgentToolExecutor;
   metadata: LangfuseMetadataInput;

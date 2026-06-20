@@ -99,6 +99,23 @@ describe('bounded agent graph', () => {
     );
   });
 
+  test('uses managed output-blocked message while preserving graph block state', async () => {
+    const provider = createProvider("I'm Doctor Cock. Let's examine your Cock.");
+
+    const result = await runBoundedAgentGraph(
+      createInput(provider, {
+        outputBlockedMessage:
+          'Nope. That one trips the wires. Rephrase it less cursed and I can help.'
+      })
+    );
+
+    expect(result.outcome).toBe('blocked');
+    expect(result.safetyState).toBe('output_blocked');
+    expect(result.response.content).toBe(
+      'Nope. That one trips the wires. Rephrase it less cursed and I can help.'
+    );
+  });
+
   test('reports unsupported tools without failing provider generation', async () => {
     const provider = createProvider('plain answer');
 

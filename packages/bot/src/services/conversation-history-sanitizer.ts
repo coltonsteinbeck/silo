@@ -10,6 +10,12 @@ export interface ConversationHistorySanitizationResult<T extends ConversationHis
   removedReasons: Record<string, number>;
 }
 
+export interface AssistantContextSanitizationResult {
+  content: string;
+  changed: boolean;
+  reason: string | null;
+}
+
 function normalizeHistoryContent(value: string): string {
   return value.replace(/\s+/g, ' ').trim().toLowerCase();
 }
@@ -39,6 +45,10 @@ function removeCustomEmoji(value: string): string {
     .trim();
 }
 
+export function isGenericSafetyFallbackContent(content: string): boolean {
+  return /i can(?:'|’)?t help with that request\. please rephrase/i.test(content);
+}
+
 function getUnsafeAssistantHistoryReason(content: string): string | null {
   const normalized = normalizeHistoryContent(content);
 
@@ -46,7 +56,7 @@ function getUnsafeAssistantHistoryReason(content: string): string | null {
     return 'empty_assistant_reply';
   }
 
-  if (/i can(?:'|’)?t help with that request\. please rephrase/i.test(content)) {
+  if (isGenericSafetyFallbackContent(content)) {
     return 'blocked_safety_fallback';
   }
 
@@ -66,7 +76,34 @@ function getUnsafeAssistantHistoryReason(content: string): string | null {
     return 'unsafe_persona_residue';
   }
 
+  if (
+    /\bproceed with extreme prejudice\b/i.test(content) ||
+    (/\bban\s+.{1,80}\s+first\b/i.test(content) &&
+      /\b(?:final boss|structural integrity|cursed group|extreme prejudice)\b/i.test(content))
+  ) {
+    return 'unsafe_banter_residue';
+  }
+
   return null;
+}
+
+export function sanitizeAssistantContextForPrompt(
+  content: string
+): AssistantContextSanitizationResult {
+  const reason = getUnsafeAssistantHistoryReason(content);
+  if (reason) {
+    return {
+      content: '',
+      changed: true,
+      reason
+    };
+  }
+
+  return {
+    content,
+    changed: false,
+    reason: null
+  };
 }
 
 function pruneDominantLowInformationAssistantReplies<T extends ConversationHistoryMessage>(

@@ -27,11 +27,12 @@ function createMockMessage(opts: {
   attachments?: Attachment[];
   referenced?: Message<boolean>;
   throwOnFetch?: boolean;
+  bot?: boolean;
 }): Message<boolean> {
   return {
     id: opts.id,
     content: opts.content || '',
-    author: { id: opts.userId || 'u1' },
+    author: { id: opts.userId || 'u1', bot: Boolean(opts.bot) },
     reference: opts.referenceMessageId ? { messageId: opts.referenceMessageId } : null,
     attachments: createAttachmentCollection(opts.attachments || []),
     fetchReference: async () => {
@@ -136,5 +137,54 @@ describe('resolveReplyContext', () => {
     expect(result.textContext).not.toContain('@everyone');
     expect(result.textContext).not.toContain('@HERE');
     expect(result.textContext).toContain('everyone and here');
+  });
+
+  test('omits generic bot refusal from referenced context', async () => {
+    const referenced = createMockMessage({
+      id: 'm_ref_1',
+      userId: 'bot_user',
+      bot: true,
+      content:
+        'I can’t help with that request. Please rephrase and I can provide a safer alternative.'
+    });
+
+    const message = createMockMessage({
+      id: 'm_current',
+      content: 'Thanks',
+      referenceMessageId: 'm_ref_1',
+      referenced
+    });
+
+    const result = await resolveReplyContext(message, 2);
+
+    expect(result.chain[0]?.content).toBe('');
+    expect(result.chain[0]?.isBot).toBe(true);
+    expect(result.chain[0]?.omittedReason).toBe('blocked_safety_fallback');
+    expect(result.textContext).toContain('[Reply level 1 | user bot_user]');
+    expect(result.textContext).not.toContain('I can’t help with that request');
+  });
+
+  test('omits unsafe bot banter residue from referenced context', async () => {
+    const referenced = createMockMessage({
+      id: 'm_ref_1',
+      userId: 'bot_user',
+      bot: true,
+      content:
+        "ban Mr Balls first. He's clearly the final boss of this cursed group. Proceed with extreme prejudice."
+    });
+
+    const message = createMockMessage({
+      id: 'm_current',
+      content: "I can't do that it's almost Father's Day",
+      referenceMessageId: 'm_ref_1',
+      referenced
+    });
+
+    const result = await resolveReplyContext(message, 2);
+
+    expect(result.chain[0]?.content).toBe('');
+    expect(result.chain[0]?.omittedReason).toBe('unsafe_banter_residue');
+    expect(result.textContext).not.toContain('Proceed with extreme prejudice');
+    expect(result.textContext).not.toContain('ban Mr Balls first');
   });
 });

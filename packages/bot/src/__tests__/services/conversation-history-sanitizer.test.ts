@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { sanitizeConversationHistoryForPrompt } from '../../services/conversation-history-sanitizer';
+import {
+  sanitizeAssistantContextForPrompt,
+  sanitizeConversationHistoryForPrompt
+} from '../../services/conversation-history-sanitizer';
 
 describe('conversation history sanitizer', () => {
   test('removes unsafe assistant persona residue while preserving user messages', () => {
@@ -47,5 +50,40 @@ describe('conversation history sanitizer', () => {
     expect(result.removedCount).toBe(1);
     expect(result.removedReasons.blocked_safety_fallback).toBe(1);
     expect(result.filtered).toEqual([{ role: 'assistant', content: 'Normal useful answer.' }]);
+  });
+
+  test('removes unsafe banter residue from assistant history', () => {
+    const result = sanitizeConversationHistoryForPrompt([
+      {
+        role: 'assistant',
+        content:
+          "ban Mr Balls first. He's clearly the final boss of this cursed group. Proceed with extreme prejudice."
+      },
+      { role: 'user', content: "I can't do that it's almost Father's Day" }
+    ]);
+
+    expect(result.removedCount).toBe(1);
+    expect(result.removedReasons.unsafe_banter_residue).toBe(1);
+    expect(result.filtered).toEqual([
+      { role: 'user', content: "I can't do that it's almost Father's Day" }
+    ]);
+  });
+
+  test('sanitizes assistant reply context before prompt reuse', () => {
+    expect(
+      sanitizeAssistantContextForPrompt(
+        'I can’t help with that request. Please rephrase and I can provide a safer alternative.'
+      )
+    ).toEqual({
+      content: '',
+      changed: true,
+      reason: 'blocked_safety_fallback'
+    });
+
+    expect(sanitizeAssistantContextForPrompt('Normal useful answer.')).toEqual({
+      content: 'Normal useful answer.',
+      changed: false,
+      reason: null
+    });
   });
 });
