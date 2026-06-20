@@ -171,13 +171,13 @@ export class QuotaMiddleware {
       }
     ).resolveRoleTierFromMember;
 
-    const [customRole, guildCheck, userUsage] = await Promise.all([
-      adminDb.getUserRole ? adminDb.getUserRole(guildId, userId) : Promise.resolve(null),
-      this.adminDb.checkGuildQuota(guildId, usageType, amount),
-      this.adminDb.getUserDailyUsage(guildId, userId)
-    ]);
-
     try {
+      const [customRole, guildCheck, userUsage] = await Promise.all([
+        adminDb.getUserRole ? adminDb.getUserRole(guildId, userId) : Promise.resolve(null),
+        this.adminDb.checkGuildQuota(guildId, usageType, amount),
+        this.adminDb.getUserDailyUsage(guildId, userId)
+      ]);
+
       // Get user's role tier
       const tier =
         typeof resolveRoleTierFromMember === 'function'

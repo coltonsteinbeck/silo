@@ -58,7 +58,6 @@ export async function handleReactionFeedback({
     }
   }
 
-  const actor = user.partial ? await user.fetch() : user;
   const message = reaction.message;
   if (!message.guildId || message.author?.id !== client.user?.id) {
     return;
@@ -70,6 +69,8 @@ export async function handleReactionFeedback({
   }
 
   try {
+    const actor = user.partial ? await user.fetch() : user;
+
     await adminDb.logFeedback({
       messageId: message.id,
       channelId: message.channelId,

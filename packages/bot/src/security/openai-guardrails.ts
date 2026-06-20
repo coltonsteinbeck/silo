@@ -406,8 +406,20 @@ function toTripwireDecision(pipeline: PipelineKey, result: unknown): GuardrailsP
   };
 }
 
-function toPromptSafetyDecision(result: PromptSafetyResult): GuardrailsPromptDecision {
+function toPromptSafetyDecision(
+  result: PromptSafetyResult,
+  options: GuardrailsCheckOptions = {}
+): GuardrailsPromptDecision {
   const executionFailed = Boolean(result.moderationError);
+
+  if (options.failClosedOnError && executionFailed) {
+    return {
+      allowed: false,
+      category: 'guardrails/api_error_fail_closed',
+      reason: result.moderationError || 'Prompt safety moderation failed',
+      executionFailed: true
+    };
+  }
 
   if (result.allowed) {
     return {
@@ -449,7 +461,7 @@ function toPromptSafetyDecision(result: PromptSafetyResult): GuardrailsPromptDec
 }
 
 const USER_PROMPT_PIPELINE_PROFILE = 'chat_input';
-const ASSISTANT_OUTPUT_PIPELINE_PROFILE = 'chat_output';
+const ASSISTANT_OUTPUT_PIPELINE_PROFILE = 'assistant_output';
 
 async function evaluateWithPipeline(
   pipeline: PipelineKey,
@@ -564,11 +576,20 @@ export async function evaluateUserPromptGuardrails(
     userId: options.userId
   });
 
+  if (options.failClosedOnError && result.moderationError) {
+    return {
+      allowed: false,
+      category: 'guardrails/api_error_fail_closed',
+      reason: result.moderationError,
+      executionFailed: true
+    };
+  }
+
   if (shouldUseLowRiskUserPromptFastPath(normalized) && result.allowed) {
     return { allowed: true, executionFailed: Boolean(result.moderationError) };
   }
 
-  return toPromptSafetyDecision(result);
+  return toPromptSafetyDecision(result, options);
 }
 
 export async function evaluateCustomSystemPromptGuardrails(
@@ -650,5 +671,5 @@ export async function evaluateAssistantOutputGuardrails(
     userId: options.userId
   });
 
-  return toPromptSafetyDecision(result);
+  return toPromptSafetyDecision(result, options);
 }

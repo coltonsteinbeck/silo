@@ -1279,18 +1279,7 @@ export async function startBot(): Promise<void> {
           const { prompt: dbPrompt, enabled: promptEnabled } = systemPromptResult;
           const promptConfig = systemPromptManager.getEffectivePrompt(dbPrompt, promptEnabled);
 
-          // Provider-specific default prompts - servers should set their own via /config system-prompt
-          const providerPrompts: Record<string, string> = {
-            openai:
-              'You are a helpful Discord bot assistant. You are powered by OpenAI GPT models. Be helpful, friendly, and conversational. Never claim to be a different AI model than what you actually are.',
-            anthropic:
-              'You are a helpful Discord bot assistant. You are Claude, made by Anthropic. Be helpful, friendly, and conversational. Never claim to be a different AI model than what you actually are.',
-            xai: 'You are a helpful Discord bot assistant. You are Grok, made by xAI. You are NOT GPT, ChatGPT, or any OpenAI model. If asked what model you are, say you are Grok by xAI. Be helpful, friendly, and conversational.',
-            google:
-              'You are a helpful Discord bot assistant. You are Gemini, made by Google. Be helpful, friendly, and conversational. Never claim to be a different AI model than what you actually are.'
-          };
           const defaultPrompt =
-            providerPrompts[textProvider.name] ||
             'You are a helpful Discord bot assistant. Be helpful, friendly, and conversational.';
 
           let runtimeCustomPrompt = promptConfig.prompt;
@@ -1964,7 +1953,10 @@ export async function startBot(): Promise<void> {
             );
           }
 
+          let outputBlockedBySafety = false;
+
           if (!assistantModeration.allowed) {
+            outputBlockedBySafety = true;
             const incidentType = assistantModeration.flaggedCategories.includes(
               'api_error_fail_closed'
             )
@@ -2049,7 +2041,7 @@ export async function startBot(): Promise<void> {
           }
 
           const replyFiles: AttachmentBuilder[] = [];
-          const mediaResult = activeGraphResult.current?.mediaResult;
+          const mediaResult = outputBlockedBySafety ? null : activeGraphResult.current?.mediaResult;
           if (mediaResult?.url.startsWith('data:image/')) {
             const [, base64Data] = mediaResult.url.split(',');
             if (base64Data) {
@@ -2064,6 +2056,32 @@ export async function startBot(): Promise<void> {
                   ? `Image generated${mediaResult.model ? ` with ${mediaResult.model}` : ''}.`
                   : responseContent;
             }
+          }
+
+          const actualTokens = quotaMiddleware.getChargeableTextTokens(
+            response.usage,
+            responseContent
+          );
+          if (usedVision) {
+            const safeVisionUserLimit = Number.isFinite(visionUserLimit)
+              ? visionUserLimit
+              : undefined;
+            await quotaMiddleware.recordUsage(
+              guildId,
+              message.author.id,
+              'vision_tokens',
+              Math.max(visionTokensUsed, actualTokens),
+              safeVisionUserLimit
+            );
+          } else {
+            const safeTextUserLimit = Number.isFinite(textUserLimit) ? textUserLimit : undefined;
+            await quotaMiddleware.recordUsage(
+              guildId,
+              message.author.id,
+              'text_tokens',
+              actualTokens,
+              safeTextUserLimit
+            );
           }
 
           await message.reply({
@@ -2115,10 +2133,6 @@ export async function startBot(): Promise<void> {
           logger.info(`[Perf] Total response time: ${Date.now() - requestStart}ms`);
 
           // Fire-and-forget: post-LLM writes don't block the user-facing response
-          const actualTokens = quotaMiddleware.getChargeableTextTokens(
-            response.usage,
-            responseContent
-          );
           const assistantUserId = message.client.user?.id || message.author.id;
           const conversationWrites = [
             db.storeConversationMessage({
@@ -2175,34 +2189,13 @@ export async function startBot(): Promise<void> {
           });
 
           if (usedVision) {
-            const safeVisionUserLimit = Number.isFinite(visionUserLimit)
-              ? visionUserLimit
-              : undefined;
-            Promise.all([
-              ...conversationWrites,
-              sentimentEvent,
-              quotaMiddleware.recordUsage(
-                guildId,
-                message.author.id,
-                'vision_tokens',
-                Math.max(visionTokensUsed, actualTokens),
-                safeVisionUserLimit
-              )
-            ]).catch(err => {
+            Promise.all([...conversationWrites, sentimentEvent]).catch(err => {
               logger.error('Failed to complete post-response writes:', err);
             });
           } else {
-            const safeTextUserLimit = Number.isFinite(textUserLimit) ? textUserLimit : undefined;
             Promise.all([
               ...conversationWrites,
               sentimentEvent,
-              quotaMiddleware.recordUsage(
-                guildId,
-                message.author.id,
-                'text_tokens',
-                actualTokens,
-                safeTextUserLimit
-              ),
               quotaMiddleware.logAccuracy(
                 guildId,
                 message.author.id,

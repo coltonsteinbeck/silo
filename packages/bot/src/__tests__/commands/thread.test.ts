@@ -137,5 +137,50 @@ describe('ThreadCommand', () => {
       expect(firstCall).toBeDefined();
       expect(firstCall![0].name).toBe('everyone launch room');
     });
+
+    test('falls back to a valid default when the generated thread name is empty', async () => {
+      mockDb.getConversationHistory = mock(async () => [
+        {
+          role: 'user',
+          content: 'Need a name',
+          createdAt: new Date()
+        }
+      ]);
+      mockRegistry.getTextProvider = mock(() => ({
+        name: 'openai',
+        capabilities: {},
+        generateText: mock(async () => ({
+          content: '   ',
+          model: 'test-model'
+        }))
+      }));
+
+      const createThread = mock(async ({ name }: { name: string }) => ({
+        id: 'thread123',
+        name,
+        toString: (): string => `<#thread123>`,
+        send: mock(async () => {})
+      }));
+      const mockChannel = {
+        id: 'channel123',
+        type: 0,
+        isTextBased: () => true,
+        threads: {
+          create: createThread
+        }
+      };
+
+      const interaction = createMockInteraction();
+      interaction.options.getString = mock(() => null);
+      interaction.user.username = 'tester';
+      // @ts-expect-error - adding mock channel
+      interaction.channel = mockChannel;
+
+      await command.execute(interaction as any);
+
+      const [firstCall] = createThread.mock.calls;
+      expect(firstCall).toBeDefined();
+      expect(firstCall![0].name).toBe('Chat with tester');
+    });
   });
 });

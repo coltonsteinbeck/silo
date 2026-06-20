@@ -830,7 +830,18 @@ class ContentSanitizer {
         ...Object.fromEntries(safetyResult.reasons.map(reason => [reason, 1])),
         ...safetyResult.moderationScores
       };
-      const action: ModerationAction = flaggedCategories.length > 0 ? 'blocked' : 'allowed';
+      const decision = evaluateModerationDecision(flaggedCategories, scores, {
+        allowMildProfanityInput: options.allowMildProfanityInput,
+        content,
+        responseDirective
+      });
+      const action: ModerationAction =
+        failClosedOnError && safetyResult.moderationError
+          ? 'api_error_fail_closed'
+          : !safetyResult.allowed && decision.action === 'allowed'
+            ? 'blocked'
+            : decision.action;
+      const allowed = action === 'allowed' || action === 'warned';
 
       await this.logModerationResult({
         guildId,
@@ -844,12 +855,12 @@ class ContentSanitizer {
       });
 
       return {
-        allowed: action === 'allowed',
+        allowed,
         action,
         flaggedCategories,
         scores,
         contentHash,
-        responseDirective: responseDirective || undefined,
+        responseDirective: decision.responseDirective || responseDirective || undefined,
         reasons: safetyResult.reasons,
         moderationError: safetyResult.moderationError
       };
@@ -1184,11 +1195,8 @@ class ContentSanitizer {
     processedContent: string;
     moderation: ModerationResult;
   }> {
-    // Sanitize first
-    const sanitized = this.sanitizePrompt(content);
-
     // Full moderation check
-    const moderation = await this.moderateContent(sanitized, guildId, userId, contentType, {
+    const moderation = await this.moderateContent(content, guildId, userId, contentType, {
       failClosedOnError: options.failClosedOnError,
       allowMildProfanityInput: options.allowMildProfanityInput,
       useDeterministicSentimentReview: options.useDeterministicSentimentReview,
@@ -1196,8 +1204,10 @@ class ContentSanitizer {
       source: 'chat_input'
     });
 
+    const sanitized = moderation.allowed ? this.sanitizePrompt(content) : '';
+
     return {
-      processedContent: moderation.allowed ? sanitized : '',
+      processedContent: sanitized,
       moderation
     };
   }

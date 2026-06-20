@@ -40,6 +40,7 @@ export class HealthServer {
   private readonly healthchecksPingIntervalMs = 60_000;
   private readonly healthchecksStartupGraceMs = 3 * 60_000;
   private readonly healthchecksFailureThreshold = 3;
+  private readonly healthchecksRequestTimeoutMs = 5_000;
 
   constructor(
     private client: Client,
@@ -213,7 +214,20 @@ export class HealthServer {
       return;
     }
 
-    await fetch(url);
+    const controller = new globalThis.AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.healthchecksRequestTimeoutMs);
+
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal
+      });
+
+      if (!response.ok) {
+        throw new Error(`Healthchecks.io ping failed with status ${response.status}`);
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   private async runHealthchecksPing(): Promise<void> {

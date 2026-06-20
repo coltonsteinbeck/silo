@@ -3,6 +3,7 @@ import type { logger as coreLogger } from '@silo/core';
 import type { PostgresAdapter } from '../database/postgres';
 import type { HealthServer } from '../health/server';
 import type { ReleaseProcessLock } from './process-lock';
+import { awaitTracingShutdown } from './tracing-shutdown';
 
 type Logger = Pick<typeof coreLogger, 'debug' | 'info' | 'warn' | 'error'>;
 
@@ -16,7 +17,8 @@ export async function shutdownApplication({
   releaseProcessLock,
   shutdownTracing,
   log,
-  exit = process.exit
+  exit = process.exit,
+  tracingShutdownTimeoutMs = 1000
 }: {
   signal: 'SIGTERM' | 'SIGINT';
   client: Client;
@@ -26,6 +28,7 @@ export async function shutdownApplication({
   shutdownTracing: () => Promise<void>;
   log: Logger;
   exit?: (code?: number) => never;
+  tracingShutdownTimeoutMs?: number;
 }): Promise<void> {
   if (shutdownInProgress) {
     return;
@@ -35,7 +38,15 @@ export async function shutdownApplication({
   log.info(`Received ${signal}, shutting down application`);
 
   try {
-    await shutdownTracing();
+    const tracingShutdownOutcome = await awaitTracingShutdown({
+      shutdownTracing,
+      timeoutMs: tracingShutdownTimeoutMs
+    });
+    if (tracingShutdownOutcome === 'timed_out') {
+      log.warn('Tracing shutdown timed out during application shutdown', {
+        tracingShutdownTimeoutMs
+      });
+    }
   } catch (error) {
     log.warn('Failed to flush Langfuse traces during shutdown', error);
   }
