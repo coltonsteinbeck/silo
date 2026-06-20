@@ -1,11 +1,14 @@
 import type { Message } from 'discord.js';
 import { sanitizeDiscordMassMentions } from '../security/output-sanitizer';
+import { sanitizeAssistantContextForPrompt } from './conversation-history-sanitizer';
 
 export interface ResolvedReplyMessage {
   messageId: string;
   userId: string;
   content: string;
   imageUrls: string[];
+  isBot?: boolean;
+  omittedReason?: string | null;
 }
 
 export interface ResolvedReplyContext {
@@ -48,11 +51,19 @@ export async function resolveReplyContext(
       break;
     }
 
+    const isBot = Boolean(referenced.author?.bot);
+    const normalizedContent = normalizeContent(referenced.content || '');
+    const contextSanitization = isBot
+      ? sanitizeAssistantContextForPrompt(normalizedContent)
+      : { content: normalizedContent, reason: null };
+
     chain.push({
       messageId: referenced.id,
       userId: referenced.author?.id || 'unknown',
-      content: normalizeContent(referenced.content || ''),
-      imageUrls: getImageUrls(referenced)
+      content: contextSanitization.content,
+      imageUrls: getImageUrls(referenced),
+      isBot,
+      omittedReason: contextSanitization.reason
     });
 
     cursor = referenced;

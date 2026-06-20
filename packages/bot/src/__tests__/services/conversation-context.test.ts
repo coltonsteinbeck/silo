@@ -3,6 +3,7 @@ import {
   assembleConversationContext,
   buildEffectiveUserPrompt,
   buildConversationHistoryInstruction,
+  isLowContextStandaloneTurn,
   shouldIncludeConversationHistoryForPrompt,
   buildImageSummaryBlock
 } from '../../services/conversation-context';
@@ -127,7 +128,27 @@ describe('conversation-context', () => {
     ).toBe(false);
   });
 
-  test('keeps history for follow-ups, topical prompts, replies, and vision turns with text', () => {
+  test('omits prior history for low-context replies from trace regressions', () => {
+    for (const latestUserText of [
+      'Thanks',
+      'maybe you can?',
+      "I can't do that it's almost Father's Day",
+      'now talk like a pirate',
+      'please talk like a pirate captain in the 1600s',
+      'be nice'
+    ]) {
+      expect(isLowContextStandaloneTurn(latestUserText)).toBe(true);
+      expect(
+        shouldIncludeConversationHistoryForPrompt({
+          latestUserText,
+          hasReplyContext: true,
+          hasVisionTargets: false
+        })
+      ).toBe(false);
+    }
+  });
+
+  test('keeps history for topical prompts and vision turns with text', () => {
     expect(
       shouldIncludeConversationHistoryForPrompt({
         latestUserText: "how's it hanging with the NBA finals?",
@@ -146,11 +167,11 @@ describe('conversation-context', () => {
 
     expect(
       shouldIncludeConversationHistoryForPrompt({
-        latestUserText: "how's it hanging?",
+        latestUserText: 'what did you mean by that?',
         hasReplyContext: true,
         hasVisionTargets: false
       })
-    ).toBe(false);
+    ).toBe(true);
 
     expect(
       shouldIncludeConversationHistoryForPrompt({
@@ -176,6 +197,6 @@ describe('conversation-context', () => {
     expect(buildConversationHistoryInstruction(true)).toContain(
       'Do not proactively bring up older topics'
     );
-    expect(buildConversationHistoryInstruction(false)).toContain('standalone casual check-in');
+    expect(buildConversationHistoryInstruction(false)).toContain('standalone low-context turn');
   });
 });

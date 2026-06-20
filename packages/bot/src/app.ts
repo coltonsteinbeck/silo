@@ -1439,7 +1439,7 @@ export async function startBot(): Promise<void> {
 
           if (!includeConversationHistory && prunedHistoryForPrompt.length > 0) {
             logger.info(
-              `Omitted ${prunedHistoryForPrompt.length} history messages for standalone casual check-in in guild ${guildId}, channel ${message.channelId}`
+              `Omitted ${prunedHistoryForPrompt.length} history messages for low-context turn in guild ${guildId}, channel ${message.channelId}`
             );
           }
 
@@ -1523,7 +1523,10 @@ export async function startBot(): Promise<void> {
             promptFallbackReason,
             promptEnabled: effectivePromptEnabled,
             managedPersonaId: managedPersona?.personaId || null,
-            customPromptsDisabled: managedCustomPromptsDisabled
+            customPromptsDisabled: managedCustomPromptsDisabled,
+            conversationHistoryIncluded: includeConversationHistory,
+            historySanitizedRemovedCount: removedCount,
+            historySanitizedRemovedReasons: removedReasons
           };
 
           messageTrace?.update({
@@ -1532,6 +1535,9 @@ export async function startBot(): Promise<void> {
               memoryItemCount,
               urlContextCount: urlContext.items.length,
               visionTargetCount: conversationContext.visionTargets.length,
+              conversationHistoryIncluded: includeConversationHistory,
+              historySanitizedRemovedCount: removedCount,
+              historySanitizedRemovedReasons: removedReasons,
               hasPromptFallbackNotice: Boolean(promptFallbackNotice),
               customPromptGuardrailEvaluated: Boolean(runtimeCustomPromptGuardrails),
               customPromptGuardrailAllowed: runtimeCustomPromptGuardrails?.allowed ?? null,
@@ -1739,6 +1745,7 @@ export async function startBot(): Promise<void> {
                     ? 'Natural-language image and video generation is not enabled for this deployment yet. Use /draw or /video, or ask an informational question.'
                     : intentRouting.clarificationReason,
                   falsePositiveGuard: intentRouting.falsePositiveGuard,
+                  outputBlockedMessage: managedPersona?.assistantOutputBlockedMessage,
                   requestedTools,
                   toolExecutor: quotaAwareToolExecutor,
                   metadata: {
@@ -1798,6 +1805,8 @@ export async function startBot(): Promise<void> {
                   graphMode: agentGraphConfig.mode,
                   graphActive,
                   graphOutcome: activeGraphResult.current?.outcome || null,
+                  graphSafetyState: activeGraphResult.current?.safetyState || null,
+                  graphOutputBlocked: activeGraphResult.current?.safetyState === 'output_blocked',
                   graphStepCount: activeGraphResult.current?.stepCount || null,
                   graphToolsCalled: activeGraphResult.current?.toolsCalled || [],
                   graphIntent: intentRouting.intent,
@@ -2063,6 +2072,8 @@ export async function startBot(): Promise<void> {
               outputGuardrailCategory: outputGuardrailsDecision.category || 'none',
               outputContentReplaced: outputWasReplaced,
               graphOutcome: activeGraphResult.current?.outcome || null,
+              graphSafetyState: activeGraphResult.current?.safetyState || null,
+              graphOutputBlocked: activeGraphResult.current?.safetyState === 'output_blocked',
               graphToolsCalled: activeGraphResult.current?.toolsCalled || [],
               graphCitationCount: activeGraphResult.current?.citations.length || 0,
               graphMediaKind: activeGraphResult.current?.mediaResult?.kind || null,
