@@ -38,6 +38,7 @@ import {
   buildUserMessageForBlockedInput,
   composeSystemPromptWithSafety,
   resolvePromptPolicy,
+  resolveManagedGuildPersonaPolicy,
   safetyMonitor,
   sentimentClassifier,
   buildSentimentStyleInstruction,
@@ -56,6 +57,8 @@ import {
   buildImageSummaryBlock,
   shouldIncludeConversationHistoryForPrompt
 } from './services/conversation-context';
+import { sanitizeConversationHistoryForPrompt } from './services/conversation-history-sanitizer';
+import { buildMediaReplyPayload, resolveDeliverableMediaResult } from './services/media-delivery';
 import { resolveReplyContext } from './services/reply-context';
 import { shouldHandleAssistantMessage } from './services/message-trigger';
 import { fetchUrlContextBlock } from './services/url-context';
@@ -258,80 +261,6 @@ function shouldEmitPromptFallbackStartupAudit(guildId: string): boolean {
 
   promptFallbackAuditLoggedByGuild.add(guildId);
   return true;
-}
-
-function normalizeHistoryContent(value: string): string {
-  return value.replace(/\s+/g, ' ').trim().toLowerCase();
-}
-
-function isLowInformationAssistantReply(value: string): boolean {
-  const normalized = normalizeHistoryContent(value);
-  if (!normalized) {
-    return true;
-  }
-
-  const wordCount = normalized.split(' ').filter(Boolean).length;
-  return normalized.length <= 24 && wordCount <= 4;
-}
-
-function pruneDominantLowInformationAssistantReplies<T extends { role: string; content: string }>(
-  history: T[]
-): { filtered: T[]; removedCount: number; dominantReply: string | null } {
-  const lowInfoAssistantReplies = history.filter(
-    msg => msg.role === 'assistant' && isLowInformationAssistantReply(msg.content)
-  );
-
-  if (lowInfoAssistantReplies.length < 4) {
-    return { filtered: history, removedCount: 0, dominantReply: null };
-  }
-
-  const counts = new Map<string, number>();
-  for (const msg of lowInfoAssistantReplies) {
-    const key = normalizeHistoryContent(msg.content);
-    counts.set(key, (counts.get(key) || 0) + 1);
-  }
-
-  let dominantReply: string | null = null;
-  let dominantCount = 0;
-  for (const [key, count] of counts.entries()) {
-    if (count > dominantCount) {
-      dominantReply = key;
-      dominantCount = count;
-    }
-  }
-
-  if (!dominantReply) {
-    return { filtered: history, removedCount: 0, dominantReply: null };
-  }
-
-  const dominanceRatio = dominantCount / lowInfoAssistantReplies.length;
-  if (dominantCount < 3 || dominanceRatio < 0.6) {
-    return { filtered: history, removedCount: 0, dominantReply: null };
-  }
-
-  let removedCount = 0;
-  const filtered = history.filter(msg => {
-    if (msg.role !== 'assistant') {
-      return true;
-    }
-
-    if (!isLowInformationAssistantReply(msg.content)) {
-      return true;
-    }
-
-    if (normalizeHistoryContent(msg.content) !== dominantReply) {
-      return true;
-    }
-
-    removedCount += 1;
-    return false;
-  });
-
-  if (removedCount === 0) {
-    return { filtered: history, removedCount: 0, dominantReply: null };
-  }
-
-  return { filtered, removedCount, dominantReply };
 }
 
 /**
@@ -1028,11 +957,7 @@ export async function startBot(): Promise<void> {
             adminDb.getServerRuntimeConfig(guildId)
           ]);
           const { serverConfig, systemPrompt: systemPromptResult } = runtimeConfig;
-
-          const edgyModeEnabled = Boolean(serverConfig?.featuresEnabled?.edgyModeEnabled);
-          const deterministicSentimentReviewEnabled = Boolean(
-            serverConfig?.featuresEnabled?.deterministicSentimentReviewEnabled
-          );
+          const managedPersona = resolveManagedGuildPersonaPolicy(guildId);
 
           const moderationResult = await withLangfuseGuardrail(
             {
@@ -1044,8 +969,7 @@ export async function startBot(): Promise<void> {
               metadata: {
                 ...buildLangfuseTraceMetadata(rootTraceMetadataInput),
                 guardrailStage: 'input',
-                edgyModeEnabled,
-                deterministicSentimentReviewEnabled
+                managedPersonaId: managedPersona?.personaId || null
               }
             },
             async guardrail => {
@@ -1053,11 +977,7 @@ export async function startBot(): Promise<void> {
                 userContent,
                 guildId,
                 message.author.id,
-                'message',
-                {
-                  allowMildProfanityInput: edgyModeEnabled,
-                  useDeterministicSentimentReview: deterministicSentimentReviewEnabled
-                }
+                'message'
               );
 
               guardrail?.update({
@@ -1069,8 +989,7 @@ export async function startBot(): Promise<void> {
                   scores: result.moderation.scores,
                   contentHash: result.moderation.contentHash,
                   moderationError: result.moderation.moderationError || null,
-                  edgyModeEnabled,
-                  deterministicSentimentReviewEnabled
+                  managedPersonaId: managedPersona?.personaId || null
                 }
               });
 
@@ -1087,8 +1006,7 @@ export async function startBot(): Promise<void> {
               inputResponseDirective: moderation.responseDirective || 'none',
               inputModerationScores: moderation.scores,
               inputModerationError: moderation.moderationError || null,
-              edgyModeEnabled,
-              deterministicSentimentReviewEnabled
+              managedPersonaId: managedPersona?.personaId || null
             }
           });
 
@@ -1277,12 +1195,18 @@ export async function startBot(): Promise<void> {
           );
 
           const { prompt: dbPrompt, enabled: promptEnabled } = systemPromptResult;
-          const promptConfig = systemPromptManager.getEffectivePrompt(dbPrompt, promptEnabled);
+          const managedCustomPromptsDisabled = Boolean(managedPersona?.customPromptsDisabled);
+          const effectivePromptEnabled = managedCustomPromptsDisabled ? false : promptEnabled;
+          const promptConfig = systemPromptManager.getEffectivePrompt(
+            managedCustomPromptsDisabled ? null : dbPrompt,
+            effectivePromptEnabled
+          );
 
           const defaultPrompt =
+            managedPersona?.prompt ||
             'You are a helpful Discord bot assistant. Be helpful, friendly, and conversational.';
 
-          let runtimeCustomPrompt = promptConfig.prompt;
+          let runtimeCustomPrompt = managedCustomPromptsDisabled ? null : promptConfig.prompt;
           let runtimeCustomPromptGuardrails: Awaited<
             ReturnType<typeof evaluateCustomPromptGuardrailsWithTrace>
           > | null = null;
@@ -1320,13 +1244,13 @@ export async function startBot(): Promise<void> {
           const plainStyleInstruction = userRequestedRichFormatting
             ? ''
             : '\n\nFormatting rule: Use plain text by default. Avoid markdown styling (bold/italics/lists) and avoid emojis unless the user explicitly asks for them.';
-          const edgyStyleInstruction = edgyModeEnabled
-            ? '\n\nEdgy mode rule: You may be witty, mildly profane, and lightly roastful when it fits the conversation. Keep it playful rather than hostile. Never use slurs, protected-class language, sexual content, threats, or harassment. If a joke would cross that line, stay sharp without saying it.'
-            : '';
           const sentimentStyleInstruction = buildSentimentStyleInstruction(promptSentiment);
+          const allowMildAssistantProfanity = Boolean(managedPersona?.allowMildAssistantProfanity);
 
           const promptHash = promptPolicy.promptHash;
-          const hasConfiguredGuildPrompt = Boolean(dbPrompt && promptEnabled);
+          const hasConfiguredGuildPrompt = Boolean(
+            !managedCustomPromptsDisabled && dbPrompt && promptEnabled
+          );
           const guardrailsRejectedPrompt =
             hasConfiguredGuildPrompt && Boolean(promptConfig.prompt) && !runtimeCustomPrompt;
           const validationRejectedPrompt =
@@ -1348,8 +1272,16 @@ export async function startBot(): Promise<void> {
               : null;
 
           logger.info(
-            `Prompt context for guild ${guildId}: promptHash=${promptHash}, source=${promptPolicy.usedCustomPrompt ? 'custom' : 'default'}, customPromptHash=${promptPolicy.customPromptHash || 'none'}`
+            `Prompt context for guild ${guildId}: promptHash=${promptHash}, source=${managedPersona ? 'managed_persona' : promptPolicy.usedCustomPrompt ? 'custom' : 'default'}, customPromptHash=${promptPolicy.customPromptHash || 'none'}`
           );
+
+          if (managedPersona) {
+            logger.info('Applied managed guild persona prompt policy', {
+              guildId,
+              personaId: managedPersona.personaId,
+              customPromptsDisabled: managedCustomPromptsDisabled
+            });
+          }
 
           if (promptPolicy.rejectedCustomPrompt) {
             logger.warn(
@@ -1481,13 +1413,18 @@ export async function startBot(): Promise<void> {
           const {
             filtered: prunedHistoryForPrompt,
             removedCount,
-            dominantReply
-          } = pruneDominantLowInformationAssistantReplies(history);
+            dominantReply,
+            removedReasons
+          } = sanitizeConversationHistoryForPrompt(history);
 
           if (removedCount > 0) {
-            logger.info(
-              `Pruned ${removedCount} repetitive low-information assistant history messages (dominant="${dominantReply}") for guild ${guildId}, channel ${message.channelId}`
-            );
+            logger.info('Sanitized conversation history for prompt assembly', {
+              guildId,
+              channelId: message.channelId,
+              removedCount,
+              dominantReply,
+              removedReasons
+            });
           }
 
           const includeConversationHistory = shouldIncludeConversationHistoryForPrompt({
@@ -1582,9 +1519,11 @@ export async function startBot(): Promise<void> {
             isLocalModel: textProvider.name === 'local',
             promptHash,
             customPromptHash: promptPolicy.customPromptHash,
-            promptSource: promptConfig.source,
+            promptSource: managedPersona ? 'managed_persona' : promptConfig.source,
             promptFallbackReason,
-            promptEnabled
+            promptEnabled: effectivePromptEnabled,
+            managedPersonaId: managedPersona?.personaId || null,
+            customPromptsDisabled: managedCustomPromptsDisabled
           };
 
           messageTrace?.update({
@@ -1685,7 +1624,7 @@ export async function startBot(): Promise<void> {
               const providerMessages = [
                 {
                   role: 'system' as const,
-                  content: `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${edgyStyleInstruction}${sentimentStyleInstruction}${safetyResponseInstruction}${conversationHistoryInstruction}${memoryMentionInstruction}${loreMemoryFactsBlock}${memoryConflictInstruction}${externalContextInstruction}${memoryContext}${imageSummaryBlock ? `\n\n${imageSummaryBlock}` : ''}`
+                  content: `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${sentimentStyleInstruction}${safetyResponseInstruction}${conversationHistoryInstruction}${memoryMentionInstruction}${loreMemoryFactsBlock}${memoryConflictInstruction}${externalContextInstruction}${memoryContext}${imageSummaryBlock ? `\n\n${imageSummaryBlock}` : ''}`
                 },
                 ...messages,
                 {
@@ -1899,8 +1838,7 @@ export async function startBot(): Promise<void> {
                   model: response.model || requestedTextModel || undefined
                 }),
                 guardrailStage: 'output',
-                edgyModeEnabled,
-                deterministicSentimentReviewEnabled
+                managedPersonaId: managedPersona?.personaId || null
               }
             },
             async guardrail => {
@@ -1938,8 +1876,7 @@ export async function startBot(): Promise<void> {
                   moderationError: assistantModeration.moderationError || null,
                   outputGuardrailCategory: outputGuardrailsDecision.category || null,
                   outputGuardrailReason: outputGuardrailsDecision.reason || null,
-                  edgyModeEnabled,
-                  deterministicSentimentReviewEnabled
+                  managedPersonaId: managedPersona?.personaId || null
                 }
               });
 
@@ -1983,6 +1920,7 @@ export async function startBot(): Promise<void> {
               `Assistant output blocked for guild ${guildId}, user ${message.author.id}: ${assistantModeration.flaggedCategories.join(', ')}`
             );
             responseContent =
+              managedPersona?.assistantOutputBlockedMessage ||
               'I can’t help with that request. Please rephrase and I can provide a safer alternative.';
           } else if (assistantModeration.action === 'warned') {
             safetyMonitor.recordIncident({
@@ -2012,7 +1950,7 @@ export async function startBot(): Promise<void> {
             stripXmlLikeTags: true
           });
 
-          if (!edgyModeEnabled) {
+          if (!allowMildAssistantProfanity) {
             const scrubbed = sanitizeAssistantProfanity(responseContent);
             if (scrubbed.changed) {
               logger.info('Scrubbed mild profanity from assistant output', {
@@ -2024,11 +1962,35 @@ export async function startBot(): Promise<void> {
             }
           }
 
-          if (!responseContent.trim()) {
+          const replyFiles: AttachmentBuilder[] = [];
+          const mediaResult = resolveDeliverableMediaResult(
+            activeGraphResult.current?.mediaResult,
+            outputBlockedBySafety
+          );
+          if (mediaResult) {
+            const mediaReply = await buildMediaReplyPayload(mediaResult);
+            if (mediaReply.uploaded) {
+              replyFiles.push(...mediaReply.files);
+              responseContent = '';
+            } else {
+              logger.warn('Generated media could not be uploaded inline', {
+                guildId,
+                userId: message.author.id,
+                kind: mediaResult.kind,
+                reason: mediaReply.failureReason,
+                mediaUrl: mediaResult.url
+              });
+              responseContent =
+                mediaReply.content ||
+                `Could not upload ${mediaResult.kind} inline. Please try again in a moment.`;
+            }
+          }
+
+          if (!responseContent.trim() && replyFiles.length === 0) {
             responseContent = 'Sorry, I could not generate a valid response. Please try again.';
           }
 
-          if (promptFallbackNotice) {
+          if (responseContent.trim() && promptFallbackNotice) {
             responseContent = `${promptFallbackNotice}\n\n${responseContent}`;
           }
 
@@ -2038,24 +2000,6 @@ export async function startBot(): Promise<void> {
             logger.warn(
               `Response truncated for message in guild ${guildId}: ${response.content.length} -> ${responseContent.length} characters`
             );
-          }
-
-          const replyFiles: AttachmentBuilder[] = [];
-          const mediaResult = outputBlockedBySafety ? null : activeGraphResult.current?.mediaResult;
-          if (mediaResult?.url.startsWith('data:image/')) {
-            const [, base64Data] = mediaResult.url.split(',');
-            if (base64Data) {
-              replyFiles.push(
-                new AttachmentBuilder(Buffer.from(base64Data, 'base64'), {
-                  name: `agent-image-${Date.now()}.png`
-                })
-              );
-              responseContent =
-                responseContent.includes('data:image/') ||
-                responseContent.trim() === 'Image generated.'
-                  ? `Image generated${mediaResult.model ? ` with ${mediaResult.model}` : ''}.`
-                  : responseContent;
-            }
           }
 
           const actualTokens = quotaMiddleware.getChargeableTextTokens(
@@ -2085,7 +2029,7 @@ export async function startBot(): Promise<void> {
           }
 
           await message.reply({
-            content: responseContent,
+            content: responseContent.trim() ? responseContent : undefined,
             files: replyFiles,
             allowedMentions: { repliedUser: false, parse: [] }
           });
@@ -2108,8 +2052,8 @@ export async function startBot(): Promise<void> {
               }),
               usedVision,
               memoryItemCount,
-              edgyModeEnabled,
-              deterministicSentimentReviewEnabled,
+              managedPersonaId: managedPersona?.personaId || null,
+              customPromptsDisabled: managedCustomPromptsDisabled,
               inputModerationAction: moderation.action,
               inputModerationCategories: moderation.flaggedCategories,
               inputResponseDirective: moderation.responseDirective || 'none',
@@ -2179,8 +2123,8 @@ export async function startBot(): Promise<void> {
                 source: promptSentiment?.source || null
               },
               safetyFlags: {
-                edgyModeEnabled,
-                deterministicSentimentReviewEnabled
+                managedPersonaId: managedPersona?.personaId || null,
+                customPromptsDisabled: managedCustomPromptsDisabled
               },
               moderationAction: assistantModeration.action,
               usedVision,

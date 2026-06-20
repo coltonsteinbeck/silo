@@ -159,11 +159,11 @@ Notes:
 
 ### Bounded Agent Graph
 
-Discord message responses can run through a feature-flagged LangGraph orchestration layer. It is disabled by default while the direct provider path remains the production default.
+Discord message responses run through the bounded LangGraph orchestration layer by default. Keep the off/shadow switches available only for emergency rollback and debugging.
 
 ```bash
-AGENT_GRAPH_ENABLED=false
-AGENT_GRAPH_MODE=off
+AGENT_GRAPH_ENABLED=true
+AGENT_GRAPH_MODE=on
 AGENT_GRAPH_RECURSION_LIMIT=16
 AGENT_GRAPH_MAX_TOOL_ROUNDS=1
 AGENT_GRAPH_MAX_TOOL_CALLS=3

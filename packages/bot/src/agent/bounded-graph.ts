@@ -208,7 +208,7 @@ function buildToolContextMessage(state: State): AgentGraphInput['messages'][numb
       );
     }
     if (result.media) {
-      parts.push(`Media: ${result.media.kind} ${result.media.url}`);
+      parts.push(`Media: ${result.media.kind} generated.`);
     }
   }
 
@@ -225,9 +225,8 @@ function buildMediaResponse(state: State): TextGenerationResponse | null {
   }
 
   const label = media.kind === 'image' ? 'Image generated' : 'Video generated';
-  const content = media.url.startsWith('data:image/') ? `${label}.` : `${label}: ${media.url}`;
   return {
-    content,
+    content: `${label}.`,
     model: media.model || state.provider.model || state.textProvider.name
   };
 }
