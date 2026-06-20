@@ -1,19 +1,19 @@
 # Bounded Agent Graph
 
-The Discord message graph is a feature-flagged LangGraph path for long-term orchestration work. It is designed to improve tracing, safety placement, and future tool routing without introducing autonomous loops into the user-facing bot.
+The Discord message graph is the standard mention-response path. It is designed to improve tracing, safety placement, and tool routing without introducing autonomous loops into the user-facing bot.
 
 ## Status
 
-- Disabled by default: `AGENT_GRAPH_ENABLED=false`.
-- The direct provider path remains the default production path.
-- `on`, `active`, and `staging` modes use the graph for Discord message generation. Shadow mode keeps the direct response path while rollout wiring is inspected.
+- Enabled by default: `AGENT_GRAPH_ENABLED=true`.
+- The direct provider path remains available only through the emergency off/shadow switches.
+- `on`, `active`, and `staging` modes use the graph for Discord message generation. Shadow mode keeps the direct response path while rollout/debug wiring is inspected.
 - Slash commands for image and video generation remain supported through their existing command handlers.
 
 ## Environment
 
 ```bash
-AGENT_GRAPH_ENABLED=false
-AGENT_GRAPH_MODE=off
+AGENT_GRAPH_ENABLED=true
+AGENT_GRAPH_MODE=on
 AGENT_GRAPH_RECURSION_LIMIT=16
 AGENT_GRAPH_MAX_TOOL_ROUNDS=1
 AGENT_GRAPH_MAX_TOOL_CALLS=3
@@ -26,7 +26,7 @@ AGENT_MEDIA_NL_ENABLED=false
 AGENT_SEARCH_FALLBACK_PROVIDER=disabled
 ```
 
-`AGENT_GRAPH_MODE` accepts `off`, `shadow`, `staging`, `on`, or the legacy alias `active`. If `AGENT_GRAPH_ENABLED=true` and mode is omitted, the runtime defaults to `on`; keep mode explicit during staged rollout.
+`AGENT_GRAPH_MODE` accepts `off`, `shadow`, `staging`, `on`, or the legacy alias `active`. If graph env vars are omitted, the runtime defaults to enabled/on.
 
 `AGENT_SEARCH_FALLBACK_PROVIDER` accepts `disabled`, `openai`, or `xai`. Use a configured OpenAI or xAI fallback during staging/production so current-information prompts can search consistently even when the selected text provider is Anthropic, Google, or local.
 
@@ -156,7 +156,7 @@ Expected node observations:
 - `agent.output-safety`
 - `agent.persistence`
 
-To verify tracing, enable Langfuse, send one Discord message through a staging guild with `AGENT_GRAPH_ENABLED=true` and `AGENT_GRAPH_MODE=active`, then confirm the root trace contains the node observations above plus a final `graphOutcome`.
+To verify tracing, enable Langfuse, send one Discord mention-response message, then confirm the root trace contains the node observations above plus a final `graphOutcome`.
 
 ## Health Alert Policy
 
@@ -170,14 +170,12 @@ Routine `/health` checks and Healthchecks.io success heartbeats remain active. D
 
 ## Rollout
 
-1. Deploy mention and health fixes immediately; they are active by default.
-2. Keep `AGENT_GRAPH_ENABLED=false` in production until staging validation passes.
-3. Enable Langfuse in staging.
-4. Enable the graph in one staging guild or deployment with `AGENT_GRAPH_ENABLED=true`, `AGENT_GRAPH_MODE=staging`, and `AGENT_SEARCH_ENABLED=true`.
-5. Verify no generated `@everyone` or `@here` pings are active.
-6. Verify the graph trace includes node spans, guardrails, generation, tool budgets, and `graphOutcome`.
-7. Verify one turn terminates within the configured recursion and tool budgets.
-8. Roll forward gradually by deployment, keeping graph limits explicit.
+1. Keep graph limits explicit in deployed environments.
+2. Use `AGENT_GRAPH_ENABLED=false` or `AGENT_GRAPH_MODE=off` only as an emergency rollback.
+3. Use `AGENT_GRAPH_MODE=shadow` only when comparing graph wiring against the direct response path.
+4. Verify no generated `@everyone` or `@here` pings are active.
+5. Verify the graph trace includes node spans, guardrails, generation, tool budgets, and `graphOutcome`.
+6. Verify one turn terminates within the configured recursion and tool budgets.
 
 Acceptance criteria:
 

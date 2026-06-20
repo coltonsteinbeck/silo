@@ -5,7 +5,6 @@ import {
   ButtonInteraction,
   ButtonStyle,
   ChatInputCommandInteraction,
-  EmbedBuilder,
   GuildMember,
   ModalBuilder,
   ModalSubmitInteraction,
@@ -23,7 +22,7 @@ import {
   moderateCommandPrompt,
   type PromptModerationGuard
 } from '../security/command-prompt-moderation';
-import { sanitizeDiscordMassMentions } from '../security/output-sanitizer';
+import { buildMediaReplyPayload } from '../services/media-delivery';
 import { summarizeTextForTrace, withLangfuseGeneration } from '../telemetry/langfuse-client';
 import { buildLangfuseTags, buildLangfuseTraceMetadata } from '../telemetry/langfuse-metadata';
 
@@ -73,8 +72,11 @@ interface DrawSession {
 }
 
 interface DrawGeneration {
-  embed: EmbedBuilder;
+  content?: string;
   files: AttachmentBuilder[];
+  uploaded: boolean;
+  failureReason?: string;
+  mediaUrl?: string;
 }
 
 interface DrawUrlSecurityOptions {
@@ -422,44 +424,22 @@ export class DrawCommand implements Command {
       }
     );
 
-    const files: AttachmentBuilder[] = [];
-    let imageUrl = result.url;
+    const mediaReply = await buildMediaReplyPayload({
+      kind: 'image',
+      url: result.url,
+      model: result.model || session.model,
+      prompt: session.prompt,
+      revisedPrompt: result.revisedPrompt,
+      moderationPassed: result.moderationPassed
+    });
 
-    if (result.url.startsWith('data:image/')) {
-      const parts = result.url.split(',');
-      const base64Data = parts[1];
-      if (!base64Data) {
-        throw new Error('Invalid image response data');
-      }
-      const buffer = Buffer.from(base64Data, 'base64');
-      const fileName = 'draw-output.png';
-      files.push(new AttachmentBuilder(buffer, { name: fileName }));
-      imageUrl = `attachment://${fileName}`;
-    }
-
-    const displayPrompt = sanitizeDiscordMassMentions(result.revisedPrompt || session.prompt);
-
-    const embed = new EmbedBuilder()
-      .setTitle('Image Generated')
-      .setDescription(
-        [
-          `Prompt: ${displayPrompt}`,
-          `Model: ${session.model}`,
-          session.references.length > 0
-            ? `References: ${session.references.length}`
-            : 'References: none',
-          modelConfig.supportsResolution
-            ? `Resolution: ${session.resolution.toUpperCase()}`
-            : `Size: ${session.size}`
-        ].join('\n')
-      )
-      .setImage(imageUrl)
-      .setFooter({
-        text: 'Use buttons below to regenerate or edit prompt'
-      })
-      .setTimestamp();
-
-    return { embed, files };
+    return {
+      content: mediaReply.content,
+      files: mediaReply.files,
+      uploaded: mediaReply.uploaded,
+      failureReason: mediaReply.failureReason,
+      mediaUrl: result.url
+    };
   }
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -561,8 +541,24 @@ export class DrawCommand implements Command {
       const sessionId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
       const controls = this.createControls(sessionId);
 
+      if (!generation.uploaded) {
+        logger.warn('Draw inline upload unavailable', {
+          guildId: interaction.guildId,
+          userId: interaction.user.id,
+          model,
+          reason: generation.failureReason,
+          mediaUrl: generation.mediaUrl
+        });
+        await interaction.editReply({
+          content:
+            generation.content || 'Could not upload image inline. Please try again in a moment.'
+        });
+        return;
+      }
+
       const responseMessage = await interaction.editReply({
-        embeds: [generation.embed],
+        content: generation.content,
+        embeds: [],
         files: generation.files,
         components: [controls]
       });
@@ -712,8 +708,25 @@ export class DrawCommand implements Command {
         }
       );
 
+      if (!generation.uploaded) {
+        logger.warn('Draw regeneration inline upload unavailable', {
+          guildId: interaction.guildId,
+          userId: interaction.user.id,
+          sessionId: session.id,
+          reason: generation.failureReason,
+          mediaUrl: generation.mediaUrl
+        });
+        await interaction.followUp({
+          content:
+            generation.content || 'Could not upload image inline. Please try again in a moment.',
+          ephemeral: true
+        });
+        return true;
+      }
+
       await interaction.message.edit({
-        embeds: [generation.embed],
+        content: generation.content ?? null,
+        embeds: [],
         files: generation.files,
         components: [this.createControls(session.id)]
       });
@@ -839,6 +852,21 @@ export class DrawCommand implements Command {
         }
       );
 
+      if (!generation.uploaded) {
+        logger.warn('Draw modal edit inline upload unavailable', {
+          guildId: interaction.guildId,
+          userId: interaction.user.id,
+          sessionId: session.id,
+          reason: generation.failureReason,
+          mediaUrl: generation.mediaUrl
+        });
+        await interaction.editReply({
+          content:
+            generation.content || 'Could not upload image inline. Please try again in a moment.'
+        });
+        return true;
+      }
+
       session.prompt = promptDecision.processedPrompt;
       session.createdAt = Date.now();
       this.sessions.set(session.id, session);
@@ -848,7 +876,8 @@ export class DrawCommand implements Command {
         try {
           const originalMessage = await channel.messages.fetch(session.messageId);
           await originalMessage.edit({
-            embeds: [generation.embed],
+            content: generation.content ?? null,
+            embeds: [],
             files: generation.files,
             components: [this.createControls(session.id)]
           });

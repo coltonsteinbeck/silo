@@ -55,6 +55,12 @@ export type { GuardrailProfile, PromptSafetyResult } from './prompt-safety';
 
 export { composeSystemPromptWithSafety, IMMUTABLE_SAFETY_POLICY } from './safety-policy';
 export { resolvePromptPolicy } from './prompt-policy';
+export {
+  JIMB_PERSONA_ID,
+  resolveManagedGuildPersonaPolicy,
+  isManagedGuildCustomPromptDisabled
+} from './guild-persona-policy';
+export type { ManagedGuildPersonaPolicy } from './guild-persona-policy';
 export { safetyMonitor, SafetyMonitor, createSafetyMonitorFromEnv } from './safety-monitor';
 export {
   sentimentClassifier,

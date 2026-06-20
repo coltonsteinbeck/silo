@@ -1,10 +1,4 @@
-import {
-  AttachmentBuilder,
-  ChatInputCommandInteraction,
-  EmbedBuilder,
-  GuildMember,
-  SlashCommandBuilder
-} from 'discord.js';
+import { ChatInputCommandInteraction, GuildMember, SlashCommandBuilder } from 'discord.js';
 import { logger } from '@silo/core';
 import { Command } from './types';
 import { ProviderRegistry } from '../providers/registry';
@@ -15,12 +9,11 @@ import {
   moderateCommandPrompt,
   type PromptModerationGuard
 } from '../security/command-prompt-moderation';
-import { sanitizeDiscordMassMentions } from '../security/output-sanitizer';
+import { buildMediaReplyPayload } from '../services/media-delivery';
 import { withLangfuseGeneration, summarizeTextForTrace } from '../telemetry/langfuse-client';
 import { buildLangfuseTags, buildLangfuseTraceMetadata } from '../telemetry/langfuse-metadata';
 
 const XAI_VIDEO_MODEL = 'grok-imagine-video';
-const FIXED_VIDEO_OUTPUT_COUNT = 1;
 
 // Pricing basis from xAI: 1 quota token ~= one image-input unit ($0.002).
 const IMAGE_INPUT_UNIT_PRICE_USD = 0.002;
@@ -29,7 +22,6 @@ const VIDEO_OUTPUT_PRICE_USD: Record<'480p' | '720p', number> = {
   '720p': 0.07
 };
 const BASE_VIDEO_DURATION_SECONDS = 5;
-const MAX_INLINE_VIDEO_BYTES = 24 * 1024 * 1024;
 
 interface VideoUrlSecurityOptions {
   policy?: UrlPolicyOptions;
@@ -101,72 +93,6 @@ export class VideoCommand implements Command {
     private urlSecurity?: VideoUrlSecurityOptions,
     private promptGuard: PromptModerationGuard = moderateCommandPrompt
   ) {}
-
-  private inferVideoExtension(url: string, contentType?: string): string {
-    const lowerType = (contentType || '').toLowerCase();
-    if (lowerType.includes('mp4')) return 'mp4';
-    if (lowerType.includes('webm')) return 'webm';
-    if (lowerType.includes('quicktime')) return 'mov';
-
-    const pathPart = url.split('?')[0] || '';
-    const ext = pathPart.split('.').pop()?.toLowerCase();
-    if (ext && ['mp4', 'webm', 'mov', 'm4v'].includes(ext)) {
-      return ext;
-    }
-
-    return 'mp4';
-  }
-
-  private async buildInlineVideoAttachment(url: string): Promise<{
-    attachment: AttachmentBuilder | null;
-    reason?: string;
-  }> {
-    try {
-      const response = await fetch(url);
-      if (!response.ok) {
-        return {
-          attachment: null,
-          reason: `video fetch failed (${response.status})`
-        };
-      }
-
-      const contentLengthHeader = response.headers.get('content-length');
-      const contentLength = contentLengthHeader ? Number(contentLengthHeader) : NaN;
-      if (Number.isFinite(contentLength) && contentLength > MAX_INLINE_VIDEO_BYTES) {
-        return {
-          attachment: null,
-          reason: 'video file is too large for inline upload'
-        };
-      }
-
-      const contentType = response.headers.get('content-type') || undefined;
-      const buffer = Buffer.from(await response.arrayBuffer());
-      if (buffer.byteLength === 0) {
-        return {
-          attachment: null,
-          reason: 'video download returned empty content'
-        };
-      }
-
-      if (buffer.byteLength > MAX_INLINE_VIDEO_BYTES) {
-        return {
-          attachment: null,
-          reason: 'video file is too large for inline upload'
-        };
-      }
-
-      const extension = this.inferVideoExtension(url, contentType);
-      const fileName = `video-${Date.now()}.${extension}`;
-      return {
-        attachment: new AttachmentBuilder(buffer, { name: fileName })
-      };
-    } catch (error) {
-      return {
-        attachment: null,
-        reason: error instanceof Error ? error.message : 'unknown download error'
-      };
-    }
-  }
 
   private async logUrlScreening(
     interaction: ChatInputCommandInteraction,
@@ -368,46 +294,29 @@ export class VideoCommand implements Command {
         }
       );
 
-      const displayPrompt = sanitizeDiscordMassMentions(effectivePrompt);
-      const embed = new EmbedBuilder()
-        .setTitle('Video Generated')
-        .setDescription(
-          [
-            `Prompt: ${displayPrompt}`,
-            `Model: ${result.model || XAI_VIDEO_MODEL}`,
-            `Duration: ${result.duration || duration}s`,
-            `Resolution: ${effectiveResolution}`,
-            `References: ${references.length}`,
-            `Quota Cost: ${quotaCost} video tokens`,
-            `Outputs: ${FIXED_VIDEO_OUTPUT_COUNT} (fixed)`
-          ].join('\n')
-        )
-        .setURL(result.url)
-        .setFooter({
-          text: 'Video URL is temporary. Save it promptly.'
-        })
-        .setTimestamp();
-
-      const inlineVideo = await this.buildInlineVideoAttachment(result.url);
-      if (inlineVideo.attachment) {
+      const inlineVideo = await buildMediaReplyPayload({
+        kind: 'video',
+        url: result.url,
+        model: result.model || XAI_VIDEO_MODEL,
+        prompt: effectivePrompt,
+        moderationPassed: result.moderationPassed
+      });
+      if (inlineVideo.uploaded) {
         await interaction.editReply({
-          embeds: [embed],
-          files: [inlineVideo.attachment]
+          embeds: [],
+          files: inlineVideo.files
         });
       } else {
         logger.warn('Video inline upload unavailable', {
           guildId: interaction.guildId,
           userId: interaction.user.id,
-          reason: inlineVideo.reason
+          reason: inlineVideo.failureReason,
+          mediaUrl: result.url
         });
-        const fallbackEmbed = EmbedBuilder.from(embed).addFields({
-          name: 'Video Link',
-          value: result.url
-        });
-
         await interaction.editReply({
-          content: 'Unable to upload video inline. Use the link below to view the result.',
-          embeds: [fallbackEmbed]
+          content:
+            inlineVideo.content || 'Could not upload video inline. Please try again in a moment.',
+          embeds: []
         });
       }
 

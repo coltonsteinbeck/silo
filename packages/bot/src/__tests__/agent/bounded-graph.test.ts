@@ -260,7 +260,47 @@ describe('bounded agent graph', () => {
 
     expect(result.toolsCalled).toEqual(['image_generation']);
     expect(result.mediaResult?.url).toBe('https://cdn.example.com/image.png');
-    expect(result.response.content).toBe('Image generated: https://cdn.example.com/image.png');
+    expect(result.response.content).toBe('Image generated.');
+    expect(result.response.content).not.toContain('http');
+    expect(provider.generateText).not.toHaveBeenCalled();
+  });
+
+  test('returns video media result without exposing provider URL in response content', async () => {
+    const provider = createProvider('should not be used');
+    const executor: AgentToolExecutor = mock(async request => ({
+      name: request.name as 'video_generation',
+      status: 'success' as const,
+      message: 'Video generation completed.',
+      media: {
+        kind: 'video' as const,
+        url: 'https://cdn.example.com/video.mp4',
+        model: 'grok-imagine-video',
+        prompt: 'animate a banner'
+      },
+      raw: {
+        url: 'https://cdn.example.com/video.mp4',
+        model: 'grok-imagine-video'
+      }
+    }));
+
+    const result = await runBoundedAgentGraph(
+      createInput(
+        provider,
+        {
+          intent: 'video_generate',
+          requestedTools: [{ name: 'video_generation', input: { prompt: 'animate a banner' } }],
+          toolExecutor: executor
+        },
+        {
+          hasVideoProvider: true
+        }
+      )
+    );
+
+    expect(result.toolsCalled).toEqual(['video_generation']);
+    expect(result.mediaResult?.url).toBe('https://cdn.example.com/video.mp4');
+    expect(result.response.content).toBe('Video generated.');
+    expect(result.response.content).not.toContain('http');
     expect(provider.generateText).not.toHaveBeenCalled();
   });
 });

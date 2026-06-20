@@ -5,7 +5,7 @@
  * and error handling.
  */
 
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { createMockInteraction, createMockProviderRegistry } from '@silo/core/test-setup';
 import { logger } from '@silo/core';
 import { DrawCommand } from '../../commands/draw';
@@ -15,10 +15,23 @@ describe('DrawCommand', () => {
   let command: DrawCommand;
 
   let mockRegistry: any;
+  const originalFetch = globalThis.fetch;
 
   beforeEach(() => {
+    globalThis.fetch = mock(async () => {
+      return new Response(new Uint8Array([1, 2, 3]), {
+        headers: {
+          'content-type': 'image/png',
+          'content-length': '3'
+        }
+      });
+    }) as unknown as typeof fetch;
     mockRegistry = createMockProviderRegistry();
     command = new DrawCommand(mockRegistry);
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
   });
 
   describe('data', () => {
@@ -302,7 +315,7 @@ describe('DrawCommand', () => {
       expect(replyPayload?.content).toContain('Prompt validation is temporarily unavailable');
     });
 
-    test('includes revised prompt in response when available', async () => {
+    test('delivers generated image as an attachment without prompt metadata or provider URL', async () => {
       const mockProvider = {
         name: 'openai',
         isConfigured: () => true,
@@ -321,12 +334,14 @@ describe('DrawCommand', () => {
 
       await command.execute(interaction as any);
 
-      const reply = interaction._getReplies()[0] as { embeds: any[] };
-      expect(reply.embeds).toBeDefined();
-      expect(reply.embeds[0].data.description).toContain('Enhanced');
+      const reply = interaction._getReplies()[0] as { embeds?: any[]; files?: any[] };
+      expect(reply.embeds).toEqual([]);
+      expect(reply.files).toHaveLength(1);
+      expect(JSON.stringify(reply)).not.toContain('https://example.com/image.png');
+      expect(JSON.stringify(reply)).not.toContain('Enhanced');
     });
 
-    test('neutralizes mass mentions in generated image embed prompt text', async () => {
+    test('does not expose mass mentions or revised prompt text in image response', async () => {
       const mockProvider = {
         name: 'openai',
         isConfigured: () => true,
@@ -345,14 +360,15 @@ describe('DrawCommand', () => {
 
       await command.execute(interaction as any);
 
-      const reply = interaction._getReplies()[0] as { embeds: any[] };
-      const description = reply.embeds[0].data.description as string;
-      expect(description).toContain('Prompt: everyone review this image');
-      expect(description).not.toContain('@everyone');
-      expect(description).not.toContain('@here');
+      const reply = interaction._getReplies()[0] as { embeds?: any[]; files?: any[] };
+      expect(reply.embeds).toEqual([]);
+      expect(reply.files).toHaveLength(1);
+      expect(JSON.stringify(reply)).not.toContain('@everyone');
+      expect(JSON.stringify(reply)).not.toContain('@here');
+      expect(JSON.stringify(reply)).not.toContain('review this image');
     });
 
-    test('shows generic success message when no revised prompt', async () => {
+    test('does not show provider URL when no revised prompt', async () => {
       const mockProvider = {
         name: 'openai',
         isConfigured: () => true,
@@ -370,9 +386,11 @@ describe('DrawCommand', () => {
 
       await command.execute(interaction as any);
 
-      const reply = interaction._getReplies()[0] as { embeds: any[] };
-      expect(reply.embeds).toBeDefined();
-      expect(reply.embeds[0].data.description).toContain('sunset');
+      const reply = interaction._getReplies()[0] as { embeds?: any[]; files?: any[] };
+      expect(reply.embeds).toEqual([]);
+      expect(reply.files).toHaveLength(1);
+      expect(JSON.stringify(reply)).not.toContain('https://example.com/image.png');
+      expect(JSON.stringify(reply)).not.toContain('sunset');
     });
   });
 
@@ -388,8 +406,8 @@ describe('DrawCommand', () => {
 
       const commandAny = command as any;
       commandAny.generateImage = mock(async () => ({
-        embed: { data: { description: 'updated' } },
-        files: []
+        files: [],
+        uploaded: true
       }));
       commandAny.createControls = mock(() => []);
 
