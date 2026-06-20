@@ -190,6 +190,19 @@ describe('conversation-context', () => {
     ).toBe(true);
   });
 
+  test('keeps history for context-dependent follow-ups', () => {
+    for (const latestUserText of ['continue', 'go on', 'do it', 'why', 'what', 'can you']) {
+      expect(isLowContextStandaloneTurn(latestUserText)).toBe(false);
+      expect(
+        shouldIncludeConversationHistoryForPrompt({
+          latestUserText,
+          hasReplyContext: true,
+          hasVisionTargets: false
+        })
+      ).toBe(true);
+    }
+  });
+
   test('buildConversationHistoryInstruction keeps prior topics subtle', () => {
     expect(buildConversationHistoryInstruction(true)).toContain(
       'Use prior channel history quietly'

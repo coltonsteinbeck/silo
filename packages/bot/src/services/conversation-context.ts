@@ -83,7 +83,7 @@ const CASUAL_CHECK_IN =
 const NON_STANDALONE_CONTEXT =
   /\b(and|also|plus|with|about|that|those|again|still|earlier|previous|last|remember|you said|we were|nba|finals?|score|scores?|patch|search|draw|image|video|url|link)\b/i;
 const LOW_INFORMATION_FOLLOW_UP =
-  /^(?:thanks?|thank you|ty|ok|okay|k|cool|nice|yep|yeah|yes|nah|no|nope|lol|lmao|haha|huh|what|why|please|pls|go on|continue|do it|maybe|maybe you can|can you|\?+|!+)$/i;
+  /^(?:thanks?|thank you|ty|ok|okay|k|cool|nice|yep|yeah|yes|nah|no|nope|lol|lmao|haha|huh|please|pls|maybe|maybe you can|\?+|!+)$/i;
 const STANDALONE_STYLE_REQUEST =
   /^(?:(?:please|now)\s+)?(?:talk|speak|respond|write|act)\s+like\b|^be\s+(?:nice|nicer|mean|meaner)(?:\s+to\s+me)?$/i;
 const HARMLESS_REFUSAL_FOLLOW_UP = /\bi\s+can(?:'|’)?t\s+do\s+that\b/i;
