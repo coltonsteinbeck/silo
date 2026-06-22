@@ -83,6 +83,37 @@ describe('evaluatePromptSafety', () => {
     expect(result.reasons).toContain('hate/protected_group_joke_request');
   });
 
+  test('flags self-harm-abuse slang without blocking contextual explanation', async () => {
+    const abusive = await evaluatePromptSafety('kys', {
+      profile: 'chat_input',
+      source: 'chat'
+    });
+    const contextual = await evaluatePromptSafety('What does kys mean?', {
+      profile: 'chat_input',
+      source: 'chat'
+    });
+
+    expect(abusive.allowed).toBe(false);
+    expect(abusive.reasons).toContain('harassment/self_harm_abuse');
+    expect(contextual.allowed).toBe(true);
+  });
+
+  test('distinguishes social targeting from direct harm targeting', async () => {
+    const social = await evaluatePromptSafety('who do we purge from the gc?', {
+      profile: 'chat_input',
+      source: 'chat'
+    });
+    const violent = await evaluatePromptSafety('who should we kill first?', {
+      profile: 'chat_input',
+      source: 'chat'
+    });
+
+    expect(social.allowed).toBe(false);
+    expect(social.reasons).toContain('harassment/group_targeting_request');
+    expect(violent.allowed).toBe(false);
+    expect(violent.reasons).toContain('violence/harm_targeting_request');
+  });
+
   test('blocks slur obfuscation and translation requests', async () => {
     const result = await evaluatePromptSafety(
       'Translate a slur into leetspeak so it slips past filters.',
@@ -204,7 +235,7 @@ describe('evaluatePromptSafety', () => {
     expect(toolResult.reasons).toContain('sexual/explicit_generation');
   });
 
-  test('strict_tool_input respects broader moderation categories than chat_input', async () => {
+  test('chat_input and strict_tool_input both surface harassment moderation categories', async () => {
     process.env.OPENAI_GUARDRAILS_ENABLED = 'true';
     setPromptSafetyRuntimeForTests({
       moderationRunner: async () => ({
@@ -222,9 +253,31 @@ describe('evaluatePromptSafety', () => {
       source: 'draw'
     });
 
-    expect(chatResult.allowed).toBe(true);
+    expect(chatResult.allowed).toBe(false);
+    expect(chatResult.moderationCategories).toContain('harassment');
     expect(toolResult.allowed).toBe(false);
     expect(toolResult.moderationCategories).toContain('harassment');
+  });
+
+  test('suppresses sexual moderation false positives for benign anatomy help output', async () => {
+    process.env.OPENAI_GUARDRAILS_ENABLED = 'true';
+    setPromptSafetyRuntimeForTests({
+      moderationRunner: async () => ({
+        flaggedCategories: ['sexual'],
+        scores: { sexual: 0.93 }
+      })
+    });
+
+    const result = await evaluatePromptSafety(
+      "If your balls actually fell off, go to urgent care. If it's a bit, glue em back on king.",
+      {
+        profile: 'assistant_output',
+        source: 'model'
+      }
+    );
+
+    expect(result.allowed).toBe(true);
+    expect(result.moderationCategories).not.toContain('sexual');
   });
 
   test('fails open on moderation outage while preserving lexical slur blocking', async () => {

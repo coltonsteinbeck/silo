@@ -4,6 +4,10 @@ import { getDefaultAgentGraphLimits } from '../../agent/config';
 import { BOUNDED_FAILURE_CONTENT, runBoundedAgentGraph } from '../../agent/bounded-graph';
 import type { AgentGraphInput, AgentProviderCapabilities } from '../../agent/types';
 import type { AgentToolExecutor } from '../../agent/tool-executor';
+import {
+  resetPromptSafetyRuntimeForTests,
+  setPromptSafetyRuntimeForTests
+} from '../../security/prompt-safety';
 
 function createProvider(content = 'Graph response'): TextProvider {
   return {
@@ -114,6 +118,36 @@ describe('bounded agent graph', () => {
     expect(result.response.content).toBe(
       'Nope. That one trips the wires. Rephrase it less cursed and I can help.'
     );
+  });
+
+  test('allows benign anatomy help output despite broad sexual moderation flag', async () => {
+    const originalGuardrailsEnabled = process.env.OPENAI_GUARDRAILS_ENABLED;
+    process.env.OPENAI_GUARDRAILS_ENABLED = 'true';
+    setPromptSafetyRuntimeForTests({
+      moderationRunner: async () => ({
+        flaggedCategories: ['sexual'],
+        scores: { sexual: 0.92 }
+      })
+    });
+
+    try {
+      const content =
+        "If your balls actually fell off, go to urgent care. If it's a bit, glue em back on king.";
+      const provider = createProvider(content);
+
+      const result = await runBoundedAgentGraph(
+        createInput(provider, {
+          allowMildAssistantProfanity: true
+        })
+      );
+
+      expect(result.outcome).toBe('success');
+      expect(result.safetyState).toBe('allowed');
+      expect(result.response.content).toBe(content);
+    } finally {
+      process.env.OPENAI_GUARDRAILS_ENABLED = originalGuardrailsEnabled;
+      resetPromptSafetyRuntimeForTests();
+    }
   });
 
   test('reports unsupported tools without failing provider generation', async () => {

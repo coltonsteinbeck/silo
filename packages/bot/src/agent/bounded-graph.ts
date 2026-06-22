@@ -11,6 +11,7 @@ import type {
   AgentToolRequest
 } from './types';
 import { executeBoundedToolPlan, resolveAllowedAgentTools } from './tool-registry';
+import { evaluateModerationDecision } from '../security/content-sanitizer';
 import { evaluatePromptSafety } from '../security/prompt-safety';
 import { sanitizeAssistantOutput, sanitizeDiscordMassMentions } from '../security/output-sanitizer';
 import {
@@ -44,6 +45,7 @@ const AgentGraphAnnotation = Annotation.Root({
   clarificationReason: Annotation<string | undefined>,
   falsePositiveGuard: Annotation<string | undefined>,
   outputBlockedMessage: Annotation<string | undefined>,
+  allowMildAssistantProfanity: Annotation<boolean | undefined>,
   metadata: Annotation<LangfuseMetadataInput>,
   graphStep: Annotation<number>({
     reducer: (_current, update) => update,
@@ -79,6 +81,10 @@ type StateUpdate = Partial<State>;
 
 function nextStep(state: Pick<State, 'graphStep'>): number {
   return state.graphStep + 1;
+}
+
+function unique<T>(values: T[]): T[] {
+  return Array.from(new Set(values));
 }
 
 function buildToolBudget(limits: AgentGraphLimits): Record<string, number> {
@@ -521,7 +527,19 @@ async function outputSafetyNode(state: State): Promise<StateUpdate> {
         profile: 'assistant_output',
         source: 'agent_output_safety'
       });
-      const blocked = !safetyResult.allowed;
+      const safetyCategories = unique([
+        ...safetyResult.reasons,
+        ...safetyResult.moderationCategories
+      ]);
+      const safetyScores = {
+        ...Object.fromEntries(safetyResult.reasons.map(reason => [reason, 1])),
+        ...safetyResult.moderationScores
+      };
+      const decision = evaluateModerationDecision(safetyCategories, safetyScores, {
+        allowMildProfanityInput: state.allowMildAssistantProfanity,
+        content: sanitizedContent
+      });
+      const blocked = decision.action === 'blocked';
       const repaired = sanitizedContent !== response.content || blocked;
       const safetyState: AgentSafetyState = blocked
         ? 'output_blocked'
@@ -546,8 +564,10 @@ async function outputSafetyNode(state: State): Promise<StateUpdate> {
         output: {
           repaired,
           blocked,
+          action: decision.action,
+          guardrailsAllowed: safetyResult.allowed,
           safetyState,
-          categories: [...safetyResult.reasons, ...safetyResult.moderationCategories]
+          categories: safetyCategories
         },
         metadata: buildNodeMetadata(state, 'output_safety', { safetyState, outcome })
       });
