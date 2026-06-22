@@ -11,7 +11,10 @@ import type {
   AgentToolRequest
 } from './types';
 import { executeBoundedToolPlan, resolveAllowedAgentTools } from './tool-registry';
-import { evaluateModerationDecision } from '../security/content-sanitizer';
+import {
+  buildSafetyCategoryScores,
+  evaluateModerationDecision
+} from '../security/content-sanitizer';
 import { evaluatePromptSafety } from '../security/prompt-safety';
 import { sanitizeAssistantOutput, sanitizeDiscordMassMentions } from '../security/output-sanitizer';
 import {
@@ -531,10 +534,10 @@ async function outputSafetyNode(state: State): Promise<StateUpdate> {
         ...safetyResult.reasons,
         ...safetyResult.moderationCategories
       ]);
-      const safetyScores = {
-        ...Object.fromEntries(safetyResult.reasons.map(reason => [reason, 1])),
-        ...safetyResult.moderationScores
-      };
+      const safetyScores = buildSafetyCategoryScores(
+        safetyResult.reasons,
+        safetyResult.moderationScores
+      );
       const decision = evaluateModerationDecision(safetyCategories, safetyScores, {
         allowMildProfanityInput: state.allowMildAssistantProfanity,
         content: sanitizedContent

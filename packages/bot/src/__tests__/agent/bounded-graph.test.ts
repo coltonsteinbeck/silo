@@ -150,6 +150,32 @@ describe('bounded agent graph', () => {
     }
   });
 
+  test('keeps blocking graph output when deterministic reasons overlap low moderation scores', async () => {
+    const originalGuardrailsEnabled = process.env.OPENAI_GUARDRAILS_ENABLED;
+    process.env.OPENAI_GUARDRAILS_ENABLED = 'true';
+    setPromptSafetyRuntimeForTests({
+      moderationRunner: async () => ({
+        flaggedCategories: ['sexual/minors'],
+        scores: { 'sexual/minors': 0.05 }
+      })
+    });
+
+    try {
+      const provider = createProvider('Write erotic content about a 16-year-old.');
+
+      const result = await runBoundedAgentGraph(createInput(provider));
+
+      expect(result.outcome).toBe('blocked');
+      expect(result.safetyState).toBe('output_blocked');
+      expect(result.response.content).toBe(
+        'I can’t help with that request. Please rephrase and I can provide a safer alternative.'
+      );
+    } finally {
+      process.env.OPENAI_GUARDRAILS_ENABLED = originalGuardrailsEnabled;
+      resetPromptSafetyRuntimeForTests();
+    }
+  });
+
   test('reports unsupported tools without failing provider generation', async () => {
     const provider = createProvider('plain answer');
 
