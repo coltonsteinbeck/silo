@@ -1,9 +1,21 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
 import {
+  contentSanitizer,
   detectDeterministicIllicitContent,
   detectSafeReplyDirective,
   evaluateModerationDecision
 } from '../../security/content-sanitizer';
+import {
+  resetPromptSafetyRuntimeForTests,
+  setPromptSafetyRuntimeForTests
+} from '../../security/prompt-safety';
+
+const originalGuardrailsEnabled = process.env.OPENAI_GUARDRAILS_ENABLED;
+
+afterEach(() => {
+  process.env.OPENAI_GUARDRAILS_ENABLED = originalGuardrailsEnabled;
+  resetPromptSafetyRuntimeForTests();
+});
 
 describe('evaluateModerationDecision profanity policy', () => {
   test('downgrades mild profanity harassment block when edgy mode is enabled', () => {
@@ -226,5 +238,31 @@ describe('evaluateModerationDecision profanity policy', () => {
     expect(decision.allowed).toBe(true);
     expect(decision.action).toBe('warned');
     expect(decision.responseDirective).toBe('safe_rewrite');
+  });
+
+  test('does not downgrade assistant output self-harm abuse into de-escalation mode', async () => {
+    process.env.OPENAI_GUARDRAILS_ENABLED = 'true';
+    contentSanitizer.init({
+      query: async () => ({ rows: [] })
+    } as any);
+    setPromptSafetyRuntimeForTests({
+      moderationRunner: async () => ({
+        flaggedCategories: ['harassment'],
+        scores: { harassment: 0.91 }
+      })
+    });
+
+    const result = await contentSanitizer.moderateContent(
+      'kill yourself',
+      'guild-1',
+      'user-1',
+      'message',
+      { profile: 'assistant_output' }
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.action).toBe('blocked');
+    expect(result.flaggedCategories).toContain('harassment/self_harm_abuse');
+    expect(result.responseDirective).toBeUndefined();
   });
 });
