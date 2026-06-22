@@ -876,7 +876,9 @@ class ContentSanitizer {
     const contentHash = this.hashContent(content);
     const failClosedOnError = options.failClosedOnError ?? false;
     const responseDirective =
-      options.profile === 'assistant_output' ? null : detectSafeReplyDirective(content, contentType);
+      options.profile === 'assistant_output'
+        ? null
+        : detectSafeReplyDirective(content, contentType);
 
     if (options.profile) {
       const safetyResult = await evaluatePromptSafety(content, {
@@ -887,10 +889,7 @@ class ContentSanitizer {
       const flaggedCategories = Array.from(
         new Set([...safetyResult.reasons, ...safetyResult.moderationCategories])
       );
-      const scores = buildSafetyCategoryScores(
-        safetyResult.reasons,
-        safetyResult.moderationScores
-      );
+      const scores = buildSafetyCategoryScores(safetyResult.reasons, safetyResult.moderationScores);
       const decision = evaluateModerationDecision(flaggedCategories, scores, {
         allowMildProfanityInput: options.allowMildProfanityInput,
         content,
