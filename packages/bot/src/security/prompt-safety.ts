@@ -232,8 +232,33 @@ const ASSISTANT_SEXUAL_VIOLENCE_CONTEXT_PATTERN =
 const SELF_HARM_ABUSE_DIRECTIVE_PATTERN =
   /\b(?:k\s*y\s*s|kill\s+yourself|end\s+yourself|unalive\s+yourself|go\s+die)\b/i;
 
-const DIRECT_HARM_TARGETING_REQUEST_PATTERN =
-  /\b(?:who|which\s+(?:person|people|friend|member|user|target))\s+(?:do|should|can)\s+(?:i|we)\s+(?:kill|hurt|attack|stab|shoot|beat|murder|assault)\b|\b(?:pick|choose|name|tell\s+me)\s+(?:someone|a\s+person|the\s+person|who)\b[\s\S]{0,60}\b(?:kill|hurt|attack|stab|shoot|beat|murder|assault)\b|\bhow\s+(?:do|can|should)\s+(?:i|we)\s+(?:kill|hurt|attack|stab|shoot|beat|murder|assault)\b/i;
+const DIRECT_HARM_ANIMATE_TARGET_PATTERN = [
+  'someone',
+  'somebody',
+  'anyone',
+  'anybody',
+  'a\\s+person',
+  'the\\s+person',
+  'people',
+  'a\\s+friend',
+  'a\\s+member',
+  'a\\s+user',
+  'a\\s+target',
+  'him',
+  'her',
+  'them',
+  'my\\s+(?:friend|neighbor|roommate|coworker|boss|teacher|classmate|partner|wife|husband|boyfriend|girlfriend|ex|enemy|rival)',
+  'the\\s+(?:friend|member|user|target|person|people|guy|girl|neighbor|roommate|coworker|boss|teacher|classmate|partner|enemy|rival)'
+].join('|');
+
+const DIRECT_HARM_TARGETING_REQUEST_PATTERN = new RegExp(
+  [
+    '\\b(?:who|which\\s+(?:person|people|friend|member|user|target))\\s+(?:do|should|can)\\s+(?:i|we)\\s+(?:kill|hurt|attack|stab|shoot|beat|murder|assault)\\b',
+    '\\b(?:pick|choose|name|tell\\s+me)\\s+(?:someone|a\\s+person|the\\s+person|who)\\b[\\s\\S]{0,60}\\b(?:kill|hurt|attack|stab|shoot|beat|murder|assault)\\b',
+    `\\bhow\\s+(?:do|can|should)\\s+(?:i|we)\\s+(?:kill|hurt|attack|stab|shoot|beat|murder|assault)\\s+(?:${DIRECT_HARM_ANIMATE_TARGET_PATTERN})\\b`
+  ].join('|'),
+  'i'
+);
 
 const SOCIAL_GROUP_TARGETING_REQUEST_PATTERN =
   /\bwho\s+(?:do|should|can)\s+(?:i|we)\s+(?:purge|remove|ban|kick)\s+from\s+(?:the\s+)?(?:gc|group\s+chat|server|discord|chat)\b|\b(?:purge|remove|ban|kick)\s+(?:someone|a\s+member|a\s+user|people)\s+from\s+(?:the\s+)?(?:gc|group\s+chat|server|discord|chat)\b/i;
