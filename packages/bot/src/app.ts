@@ -958,6 +958,7 @@ export async function startBot(): Promise<void> {
           ]);
           const { serverConfig, systemPrompt: systemPromptResult } = runtimeConfig;
           const managedPersona = resolveManagedGuildPersonaPolicy(guildId);
+          const managedAllowMildProfanity = Boolean(managedPersona?.allowMildAssistantProfanity);
 
           const moderationResult = await withLangfuseGuardrail(
             {
@@ -977,7 +978,10 @@ export async function startBot(): Promise<void> {
                 userContent,
                 guildId,
                 message.author.id,
-                'message'
+                'message',
+                {
+                  allowMildProfanityInput: managedAllowMildProfanity
+                }
               );
 
               guardrail?.update({
@@ -1245,7 +1249,7 @@ export async function startBot(): Promise<void> {
             ? ''
             : '\n\nFormatting rule: Use plain text by default. Avoid markdown styling (bold/italics/lists) and avoid emojis unless the user explicitly asks for them.';
           const sentimentStyleInstruction = buildSentimentStyleInstruction(promptSentiment);
-          const allowMildAssistantProfanity = Boolean(managedPersona?.allowMildAssistantProfanity);
+          const allowMildAssistantProfanity = managedAllowMildProfanity;
 
           const promptHash = promptPolicy.promptHash;
           const hasConfiguredGuildPrompt = Boolean(
@@ -1746,6 +1750,7 @@ export async function startBot(): Promise<void> {
                     : intentRouting.clarificationReason,
                   falsePositiveGuard: intentRouting.falsePositiveGuard,
                   outputBlockedMessage: managedPersona?.assistantOutputBlockedMessage,
+                  allowMildAssistantProfanity,
                   requestedTools,
                   toolExecutor: quotaAwareToolExecutor,
                   metadata: {
@@ -1858,7 +1863,8 @@ export async function startBot(): Promise<void> {
                 'message',
                 {
                   profile: 'assistant_output',
-                  source: 'chat_output'
+                  source: 'chat_output',
+                  allowMildProfanityInput: allowMildAssistantProfanity
                 }
               );
               const outputGuardrailsDecision = assistantModeration.allowed
@@ -2044,10 +2050,15 @@ export async function startBot(): Promise<void> {
           });
 
           const outputWasReplaced = responseContent !== response.content;
+          const traceOutcome = outputBlockedBySafety
+            ? 'output_blocked'
+            : activeGraphResult.current?.safetyState === 'output_blocked'
+              ? 'graph_output_blocked'
+              : 'success';
 
           messageTrace?.update({
             output: {
-              outcome: 'success',
+              outcome: traceOutcome,
               responsePreview: summarizeTextForTrace(responseContent),
               responseCharacters: responseContent.length,
               moderationAction: assistantModeration.action,

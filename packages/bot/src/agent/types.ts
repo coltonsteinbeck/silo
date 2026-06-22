@@ -65,6 +65,7 @@ export interface AgentGraphInput {
   clarificationReason?: string;
   falsePositiveGuard?: string;
   outputBlockedMessage?: string;
+  allowMildAssistantProfanity?: boolean;
   requestedTools?: AgentToolRequest[];
   toolExecutor?: AgentToolExecutor;
   metadata: LangfuseMetadataInput;

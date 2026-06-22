@@ -57,7 +57,15 @@ type PromptSafetyModerationRunner = (
 >;
 
 const PROFILE_MODERATION_CATEGORIES: Record<GuardrailProfile, readonly string[]> = {
-  chat_input: ['hate', 'hate/threatening', 'sexual/minors'],
+  chat_input: [
+    'hate',
+    'hate/threatening',
+    'harassment',
+    'harassment/threatening',
+    'violence',
+    'violence/graphic',
+    'sexual/minors'
+  ],
   chat_output: ['hate', 'hate/threatening', 'sexual/minors'],
   assistant_output: [
     'sexual',
@@ -221,6 +229,18 @@ const ASSISTANT_EXPLICIT_SEXUAL_OUTPUT_PATTERN =
 const ASSISTANT_SEXUAL_VIOLENCE_CONTEXT_PATTERN =
   /\b(?:corpse|corpses|morgue|crematorium|flatline|bleeding\s+out|dead|gag|chok(?:e|ing)|scalpel|blade|bone\s+saw|carve|impaled)\b/i;
 
+const SELF_HARM_ABUSE_DIRECTIVE_PATTERN =
+  /\b(?:k\s*y\s*s|kill\s+yourself|end\s+yourself|unalive\s+yourself|go\s+die)\b/i;
+
+const DIRECT_HARM_TARGETING_REQUEST_PATTERN =
+  /\b(?:who|which\s+(?:person|people|friend|member|user|target))\s+(?:do|should|can)\s+(?:i|we)\s+(?:kill|hurt|attack|stab|shoot|beat|murder|assault)\b|\b(?:pick|choose|name|tell\s+me)\s+(?:someone|a\s+person|the\s+person|who)\b[\s\S]{0,60}\b(?:kill|hurt|attack|stab|shoot|beat|murder|assault)\b|\bhow\s+(?:do|can|should)\s+(?:i|we)\s+(?:kill|hurt|attack|stab|shoot|beat|murder|assault)\b/i;
+
+const SOCIAL_GROUP_TARGETING_REQUEST_PATTERN =
+  /\bwho\s+(?:do|should|can)\s+(?:i|we)\s+(?:purge|remove|ban|kick)\s+from\s+(?:the\s+)?(?:gc|group\s+chat|server|discord|chat)\b|\b(?:purge|remove|ban|kick)\s+(?:someone|a\s+member|a\s+user|people)\s+from\s+(?:the\s+)?(?:gc|group\s+chat|server|discord|chat)\b/i;
+
+const BENIGN_SEXUAL_ANATOMY_CONTEXT_PATTERN =
+  /\b(?:balls?|testicles?|genitalia|penis|prostate)\b[\s\S]{0,100}\b(?:help|fell\s+off|hurt|pain|doctor|medical|urgent|emergency|clinic|glue|back\s+on|screening|question)\b|\b(?:help|fell\s+off|hurt|pain|doctor|medical|urgent|emergency|clinic|glue|back\s+on|screening|question)\b[\s\S]{0,100}\b(?:balls?|testicles?|genitalia|penis|prostate)\b/i;
+
 const ILLICIT_DRUG_TOPIC_PATTERN =
   /\b(cocaine|meth(?:amphetamine)?|heroin|fentanyl|mdma|ecstasy|lsd|acid|crack|opioids?|molly)\b/i;
 
@@ -366,6 +386,46 @@ function canTreatSlurUseAsContext(content: string, signals: IntentSignals): bool
   return signals.analysisOrSupport || signals.quotedOrReportedContext || /\bslur\b/i.test(content);
 }
 
+function canTreatHarmfulPhraseAsContext(signals: IntentSignals): boolean {
+  return signals.analysisOrSupport || signals.quotedOrReportedContext || signals.safeRewrite;
+}
+
+export function detectSelfHarmAbuseDirective(content: string): boolean {
+  const trimmed = content.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  const signals = collectIntentSignals(trimmed);
+  return (
+    SELF_HARM_ABUSE_DIRECTIVE_PATTERN.test(trimmed) && !canTreatHarmfulPhraseAsContext(signals)
+  );
+}
+
+export function detectDirectHarmTargetingRequest(content: string): boolean {
+  const trimmed = content.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  const signals = collectIntentSignals(trimmed);
+  return (
+    DIRECT_HARM_TARGETING_REQUEST_PATTERN.test(trimmed) && !canTreatHarmfulPhraseAsContext(signals)
+  );
+}
+
+export function detectSocialGroupTargetingRequest(content: string): boolean {
+  const trimmed = content.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  const signals = collectIntentSignals(trimmed);
+  return (
+    SOCIAL_GROUP_TARGETING_REQUEST_PATTERN.test(trimmed) && !canTreatHarmfulPhraseAsContext(signals)
+  );
+}
+
 function detectLexicalSlurMatches(content: string): string[] {
   const visibleMatches = extractVisibleTokens(content)
     .map(token => normalizeTokenForEvasionDetection(token))
@@ -445,6 +505,36 @@ function detectAssistantOutputReasons(content: string): string[] {
   }
 
   return reasons;
+}
+
+function hasBenignSexualAnatomyContext(content: string): boolean {
+  return (
+    BENIGN_SEXUAL_ANATOMY_CONTEXT_PATTERN.test(content) &&
+    !EXPLICIT_SEX_TOPIC_PATTERN.test(content) &&
+    !EXPLICIT_SEX_INTENT_PATTERN.test(content) &&
+    !SEXUAL_MINORS_PATTERN.test(content)
+  );
+}
+
+function shouldSuppressModerationCategory(params: {
+  category: string;
+  content: string;
+  profile: GuardrailProfile;
+  strictToolReasons: string[];
+  assistantOutputReasons: string[];
+  sexualMinorsReason: string[];
+}): boolean {
+  if (params.category !== 'sexual' || params.profile === 'strict_tool_input') {
+    return false;
+  }
+
+  const hasDeterministicSexualReason = [
+    ...params.strictToolReasons,
+    ...params.assistantOutputReasons,
+    ...params.sexualMinorsReason
+  ].some(reason => reason.startsWith('sexual/'));
+
+  return !hasDeterministicSexualReason && hasBenignSexualAnatomyContext(params.content);
 }
 
 async function runModeration(input: string): Promise<{
@@ -564,6 +654,18 @@ export async function evaluatePromptSafety(
   const assistantOutputReasons =
     options.profile === 'assistant_output' ? detectAssistantOutputReasons(trimmed) : [];
   const sexualMinorsReason = SEXUAL_MINORS_PATTERN.test(trimmed) ? ['sexual/minors'] : [];
+  const selfHarmAbuseReason = detectSelfHarmAbuseDirective(trimmed)
+    ? ['harassment/self_harm_abuse']
+    : [];
+  const directHarmTargetingReason = detectDirectHarmTargetingRequest(trimmed)
+    ? ['violence/harm_targeting_request']
+    : [];
+  const socialGroupTargetingReason =
+    options.profile === 'chat_input' || options.profile === 'strict_tool_input'
+      ? detectSocialGroupTargetingRequest(trimmed)
+        ? ['harassment/group_targeting_request']
+        : []
+      : [];
   const allowContextualSlurUse =
     options.profile !== 'chat_output' && canTreatSlurUseAsContext(trimmed, signals);
 
@@ -584,7 +686,10 @@ export async function evaluatePromptSafety(
     ...protectedGroupReasons,
     ...sexualMinorsReason,
     ...strictToolReasons,
-    ...assistantOutputReasons
+    ...assistantOutputReasons,
+    ...selfHarmAbuseReason,
+    ...directHarmTargetingReason,
+    ...socialGroupTargetingReason
   );
 
   if (jailbreakMatches.length > 0) {
@@ -592,8 +697,17 @@ export async function evaluatePromptSafety(
   }
 
   const moderation = await runModeration(trimmed);
-  const moderationCategories = moderation.flaggedCategories.filter(category =>
-    PROFILE_MODERATION_CATEGORIES[options.profile].includes(category)
+  const moderationCategories = moderation.flaggedCategories.filter(
+    category =>
+      PROFILE_MODERATION_CATEGORIES[options.profile].includes(category) &&
+      !shouldSuppressModerationCategory({
+        category,
+        content: trimmed,
+        profile: options.profile,
+        strictToolReasons,
+        assistantOutputReasons,
+        sexualMinorsReason
+      })
   );
   const moderationScores = Object.fromEntries(
     moderationCategories.map(category => [category, moderation.scores[category] || 1])
@@ -605,6 +719,9 @@ export async function evaluatePromptSafety(
     ...strictToolReasons,
     ...assistantOutputReasons,
     ...sexualMinorsReason,
+    ...selfHarmAbuseReason,
+    ...directHarmTargetingReason,
+    ...socialGroupTargetingReason,
     ...(directSlurRequest ? ['slur_generation_request'] : [])
   ]);
   const allReasons = unique(reasons);
@@ -666,6 +783,18 @@ export function buildPromptSafetyWarningMessage(result: {
     reasons.includes('hate/protected_group_joke_request')
   ) {
     return '⚠️ I can’t help create insults or jokes targeting a protected group.';
+  }
+
+  if (reasons.includes('harassment/self_harm_abuse')) {
+    return '⚠️ I can’t help send self-harm insults. I can help you respond without escalating.';
+  }
+
+  if (reasons.includes('violence/harm_targeting_request')) {
+    return '⚠️ I can’t help choose targets or encourage harm. I can help de-escalate instead.';
+  }
+
+  if (reasons.includes('harassment/group_targeting_request')) {
+    return '⚠️ I can’t help pick someone to target or remove. I can help set fair ground rules instead.';
   }
 
   if (
