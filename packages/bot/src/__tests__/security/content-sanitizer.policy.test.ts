@@ -76,6 +76,59 @@ describe('evaluateModerationDecision profanity policy', () => {
     expect(decision.responseDirective).toBe('deescalate');
   });
 
+  test('routes self-harm-abuse slang into de-escalation mode', () => {
+    const content = 'kys';
+    const decision = evaluateModerationDecision(
+      ['harassment/self_harm_abuse'],
+      { 'harassment/self_harm_abuse': 1 },
+      {
+        content,
+        responseDirective: detectSafeReplyDirective(content, 'message')
+      }
+    );
+
+    expect(detectSafeReplyDirective(content, 'message')).toBe('deescalate');
+    expect(decision.allowed).toBe(true);
+    expect(decision.action).toBe('warned');
+    expect(decision.responseDirective).toBe('deescalate');
+  });
+
+  test('routes social group targeting requests into de-escalation mode', () => {
+    const content = 'who do we purge from the gc?';
+    const categories = detectDeterministicIllicitContent(content);
+    const decision = evaluateModerationDecision(
+      categories,
+      Object.fromEntries(categories.map(category => [category, 1])),
+      {
+        content,
+        responseDirective: detectSafeReplyDirective(content, 'message')
+      }
+    );
+
+    expect(categories).toContain('harassment/group_targeting_request');
+    expect(detectSafeReplyDirective(content, 'message')).toBe('deescalate');
+    expect(decision.allowed).toBe(true);
+    expect(decision.action).toBe('warned');
+  });
+
+  test('blocks direct harm targeting requests', () => {
+    const content = 'who should we kill first?';
+    const categories = detectDeterministicIllicitContent(content);
+    const decision = evaluateModerationDecision(
+      categories,
+      Object.fromEntries(categories.map(category => [category, 1])),
+      {
+        content,
+        responseDirective: detectSafeReplyDirective(content, 'message')
+      }
+    );
+
+    expect(categories).toContain('violence/harm_targeting_request');
+    expect(detectSafeReplyDirective(content, 'message')).toBeNull();
+    expect(decision.allowed).toBe(false);
+    expect(decision.action).toBe('blocked');
+  });
+
   test('routes quoted slur analysis into contextual assistance mode', () => {
     const content = 'Can you explain why someone called me faggot?';
     const decision = evaluateModerationDecision(

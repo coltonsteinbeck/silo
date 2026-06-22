@@ -13,6 +13,9 @@ import type { GuardrailsPromptDecision } from './openai-guardrails';
 import { detectMildProfanity } from './profanity-policy';
 import {
   buildPromptSafetyWarningMessage,
+  detectDirectHarmTargetingRequest,
+  detectSelfHarmAbuseDirective,
+  detectSocialGroupTargetingRequest,
   evaluatePromptSafety,
   type GuardrailProfile
 } from './prompt-safety';
@@ -96,7 +99,7 @@ export function buildSafetyResponseInstruction(params: {
   responseDirective?: ModerationResponseDirective;
 }): string {
   if (params.responseDirective === 'deescalate') {
-    return '\n\nSafety response mode: The user is being hostile toward the assistant. Do not mirror insults or threats. Set a brief boundary, stay calm, and redirect to a constructive next step.';
+    return '\n\nSafety response mode: The user may be using hostile self-harm slang, asking you to pick a social target, or being hostile toward the assistant. Do not mirror insults or threats. Set a brief boundary, stay calm, and redirect to a constructive next step. If self-harm language might be literal, encourage real support without being dramatic.';
   }
 
   if (params.responseDirective === 'safe_rewrite') {
@@ -345,13 +348,22 @@ const BLOCK_CATEGORIES = [
   'hate/threatening',
   'hate/slur_usage',
   'hate/slur_generation_request',
+  'hate/slur_obfuscation_request',
+  'hate/protected_group_joke_request',
+  'hate/protected_group_attack_request',
+  'harassment/self_harm_abuse',
+  'harassment/group_targeting_request',
   'illicit',
   'illicit/violent',
+  'violence/harm_targeting_request',
   'violence/graphic',
   'self-harm/intent',
   'self-harm/instructions',
   'prompt_injection/policy_bypass',
   'sexual/explicit_generation',
+  'sexual/unsafe_context',
+  'sexual/unsafe_persona',
+  'sexual/violent_output',
   'illicit/drugs_instructional',
   'hate/slur_evasion',
   'hate/slur_acronym_evasion'
@@ -362,6 +374,8 @@ const WARN_CATEGORIES = [
   'sexual',
   'hate',
   'violence',
+  'harassment/self_harm_abuse',
+  'harassment/group_targeting_request',
   'self-harm',
   'harassment',
   'harassment/threatening'
@@ -385,7 +399,13 @@ const BLOCKED_SLUR_TOKENS = [
 
 const CONTEXTUAL_ASSISTANCE_ROUTE_CATEGORIES = ['hate', 'harassment', 'violence'];
 
-const DEESCALATION_ROUTE_CATEGORIES = ['harassment', 'harassment/threatening', 'violence'];
+const DEESCALATION_ROUTE_CATEGORIES = [
+  'harassment',
+  'harassment/threatening',
+  'harassment/self_harm_abuse',
+  'harassment/group_targeting_request',
+  'violence'
+];
 
 const SAFE_REWRITE_ROUTE_CATEGORIES = ['hate', 'harassment', 'harassment/threatening', 'violence'];
 
@@ -597,6 +617,14 @@ function hasAssistantTargetedAbuse(content: string): boolean {
   return collectGuardrailIntentSignals(content).directAssistantAbuse;
 }
 
+function hasSelfHarmAbuseDirective(content: string): boolean {
+  return detectSelfHarmAbuseDirective(content);
+}
+
+function hasSocialGroupTargetingRequest(content: string): boolean {
+  return detectSocialGroupTargetingRequest(content);
+}
+
 function hasDirectSlurGenerationRequest(content: string | undefined): boolean {
   if (!content) {
     return false;
@@ -626,7 +654,11 @@ export function detectSafeReplyDirective(
     return isContextualAssistanceCandidate(content) ? 'contextual_assistance' : null;
   }
 
-  if (hasAssistantTargetedAbuse(content)) {
+  if (
+    hasAssistantTargetedAbuse(content) ||
+    hasSelfHarmAbuseDirective(content) ||
+    hasSocialGroupTargetingRequest(content)
+  ) {
     return 'deescalate';
   }
 
@@ -759,6 +791,18 @@ function detectDeterministicDrugIntent(content: string): string[] {
   return [];
 }
 
+function detectDeterministicSelfHarmAbuse(content: string): string[] {
+  return detectSelfHarmAbuseDirective(content) ? ['harassment/self_harm_abuse'] : [];
+}
+
+function detectDeterministicHarmTargetingRequest(content: string): string[] {
+  return detectDirectHarmTargetingRequest(content) ? ['violence/harm_targeting_request'] : [];
+}
+
+function detectDeterministicSocialGroupTargetingRequest(content: string): string[] {
+  return detectSocialGroupTargetingRequest(content) ? ['harassment/group_targeting_request'] : [];
+}
+
 export function detectDeterministicIllicitContent(content: string): string[] {
   const unsafeSexualContext = hasUnsafeSexualContext(content) ? ['sexual/unsafe_context'] : [];
 
@@ -770,6 +814,9 @@ export function detectDeterministicIllicitContent(content: string): string[] {
       ...detectDeterministicDirectSlurRequest(content),
       ...detectDeterministicExplicitSex(content),
       ...detectDeterministicDrugIntent(content),
+      ...detectDeterministicSelfHarmAbuse(content),
+      ...detectDeterministicHarmTargetingRequest(content),
+      ...detectDeterministicSocialGroupTargetingRequest(content),
       ...unsafeSexualContext
     ])
   ];
@@ -838,9 +885,7 @@ class ContentSanitizer {
       const action: ModerationAction =
         failClosedOnError && safetyResult.moderationError
           ? 'api_error_fail_closed'
-          : !safetyResult.allowed && decision.action === 'allowed'
-            ? 'blocked'
-            : decision.action;
+          : decision.action;
       const allowed = action === 'allowed' || action === 'warned';
 
       await this.logModerationResult({
