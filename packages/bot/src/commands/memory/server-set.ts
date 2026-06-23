@@ -9,6 +9,12 @@ import {
   hasPromptInjectionPattern
 } from '../../security/content-sanitizer';
 import { sentimentClassifier, shouldApplySentiment } from '../../security/sentiment-classifier';
+import {
+  summarizeTextForTrace,
+  withLangfuseGuardrail,
+  withLangfuseSpan
+} from '../../telemetry/langfuse-client';
+import { buildLangfuseTraceMetadata } from '../../telemetry/langfuse-metadata';
 
 function extractLoreEntities(content: string): string[] {
   const matches = content.match(/\b[A-Z][A-Za-z0-9_-]{2,}\b/g) || [];
@@ -114,27 +120,92 @@ export class ServerMemorySetCommand implements Command {
     const content = interaction.options.getString('content', true);
     const contextType = interaction.options.getString('type', true);
     const expiresInHours = interaction.options.getInteger('expires-in-hours');
+    const traceMetadata = buildLangfuseTraceMetadata({
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      interactionId: interaction.id,
+      messageType: 'slash-command',
+      commandName: 'server-memory-set'
+    });
 
-    if (serverMemorySetInternals.hasPromptInjectionPattern(content)) {
-      await interaction.editReply(
-        'Memory looks like instruction override text. Please store factual context instead of control instructions.'
-      );
-      return;
-    }
+    const guardrailDecision = await withLangfuseGuardrail(
+      {
+        name: 'server-memory-set.input-guardrail',
+        input: {
+          scope: 'server',
+          contextType,
+          expiresInHours: expiresInHours ?? undefined,
+          contentPreview: summarizeTextForTrace(content)
+        },
+        metadata: {
+          ...traceMetadata,
+          memoryScope: 'server'
+        }
+      },
+      async guardrail => {
+        if (serverMemorySetInternals.hasPromptInjectionPattern(content)) {
+          guardrail?.update({
+            output: {
+              allowed: false,
+              action: 'blocked',
+              reason: 'prompt_injection'
+            }
+          });
+          return {
+            allowed: false,
+            reply:
+              'Memory looks like instruction override text. Please store factual context instead of control instructions.'
+          };
+        }
 
-    const deterministicViolations =
-      serverMemorySetInternals.detectDeterministicIllicitContent(content);
-    if (deterministicViolations.length > 0) {
-      await interaction.editReply(
-        'Memory was rejected by safety policy. Please remove unsafe content and try again.'
-      );
-      return;
-    }
+        const deterministicViolations =
+          serverMemorySetInternals.detectDeterministicIllicitContent(content);
+        if (deterministicViolations.length > 0) {
+          guardrail?.update({
+            output: {
+              allowed: false,
+              action: 'blocked',
+              reason: 'deterministic_illicit_content',
+              categories: deterministicViolations
+            }
+          });
+          return {
+            allowed: false,
+            reply:
+              'Memory was rejected by safety policy. Please remove unsafe content and try again.'
+          };
+        }
 
-    if (serverMemorySetInternals.hasUnsafeSexualContext(content)) {
-      await interaction.editReply(
-        'Memory was rejected by safety policy. Please remove unsafe sexual content and try again.'
-      );
+        if (serverMemorySetInternals.hasUnsafeSexualContext(content)) {
+          guardrail?.update({
+            output: {
+              allowed: false,
+              action: 'blocked',
+              reason: 'unsafe_sexual_content'
+            }
+          });
+          return {
+            allowed: false,
+            reply:
+              'Memory was rejected by safety policy. Please remove unsafe sexual content and try again.'
+          };
+        }
+
+        guardrail?.update({
+          output: {
+            allowed: true,
+            action: 'allowed'
+          }
+        });
+        return {
+          allowed: true,
+          reply: ''
+        };
+      }
+    );
+
+    if (!guardrailDecision.allowed) {
+      await interaction.editReply(guardrailDecision.reply);
       return;
     }
 
@@ -173,19 +244,59 @@ export class ServerMemorySetCommand implements Command {
     };
 
     // Generate embedding for semantic search if RAG is enabled
-    let embedding: number[] | undefined;
-    try {
-      if (this.registry) {
-        const embeddingProvider = this.registry.getEmbeddingProvider();
-        const embeddings = await embeddingProvider.generateEmbeddings([content]);
-        if (embeddings && embeddings.length > 0 && embeddings[0]) {
-          embedding = embeddings[0];
+    const embedding = await withLangfuseSpan(
+      {
+        name: 'server-memory-set.embedding-generation',
+        input: {
+          scope: 'server',
+          contextType,
+          contentPreview: summarizeTextForTrace(content)
+        },
+        metadata: {
+          ...traceMetadata,
+          memoryScope: 'server'
+        }
+      },
+      async observation => {
+        if (!this.registry) {
+          observation?.update({
+            output: {
+              generated: false,
+              reason: 'provider_registry_unavailable'
+            }
+          });
+          return undefined;
+        }
+
+        try {
+          const embeddingProvider = this.registry.getEmbeddingProvider();
+          const embeddings = await embeddingProvider.generateEmbeddings([content]);
+          const generatedEmbedding =
+            embeddings && embeddings.length > 0 && embeddings[0] ? embeddings[0] : undefined;
+
+          observation?.update({
+            output: {
+              generated: Boolean(generatedEmbedding),
+              vectorLength: generatedEmbedding?.length ?? 0
+            }
+          });
+
+          return generatedEmbedding;
+        } catch (error) {
+          observation?.update({
+            level: 'WARNING',
+            statusMessage: error instanceof Error ? error.message : 'Unknown error',
+            output: {
+              generated: false,
+              reason: 'embedding_generation_failed'
+            }
+          });
+          // RAG not enabled or embedding failed - continue without embedding
+          logger.debug('Embedding generation skipped for memory:', error);
+          return undefined;
         }
       }
-    } catch (error) {
-      // RAG not enabled or embedding failed - continue without embedding
-      logger.debug('Embedding generation skipped for memory:', error);
-    }
+    );
 
     const memory = await this.db.storeServerMemory(
       {

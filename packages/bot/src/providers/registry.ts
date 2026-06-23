@@ -2,9 +2,11 @@ import type {
   TextProvider,
   ImageProvider,
   VideoProvider,
+  WebSearchProvider,
   EmbeddingProvider,
   Config
 } from '@silo/core';
+import { logger } from '@silo/core';
 import { OpenAIProvider } from './openai';
 import { AnthropicProvider } from './anthropic';
 import { XAIProvider } from './xai';
@@ -16,9 +18,10 @@ export class ProviderRegistry {
   private textProviders: TextProvider[] = [];
   private imageProviders: ImageProvider[] = [];
   private videoProviders: VideoProvider[] = [];
+  private webSearchProviders: WebSearchProvider[] = [];
   private embeddingProvider: EmbeddingProvider | null = null;
 
-  constructor(config: Config) {
+  constructor(private readonly config: Config) {
     if (config.providers.openai?.apiKey) {
       const provider = new OpenAIProvider(
         config.providers.openai.apiKey,
@@ -27,6 +30,7 @@ export class ProviderRegistry {
       );
       this.textProviders.push(provider);
       this.imageProviders.push(provider);
+      this.webSearchProviders.push(provider);
     }
 
     if (config.providers.anthropic?.apiKey) {
@@ -48,6 +52,7 @@ export class ProviderRegistry {
       this.textProviders.push(provider);
       this.imageProviders.push(provider);
       this.videoProviders.push(provider);
+      this.webSearchProviders.push(provider);
     }
 
     if (config.providers.google?.apiKey) {
@@ -86,7 +91,7 @@ export class ProviderRegistry {
 
       // Log that requested provider wasn't found
       const availableText = this.textProviders.filter(p => p.isConfigured()).map(p => p.name);
-      console.warn(
+      logger.warn(
         `[PROVIDER] Requested text provider "${name}" not available. Available: ${availableText.join(', ')}. Falling back to first available.`
       );
     }
@@ -96,6 +101,45 @@ export class ProviderRegistry {
       throw new Error('No text provider configured. Add API keys to .env');
     }
     return configured;
+  }
+
+  getConfiguredTextModel(name: string): string | undefined {
+    switch (name) {
+      case 'openai':
+        return this.config.providers.openai?.model;
+      case 'anthropic':
+        return this.config.providers.anthropic?.model;
+      case 'xai':
+        return this.config.providers.xai?.model;
+      case 'google':
+        return this.config.providers.google?.textModel || this.config.providers.google?.model;
+      case 'local':
+        return this.config.providers.local?.model;
+      default:
+        return undefined;
+    }
+  }
+
+  getConfiguredImageModel(name: string): string | undefined {
+    switch (name) {
+      case 'openai':
+        return this.config.providers.openai?.imageModel;
+      case 'xai':
+        return this.config.providers.xai?.imageModel;
+      case 'google':
+        return this.config.providers.google?.imageModel || this.config.providers.google?.model;
+      default:
+        return undefined;
+    }
+  }
+
+  getConfiguredVideoModel(name: string): string | undefined {
+    switch (name) {
+      case 'xai':
+        return this.config.providers.xai?.videoModel;
+      default:
+        return undefined;
+    }
   }
 
   getImageProvider(name?: string): ImageProvider {
@@ -111,11 +155,17 @@ export class ProviderRegistry {
     return configured;
   }
 
-  getAvailableProviders(): { text: string[]; image: string[]; video: string[] } {
+  getAvailableProviders(): {
+    text: string[];
+    image: string[];
+    video: string[];
+    webSearch: string[];
+  } {
     return {
       text: this.textProviders.filter(p => p.isConfigured()).map(p => p.name),
       image: this.imageProviders.filter(p => p.isConfigured()).map(p => p.name),
-      video: this.videoProviders.filter(p => p.isConfigured()).map(p => p.name)
+      video: this.videoProviders.filter(p => p.isConfigured()).map(p => p.name),
+      webSearch: this.webSearchProviders.filter(p => p.isConfigured()).map(p => p.name)
     };
   }
 
@@ -154,5 +204,17 @@ export class ProviderRegistry {
     }
 
     return this.videoProviders.find(p => p.isConfigured()) || null;
+  }
+
+  getWebSearchProvider(name?: string): WebSearchProvider | null {
+    if (name) {
+      const provider = this.webSearchProviders.find(p => p.name === name);
+      if (provider && provider.isConfigured()) {
+        return provider;
+      }
+      return null;
+    }
+
+    return this.webSearchProviders.find(p => p.isConfigured()) || null;
   }
 }

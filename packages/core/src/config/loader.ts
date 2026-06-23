@@ -1,6 +1,8 @@
 import { ConfigSchema, type Config } from './schema';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { logger } from '../utils/logger';
 
 let envLoaded = false;
 
@@ -88,6 +90,21 @@ function parseCsvList(value: string | undefined): string[] {
     .filter(Boolean);
 }
 
+function resolveAppEnvironment(): string {
+  return (
+    process.env.APP_ENV ||
+    process.env.LANGFUSE_TRACING_ENVIRONMENT ||
+    process.env.NODE_ENV ||
+    process.env.DEPLOYMENT_MODE ||
+    'development'
+  );
+}
+
+function isLocalDevelopment(appEnvironment: string): boolean {
+  const normalized = appEnvironment.trim().toLowerCase();
+  return normalized === 'development' || normalized === 'dev' || normalized === 'local';
+}
+
 function normalizeSupabaseHost(identifierOrHost: string): string {
   const value = identifierOrHost.trim();
 
@@ -165,7 +182,17 @@ export class ConfigLoader {
   static load(): Config {
     loadEnvFileIfNeeded();
 
+    const appEnvironment = resolveAppEnvironment();
+    const localDevelopment = isLocalDevelopment(appEnvironment);
+
     const rawConfig = {
+      app: {
+        name: process.env.APP_NAME || 'silo',
+        environment: appEnvironment,
+        hostName: process.env.HOST_NAME || process.env.HOSTNAME || os.hostname(),
+        promptVersion:
+          process.env.PROMPT_VERSION || (localDevelopment ? 'silo-local-dev' : undefined)
+      },
       discord: {
         token: process.env.DISCORD_TOKEN,
         clientId: process.env.DISCORD_CLIENT_ID,
@@ -260,16 +287,31 @@ export class ConfigLoader {
           blockKnownShorteners: process.env.URL_BLOCK_KNOWN_SHORTENERS !== 'false',
           safeBrowsingApiKey: process.env.GOOGLE_SAFE_BROWSING_API_KEY
         }
+      },
+      langfuse: {
+        enabled:
+          process.env.LANGFUSE_ENABLED === 'true' ||
+          Boolean(process.env.LANGFUSE_PUBLIC_KEY && process.env.LANGFUSE_SECRET_KEY),
+        publicKey: process.env.LANGFUSE_PUBLIC_KEY,
+        secretKey: process.env.LANGFUSE_SECRET_KEY,
+        userHashSalt: process.env.LANGFUSE_USER_HASH_SALT,
+        baseUrl: process.env.LANGFUSE_BASE_URL || process.env.LANGFUSE_BASEURL,
+        sampleRate: parseOptionalNumber(process.env.LANGFUSE_SAMPLE_RATE),
+        environment: process.env.LANGFUSE_TRACING_ENVIRONMENT || appEnvironment,
+        release: process.env.LANGFUSE_RELEASE,
+        timeout: parseOptionalNumber(process.env.LANGFUSE_TIMEOUT),
+        flushAt: parseOptionalNumber(process.env.LANGFUSE_FLUSH_AT),
+        flushInterval: parseOptionalNumber(process.env.LANGFUSE_FLUSH_INTERVAL),
+        exportMode: process.env.LANGFUSE_EXPORT_MODE
       }
     };
 
     const result = ConfigSchema.safeParse(rawConfig);
 
     if (!result.success) {
-      console.error('\n❌ Configuration validation failed:\n');
       const formatted = result.error.format();
-      console.error(JSON.stringify(formatted, null, 2));
-      console.error('\nCheck your .env file for missing or invalid values.\n');
+      logger.error('Configuration validation failed', formatted);
+      logger.error('Check your .env file for missing or invalid values.');
       throw new Error('Invalid configuration. Check .env file.');
     }
 

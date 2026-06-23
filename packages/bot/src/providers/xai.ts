@@ -11,7 +11,10 @@ import type {
   VideoGenerationOptions,
   VideoGenerationResponse,
   ImageAnalysisOptions,
-  ImageAnalysisResponse
+  ImageAnalysisResponse,
+  WebSearchOptions,
+  WebSearchProvider,
+  WebSearchResponse
 } from '@silo/core';
 
 interface XAIErrorResponse {
@@ -45,12 +48,68 @@ interface XAIVideoStatusResponse {
   error?: string | { message?: string };
 }
 
+interface XAIResponsesAnnotation {
+  type?: string;
+  url?: string;
+  title?: string;
+  start_index?: number;
+  end_index?: number;
+}
+
+interface XAIResponsesContentItem {
+  type?: string;
+  text?: string;
+  annotations?: XAIResponsesAnnotation[];
+}
+
+interface XAIResponsesOutputItem {
+  type?: string;
+  content?: XAIResponsesContentItem[];
+}
+
+interface XAIResponsesRequest {
+  model: string;
+  input: Array<{
+    role: 'user';
+    content: string;
+  }>;
+  tools: Array<{
+    type: 'web_search';
+  }>;
+  stream: false;
+}
+
+interface XAIResponsesResult {
+  output_text?: string;
+  output?: XAIResponsesOutputItem[];
+  model?: string;
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    total_tokens?: number;
+    prompt_tokens?: number;
+    completion_tokens?: number;
+  };
+}
+
+function assertValidXAIResponsesRequest(request: XAIResponsesRequest): void {
+  if (!request.model.trim()) {
+    throw new Error('xAI web search requires a model');
+  }
+
+  for (const tool of request.tools) {
+    if (tool.type !== 'web_search') {
+      throw new Error(`Unsupported xAI responses tool type: ${String(tool.type)}`);
+    }
+  }
+}
+
 /**
  * xAI/Grok provider using OpenAI-compatible API
  * https://docs.x.ai/api
  * Supports text generation and image understanding.
  */
-export class XAIProvider implements TextProvider, ImageProvider, VideoProvider {
+export class XAIProvider implements TextProvider, ImageProvider, VideoProvider, WebSearchProvider {
   name = 'xai';
   capabilities = {
     vision: true,
@@ -319,6 +378,59 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider {
     }
 
     throw new Error('xAI video generation timed out');
+  }
+
+  async searchWeb(query: string, options?: WebSearchOptions): Promise<WebSearchResponse> {
+    const request: XAIResponsesRequest = {
+      model: options?.model?.trim() || this.defaultModel,
+      input: [{ role: 'user', content: query }],
+      tools: [{ type: 'web_search' }],
+      stream: false
+    };
+
+    assertValidXAIResponsesRequest(request);
+
+    const response = await this.requestJson<XAIResponsesResult>('/responses', {
+      method: 'POST',
+      body: JSON.stringify(request)
+    });
+
+    const outputText =
+      response.output_text ||
+      (response.output || [])
+        .flatMap(item => item.content || [])
+        .map(item => item.text || '')
+        .join('')
+        .trim();
+
+    const citations = (response.output || [])
+      .flatMap(item => item.content || [])
+      .flatMap(item => item.annotations || [])
+      .filter(annotation => Boolean(annotation.url))
+      .slice(0, options?.maxResults || 5)
+      .map(annotation => ({
+        url: annotation.url as string,
+        title: annotation.title,
+        startIndex: annotation.start_index,
+        endIndex: annotation.end_index
+      }));
+
+    if (!outputText) {
+      throw new Error('xAI web search returned no answer text');
+    }
+
+    return {
+      content: outputText,
+      citations,
+      model: response.model || options?.model || this.defaultModel,
+      usage: response.usage
+        ? {
+            promptTokens: response.usage.input_tokens || response.usage.prompt_tokens || 0,
+            completionTokens: response.usage.output_tokens || response.usage.completion_tokens || 0,
+            totalTokens: response.usage.total_tokens || 0
+          }
+        : undefined
+    };
   }
 
   async analyzeImage(

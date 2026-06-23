@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createMockInteraction, createMockProviderRegistry } from '@silo/core/test-setup';
 import { VideoCommand } from '../../commands/video';
 import type { PromptModerationGuard } from '../../security/command-prompt-moderation';
@@ -6,10 +6,23 @@ import type { PromptModerationGuard } from '../../security/command-prompt-modera
 describe('VideoCommand', () => {
   let registry: any;
   let command: VideoCommand;
+  const originalFetch = globalThis.fetch;
 
   beforeEach(() => {
+    globalThis.fetch = mock(async () => {
+      return new Response(new Uint8Array([1, 2, 3, 4]), {
+        headers: {
+          'content-type': 'video/mp4',
+          'content-length': '4'
+        }
+      });
+    }) as unknown as typeof fetch;
     registry = createMockProviderRegistry();
     command = new VideoCommand(registry);
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
   });
 
   test('does not expose a user option for video amount', () => {
@@ -164,6 +177,89 @@ describe('VideoCommand', () => {
     expect(calls[0]?.[0]).not.toBe('original prompt text');
     expect(interaction.deferReply).toHaveBeenCalled();
     expect(interaction.editReply).toHaveBeenCalled();
+    const reply = interaction._getReplies()[0] as { embeds?: any[]; files?: any[] };
+    expect(reply.embeds).toEqual([]);
+    expect(reply.files).toHaveLength(1);
+    expect(JSON.stringify(reply)).not.toContain('https://example.com/video.mp4');
+  });
+
+  test('does not expose prompt text or provider URL in generated video response', async () => {
+    const generateVideo = mock(async () => ({
+      url: 'https://example.com/video.mp4',
+      model: 'grok-imagine-video',
+      duration: 8
+    }));
+
+    registry.getVideoProvider = mock(() => ({
+      name: 'xai',
+      isConfigured: () => true,
+      generateVideo
+    }));
+
+    const promptGuard: PromptModerationGuard = mock(async () => ({
+      allowed: true,
+      processedPrompt: '@everyone cinematic update'
+    })) as unknown as PromptModerationGuard;
+
+    command = new VideoCommand(registry, undefined, undefined, promptGuard);
+
+    const interaction = createMockInteraction({
+      options: {
+        prompt: '@here cinematic update'
+      }
+    }) as any;
+
+    interaction.options.getAttachment = mock(() => null);
+
+    await command.execute(interaction);
+
+    const reply = interaction._getReplies().find((entry: unknown) => {
+      return typeof entry === 'object' && entry !== null && 'files' in entry;
+    }) as { embeds?: any[]; files?: any[] };
+    expect(reply.embeds).toEqual([]);
+    expect(reply.files).toHaveLength(1);
+    expect(JSON.stringify(reply)).not.toContain('@everyone');
+    expect(JSON.stringify(reply)).not.toContain('@here');
+    expect(JSON.stringify(reply)).not.toContain('https://example.com/video.mp4');
+    expect(JSON.stringify(reply)).not.toContain('cinematic update');
+  });
+
+  test('returns short no-link failure when inline video upload fails', async () => {
+    globalThis.fetch = mock(async () => {
+      return new Response(new Uint8Array([1]), {
+        headers: {
+          'content-type': 'video/mp4',
+          'content-length': `${25 * 1024 * 1024}`
+        }
+      });
+    }) as unknown as typeof fetch;
+
+    const generateVideo = mock(async () => ({
+      url: 'https://example.com/video.mp4',
+      model: 'grok-imagine-video',
+      duration: 8
+    }));
+
+    registry.getVideoProvider = mock(() => ({
+      name: 'xai',
+      isConfigured: () => true,
+      generateVideo
+    }));
+
+    const interaction = createMockInteraction({
+      options: {
+        prompt: 'safe prompt'
+      }
+    }) as any;
+
+    interaction.options.getAttachment = mock(() => null);
+
+    await command.execute(interaction);
+
+    const reply = interaction._getReplies()[0] as { content?: string; embeds?: any[] };
+    expect(reply.content).toContain('Could not upload video inline');
+    expect(reply.embeds).toEqual([]);
+    expect(JSON.stringify(reply)).not.toContain('https://example.com/video.mp4');
   });
 
   test('redacts provider errors from user-facing video failures', async () => {
