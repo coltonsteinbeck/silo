@@ -1,10 +1,6 @@
 import { logger } from '@silo/core';
-import {
-  contentSanitizer,
-  detectDeterministicIllicitContent,
-  hasPromptInjectionPattern,
-  type ContentType
-} from './content-sanitizer';
+import { contentSanitizer, type ContentType } from './content-sanitizer';
+import { buildPromptSafetyWarningMessage, evaluatePromptSafety } from './prompt-safety';
 
 export interface CommandPromptModerationDecision {
   allowed: boolean;
@@ -21,16 +17,13 @@ export type PromptModerationGuard = (params: {
   contentType?: ContentType;
 }) => Promise<CommandPromptModerationDecision>;
 
-const BLOCKED_PROMPT_MESSAGE =
-  '⚠️ Prompt blocked by content policy. Please rephrase with safer wording.';
-
 export const moderateCommandPrompt: PromptModerationGuard = async ({
   prompt,
   guildId,
   userId,
   command,
   phase,
-  contentType = 'prompt'
+  contentType: _contentType = 'prompt'
 }) => {
   const trimmed = prompt.trim();
   if (!trimmed) {
@@ -49,69 +42,65 @@ export const moderateCommandPrompt: PromptModerationGuard = async ({
   }
 
   try {
-    const moderationResult = await contentSanitizer.processContent(
-      trimmed,
-      guildId,
-      userId,
-      contentType,
-      { failClosedOnError: true }
-    );
+    const safetyResult = await evaluatePromptSafety(trimmed, {
+      profile: 'strict_tool_input',
+      source: `${command}:${phase}`,
+      userId
+    });
 
-    if (!moderationResult.moderation.allowed || !moderationResult.processedContent.trim()) {
-      logger.warn(
-        `Blocked ${command} prompt (${phase}) for guild ${guildId}, user ${userId}: ${moderationResult.moderation.flaggedCategories.join(', ') || 'empty_after_sanitize'}`
-      );
+    if (safetyResult.moderationError) {
+      logger.error(`Prompt moderation failed closed for ${command} (${phase})`, {
+        guildId,
+        userId,
+        moderationError: safetyResult.moderationError
+      });
       return {
         allowed: false,
         processedPrompt: '',
-        userMessage: BLOCKED_PROMPT_MESSAGE
+        userMessage:
+          '⚠️ Prompt moderation is temporarily unavailable. Please try again in a moment.'
       };
     }
 
-    if (moderationResult.moderation.action === 'warned') {
+    if (!safetyResult.allowed) {
       logger.warn(
-        `Warned ${command} prompt (${phase}) for guild ${guildId}, user ${userId}: ${moderationResult.moderation.flaggedCategories.join(', ')}`
+        `Blocked ${command} prompt (${phase}) for guild ${guildId}, user ${userId}: ${[...safetyResult.reasons, ...safetyResult.moderationCategories].join(', ') || 'empty_after_sanitize'}`
       );
-    }
-
-    return {
-      allowed: true,
-      processedPrompt: moderationResult.processedContent
-    };
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    if (errorMessage.includes('ContentSanitizer not initialized')) {
-      logger.debug(
-        `Prompt moderation unavailable for ${command} (${phase}); using deterministic fallback`,
-        {
-          guildId,
-          userId,
-          error
-        }
-      );
-    } else {
-      logger.error(
-        `Prompt moderation failed for ${command} (${phase}); using deterministic fallback`,
-        {
-          guildId,
-          userId,
-          error
-        }
-      );
-    }
-
-    const deterministicCategories = detectDeterministicIllicitContent(trimmed);
-    if (deterministicCategories.length > 0 || hasPromptInjectionPattern(trimmed)) {
       return {
         allowed: false,
         processedPrompt: '',
-        userMessage: BLOCKED_PROMPT_MESSAGE
+        userMessage: buildPromptSafetyWarningMessage({
+          profile: 'strict_tool_input',
+          reasons: safetyResult.reasons,
+          moderationCategories: safetyResult.moderationCategories
+        })
       };
     }
 
     return {
       allowed: true,
       processedPrompt: contentSanitizer.sanitizePrompt(trimmed)
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (errorMessage.includes('ContentSanitizer not initialized')) {
+      logger.debug(`Prompt moderation unavailable for ${command} (${phase}); blocking prompt`, {
+        guildId,
+        userId,
+        error
+      });
+    } else {
+      logger.error(`Prompt moderation failed for ${command} (${phase}); blocking prompt`, {
+        guildId,
+        userId,
+        error
+      });
+    }
+
+    return {
+      allowed: false,
+      processedPrompt: '',
+      userMessage: '⚠️ Prompt moderation is temporarily unavailable. Please try again in a moment.'
     };
   }
 };

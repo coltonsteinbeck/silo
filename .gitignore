@@ -34,6 +34,7 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~
@@ -82,3 +83,6 @@ DEPLOYMENT.local.md
 
 # CodeRabbit setup guide
 docs/CODERABBIT.md
+
+fileDump/
+conversation_messages_rows*.csv

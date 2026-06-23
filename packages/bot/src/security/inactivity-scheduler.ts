@@ -11,6 +11,12 @@ import { Client, PermissionFlagsBits } from 'discord.js';
 import { logger } from '@silo/core';
 import { guildManager } from './guild-manager';
 import { deploymentDetector } from './deployment';
+import {
+  withLangfuseRootTrace,
+  withLangfuseSpan,
+  type TraceMetadata
+} from '../telemetry/langfuse-client';
+import { buildLangfuseTags, buildLangfuseTraceMetadata } from '../telemetry/langfuse-metadata';
 
 interface InactiveGuild {
   guild_id: string;
@@ -33,6 +39,19 @@ interface GuildToDelete {
   guild_name: string;
   deactivated_at: Date;
 }
+
+type ScheduledTaskResults = {
+  warnings: { sent: number; failed: number };
+  evictions: { evicted: number; failed: number };
+  waitlistExpirations: number;
+  dataDeletions: { deleted: number; failed: number };
+  quotaResetNotifications: { sent: number; failed: number };
+  quotaDataCleanup: {
+    accuracyLogsDeleted: number;
+    usageDeleted: number;
+    guildUsageDeleted: number;
+  };
+};
 
 class InactivityScheduler {
   private pool: Pool | null = null;
@@ -63,6 +82,122 @@ class InactivityScheduler {
     }
     const result = await this.pool.query(sql, params);
     return result.rows as T[];
+  }
+
+  private buildTraceContext(
+    commandName: string,
+    messageType: 'scheduled-job' | 'system-event' = 'scheduled-job'
+  ): { metadata: TraceMetadata; tags: string[] } {
+    const metadataInput = {
+      messageType,
+      commandName
+    } as const;
+
+    return {
+      metadata: buildLangfuseTraceMetadata(metadataInput),
+      tags: buildLangfuseTags(metadataInput)
+    };
+  }
+
+  private summarizeScheduledTaskResults(
+    trigger: 'automatic' | 'manual',
+    results: ScheduledTaskResults
+  ): Record<string, number | string> {
+    return {
+      trigger,
+      warningsSent: results.warnings.sent,
+      warningsFailed: results.warnings.failed,
+      evictions: results.evictions.evicted,
+      evictionFailures: results.evictions.failed,
+      waitlistExpirations: results.waitlistExpirations,
+      dataDeletions: results.dataDeletions.deleted,
+      dataDeletionFailures: results.dataDeletions.failed,
+      quotaResetNotificationsSent: results.quotaResetNotifications.sent,
+      quotaResetNotificationsFailed: results.quotaResetNotifications.failed,
+      accuracyLogsDeleted: results.quotaDataCleanup.accuracyLogsDeleted,
+      usageDeleted: results.quotaDataCleanup.usageDeleted,
+      guildUsageDeleted: results.quotaDataCleanup.guildUsageDeleted
+    };
+  }
+
+  private async runScheduledPhase<T>(
+    name: string,
+    commandName: string,
+    fn: () => Promise<T>
+  ): Promise<T> {
+    const traceContext = this.buildTraceContext(commandName);
+
+    return withLangfuseSpan(
+      {
+        name,
+        metadata: traceContext.metadata,
+        tags: traceContext.tags
+      },
+      async observation => {
+        try {
+          const result = await fn();
+          observation?.update({
+            output: {
+              status: 'completed'
+            }
+          });
+          return result;
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          observation?.update({
+            level: 'ERROR',
+            statusMessage: errorMessage,
+            output: {
+              status: 'failed',
+              error: errorMessage
+            }
+          });
+          throw error;
+        }
+      }
+    );
+  }
+
+  private async executeScheduledTasks(): Promise<ScheduledTaskResults> {
+    const warnings = await this.runScheduledPhase(
+      'scheduled-task.inactivity-warnings',
+      'inactive-warnings',
+      () => this.processInactiveWarnings()
+    );
+    const evictions = await this.runScheduledPhase(
+      'scheduled-task.evictions',
+      'guild-evictions',
+      () => this.processEvictions()
+    );
+    const waitlistExpirations = await this.runScheduledPhase(
+      'scheduled-task.waitlist-expirations',
+      'waitlist-expirations',
+      () => this.processWaitlistExpirations()
+    );
+    const dataDeletions = await this.runScheduledPhase(
+      'scheduled-task.data-deletions',
+      'data-deletions',
+      () => this.processDataDeletions()
+    );
+    const quotaResetNotifications = await this.runScheduledPhase(
+      'scheduled-task.quota-reset-notifications',
+      'quota-reset-notifications',
+      () => this.processQuotaResetNotifications()
+    );
+    const quotaDataCleanup = await this.runScheduledPhase(
+      'scheduled-task.quota-data-cleanup',
+      'quota-data-cleanup',
+      () => this.cleanupOldQuotaData()
+    );
+
+    return {
+      warnings,
+      evictions,
+      waitlistExpirations,
+      dataDeletions,
+      quotaResetNotifications,
+      quotaDataCleanup
+    };
   }
 
   /**
@@ -113,32 +248,47 @@ class InactivityScheduler {
    * Run all scheduled tasks
    */
   async runScheduledTasks(): Promise<void> {
-    logger.info('Running inactivity scheduled tasks...');
+    const traceContext = this.buildTraceContext('inactivity-scheduler');
 
-    try {
-      // 1. Send warnings to inactive guilds (25-29 days)
-      await this.processInactiveWarnings();
+    await withLangfuseRootTrace(
+      {
+        name: 'system.inactivity-scheduler',
+        traceName: 'system.inactivity-scheduler',
+        sessionId: 'system:inactivity-scheduler',
+        metadata: {
+          ...traceContext.metadata,
+          trigger: 'automatic'
+        },
+        tags: traceContext.tags
+      },
+      async observation => {
+        logger.info('Running inactivity scheduled tasks...');
 
-      // 2. Evict guilds at 30+ days
-      await this.processEvictions();
-
-      // 3. Expire old waitlist notifications
-      await this.processWaitlistExpirations();
-
-      // 4. Delete data for guilds 30 days after deactivation
-      await this.processDataDeletions();
-
-      // 5. Send quota reset notifications (only at/after midnight ET)
-      await this.processQuotaResetNotifications();
-
-      // 6. Cleanup old quota accuracy logs and usage data
-      await this.cleanupOldQuotaData();
-
-      logger.info('Inactivity scheduled tasks completed');
-    } catch (error) {
-      logger.error('Error running scheduled tasks:', error);
-      throw error;
-    }
+        try {
+          const results = await this.executeScheduledTasks();
+          observation?.update({
+            output: {
+              status: 'completed',
+              ...this.summarizeScheduledTaskResults('automatic', results)
+            }
+          });
+          logger.info('Inactivity scheduled tasks completed');
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          observation?.update({
+            level: 'ERROR',
+            statusMessage: errorMessage,
+            output: {
+              status: 'failed',
+              trigger: 'automatic',
+              error: errorMessage
+            }
+          });
+          logger.error('Error running scheduled tasks:', error);
+          throw error;
+        }
+      }
+    );
   }
 
   /**
@@ -292,21 +442,44 @@ class InactivityScheduler {
       guildUsageDeleted: number;
     };
   }> {
-    const warnings = await this.processInactiveWarnings();
-    const evictions = await this.processEvictions();
-    const waitlistExpirations = await this.processWaitlistExpirations();
-    const dataDeletions = await this.processDataDeletions();
-    const quotaResetNotifications = await this.processQuotaResetNotifications();
-    const quotaDataCleanup = await this.cleanupOldQuotaData();
+    const traceContext = this.buildTraceContext('inactivity-manual-check', 'system-event');
 
-    return {
-      warnings,
-      evictions,
-      waitlistExpirations,
-      dataDeletions,
-      quotaResetNotifications,
-      quotaDataCleanup
-    };
+    return withLangfuseRootTrace(
+      {
+        name: 'system.inactivity-scheduler.manual-check',
+        traceName: 'system.inactivity-scheduler.manual-check',
+        sessionId: 'system:inactivity-scheduler',
+        metadata: {
+          ...traceContext.metadata,
+          trigger: 'manual'
+        },
+        tags: traceContext.tags
+      },
+      async observation => {
+        try {
+          const results = await this.executeScheduledTasks();
+          observation?.update({
+            output: {
+              status: 'completed',
+              ...this.summarizeScheduledTaskResults('manual', results)
+            }
+          });
+          return results;
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          observation?.update({
+            level: 'ERROR',
+            statusMessage: errorMessage,
+            output: {
+              status: 'failed',
+              trigger: 'manual',
+              error: errorMessage
+            }
+          });
+          throw error;
+        }
+      }
+    );
   }
 
   /**

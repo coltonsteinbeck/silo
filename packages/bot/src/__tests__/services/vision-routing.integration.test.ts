@@ -45,9 +45,15 @@ describe('vision routing integration seam', () => {
   });
 
   test('precheck sends handler reply payload for missing vision provider', async () => {
-    const replies: Array<{ content: string; allowedMentions: { repliedUser: boolean } }> = [];
+    const replies: Array<{
+      content: string;
+      allowedMentions: { repliedUser: boolean; parse: [] };
+    }> = [];
     const target = {
-      reply: async (payload: { content: string; allowedMentions: { repliedUser: boolean } }) => {
+      reply: async (payload: {
+        content: string;
+        allowedMentions: { repliedUser: boolean; parse: [] };
+      }) => {
         replies.push(payload);
       }
     };
@@ -62,7 +68,7 @@ describe('vision routing integration seam', () => {
     expect(replies).toHaveLength(1);
     expect(replies[0]).toEqual({
       content: VISION_PROVIDER_REQUIRED_MESSAGE,
-      allowedMentions: { repliedUser: false }
+      allowedMentions: { repliedUser: false, parse: [] }
     });
   });
 

@@ -5,7 +5,6 @@ import {
   ButtonInteraction,
   ButtonStyle,
   ChatInputCommandInteraction,
-  EmbedBuilder,
   GuildMember,
   ModalBuilder,
   ModalSubmitInteraction,
@@ -23,6 +22,9 @@ import {
   moderateCommandPrompt,
   type PromptModerationGuard
 } from '../security/command-prompt-moderation';
+import { buildMediaReplyPayload } from '../services/media-delivery';
+import { summarizeTextForTrace, withLangfuseGeneration } from '../telemetry/langfuse-client';
+import { buildLangfuseTags, buildLangfuseTraceMetadata } from '../telemetry/langfuse-metadata';
 
 const DRAW_MODEL_CONFIG = {
   'gpt-image-1': {
@@ -70,13 +72,24 @@ interface DrawSession {
 }
 
 interface DrawGeneration {
-  embed: EmbedBuilder;
+  content?: string;
   files: AttachmentBuilder[];
+  uploaded: boolean;
+  failureReason?: string;
+  mediaUrl?: string;
 }
 
 interface DrawUrlSecurityOptions {
   policy?: UrlPolicyOptions;
   adminDb?: AdminAdapter;
+}
+
+interface DrawTraceContext {
+  guildId?: string | null;
+  channelId?: string | null;
+  interactionId?: string | null;
+  messageType: 'slash-command' | 'button-interaction';
+  commandName: string;
 }
 
 const DRAW_SESSION_TTL_MS = 30 * 60 * 1000;
@@ -328,15 +341,18 @@ export class DrawCommand implements Command {
     return references;
   }
 
-  private async generateImage(session: {
-    prompt: string;
-    model: DrawModelName;
-    size: string;
-    quality: string;
-    aspectRatio: string;
-    resolution: string;
-    references: string[];
-  }): Promise<DrawGeneration> {
+  private async generateImage(
+    session: {
+      prompt: string;
+      model: DrawModelName;
+      size: string;
+      quality: string;
+      aspectRatio: string;
+      resolution: string;
+      references: string[];
+    },
+    traceContext?: DrawTraceContext
+  ): Promise<DrawGeneration> {
     const modelConfig = DRAW_MODEL_CONFIG[session.model];
     const provider = this.registry.getImageProvider(modelConfig.provider);
     if (!provider) {
@@ -354,44 +370,76 @@ export class DrawCommand implements Command {
       inputFidelity: session.references.length > 0 ? ('high' as const) : ('low' as const)
     };
 
-    const result = await provider.generateImage(session.prompt, options);
+    const generationMetadataInput = {
+      guildId: traceContext?.guildId,
+      channelId: traceContext?.channelId,
+      interactionId: traceContext?.interactionId,
+      messageType: traceContext?.messageType || 'slash-command',
+      commandName: traceContext?.commandName || 'draw',
+      provider: provider.name,
+      model: session.model,
+      adapter: provider.name,
+      usesTools: false,
+      supportsImages: true,
+      supportsVideo: false,
+      supportsAudio: false,
+      isLocalModel: provider.name === 'local'
+    };
 
-    const files: AttachmentBuilder[] = [];
-    let imageUrl = result.url;
+    const result = await withLangfuseGeneration(
+      {
+        name: 'draw-image-generation',
+        tags: buildLangfuseTags(generationMetadataInput),
+        input: {
+          promptPreview: summarizeTextForTrace(session.prompt),
+          model: session.model,
+          referenceCount: session.references.length,
+          size: options.size,
+          quality: options.quality,
+          aspectRatio: options.aspectRatio,
+          resolution: options.resolution,
+          action: options.action
+        },
+        model: session.model,
+        metadata: buildLangfuseTraceMetadata(generationMetadataInput)
+      },
+      async generation => {
+        const providerResult = await provider.generateImage(session.prompt, options);
 
-    if (result.url.startsWith('data:image/')) {
-      const parts = result.url.split(',');
-      const base64Data = parts[1];
-      if (!base64Data) {
-        throw new Error('Invalid image response data');
+        generation?.update({
+          model: providerResult.model || session.model,
+          output: {
+            hasContent: Boolean(providerResult.url),
+            revisedPromptApplied: Boolean(providerResult.revisedPrompt),
+            moderationPassed: providerResult.moderationPassed ?? true,
+            referenceCount: session.references.length
+          },
+          metadata: buildLangfuseTraceMetadata({
+            ...generationMetadataInput,
+            model: providerResult.model || session.model
+          })
+        });
+
+        return providerResult;
       }
-      const buffer = Buffer.from(base64Data, 'base64');
-      const fileName = 'draw-output.png';
-      files.push(new AttachmentBuilder(buffer, { name: fileName }));
-      imageUrl = `attachment://${fileName}`;
-    }
+    );
 
-    const embed = new EmbedBuilder()
-      .setTitle('Image Generated')
-      .setDescription(
-        [
-          `Prompt: ${result.revisedPrompt || session.prompt}`,
-          `Model: ${session.model}`,
-          session.references.length > 0
-            ? `References: ${session.references.length}`
-            : 'References: none',
-          modelConfig.supportsResolution
-            ? `Resolution: ${session.resolution.toUpperCase()}`
-            : `Size: ${session.size}`
-        ].join('\n')
-      )
-      .setImage(imageUrl)
-      .setFooter({
-        text: 'Use buttons below to regenerate or edit prompt'
-      })
-      .setTimestamp();
+    const mediaReply = await buildMediaReplyPayload({
+      kind: 'image',
+      url: result.url,
+      model: result.model || session.model,
+      prompt: session.prompt,
+      revisedPrompt: result.revisedPrompt,
+      moderationPassed: result.moderationPassed
+    });
 
-    return { embed, files };
+    return {
+      content: mediaReply.content,
+      files: mediaReply.files,
+      uploaded: mediaReply.uploaded,
+      failureReason: mediaReply.failureReason,
+      mediaUrl: result.url
+    };
   }
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -471,21 +519,46 @@ export class DrawCommand implements Command {
     }
 
     try {
-      const generation = await this.generateImage({
-        prompt: effectivePrompt,
-        model,
-        size,
-        quality,
-        aspectRatio,
-        resolution,
-        references
-      });
+      const generation = await this.generateImage(
+        {
+          prompt: effectivePrompt,
+          model,
+          size,
+          quality,
+          aspectRatio,
+          resolution,
+          references
+        },
+        {
+          guildId: interaction.guildId,
+          channelId: interaction.channelId,
+          interactionId: interaction.id,
+          messageType: 'slash-command',
+          commandName: 'draw'
+        }
+      );
 
       const sessionId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
       const controls = this.createControls(sessionId);
 
+      if (!generation.uploaded) {
+        logger.warn('Draw inline upload unavailable', {
+          guildId: interaction.guildId,
+          userId: interaction.user.id,
+          model,
+          reason: generation.failureReason,
+          mediaUrl: generation.mediaUrl
+        });
+        await interaction.editReply({
+          content:
+            generation.content || 'Could not upload image inline. Please try again in a moment.'
+        });
+        return;
+      }
+
       const responseMessage = await interaction.editReply({
-        embeds: [generation.embed],
+        content: generation.content,
+        embeds: [],
         files: generation.files,
         components: [controls]
       });
@@ -616,18 +689,44 @@ export class DrawCommand implements Command {
         }
       }
 
-      const generation = await this.generateImage({
-        prompt: promptDecision.processedPrompt,
-        model: session.model,
-        size: session.size,
-        quality: session.quality,
-        aspectRatio: session.aspectRatio,
-        resolution: session.resolution,
-        references: session.references
-      });
+      const generation = await this.generateImage(
+        {
+          prompt: promptDecision.processedPrompt,
+          model: session.model,
+          size: session.size,
+          quality: session.quality,
+          aspectRatio: session.aspectRatio,
+          resolution: session.resolution,
+          references: session.references
+        },
+        {
+          guildId: interaction.guildId,
+          channelId: interaction.channelId,
+          interactionId: interaction.id,
+          messageType: 'button-interaction',
+          commandName: 'draw_regen'
+        }
+      );
+
+      if (!generation.uploaded) {
+        logger.warn('Draw regeneration inline upload unavailable', {
+          guildId: interaction.guildId,
+          userId: interaction.user.id,
+          sessionId: session.id,
+          reason: generation.failureReason,
+          mediaUrl: generation.mediaUrl
+        });
+        await interaction.followUp({
+          content:
+            generation.content || 'Could not upload image inline. Please try again in a moment.',
+          ephemeral: true
+        });
+        return true;
+      }
 
       await interaction.message.edit({
-        embeds: [generation.embed],
+        content: generation.content ?? null,
+        embeds: [],
         files: generation.files,
         components: [this.createControls(session.id)]
       });
@@ -734,15 +833,39 @@ export class DrawCommand implements Command {
     await interaction.deferReply({ ephemeral: true });
 
     try {
-      const generation = await this.generateImage({
-        prompt: promptDecision.processedPrompt,
-        model: session.model,
-        size: session.size,
-        quality: session.quality,
-        aspectRatio: session.aspectRatio,
-        resolution: session.resolution,
-        references: session.references
-      });
+      const generation = await this.generateImage(
+        {
+          prompt: promptDecision.processedPrompt,
+          model: session.model,
+          size: session.size,
+          quality: session.quality,
+          aspectRatio: session.aspectRatio,
+          resolution: session.resolution,
+          references: session.references
+        },
+        {
+          guildId: interaction.guildId,
+          channelId: interaction.channelId,
+          interactionId: interaction.id,
+          messageType: 'button-interaction',
+          commandName: 'draw_edit'
+        }
+      );
+
+      if (!generation.uploaded) {
+        logger.warn('Draw modal edit inline upload unavailable', {
+          guildId: interaction.guildId,
+          userId: interaction.user.id,
+          sessionId: session.id,
+          reason: generation.failureReason,
+          mediaUrl: generation.mediaUrl
+        });
+        await interaction.editReply({
+          content:
+            generation.content || 'Could not upload image inline. Please try again in a moment.'
+        });
+        return true;
+      }
 
       session.prompt = promptDecision.processedPrompt;
       session.createdAt = Date.now();
@@ -753,7 +876,8 @@ export class DrawCommand implements Command {
         try {
           const originalMessage = await channel.messages.fetch(session.messageId);
           await originalMessage.edit({
-            embeds: [generation.embed],
+            content: generation.content ?? null,
+            embeds: [],
             files: generation.files,
             components: [this.createControls(session.id)]
           });

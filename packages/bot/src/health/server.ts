@@ -32,7 +32,15 @@ export class HealthServer {
   private discordNotifyInterval: Timer | null = null;
   private adminDb: AdminAdapter | null = null;
   private startTime = Date.now();
-  private lastHealthStatus: 'healthy' | 'unhealthy' | null = null;
+  private lastHealthchecksStatus: 'healthy' | 'unhealthy' | null = null;
+  private consecutiveUnhealthyChecks = 0;
+  private discordConsecutiveUnhealthyChecks = 0;
+  private discordOutageAlerted = false;
+  private hasObservedHealthyCheck = false;
+  private readonly healthchecksPingIntervalMs = 60_000;
+  private readonly healthchecksStartupGraceMs = 3 * 60_000;
+  private readonly healthchecksFailureThreshold = 3;
+  private readonly healthchecksRequestTimeoutMs = 5_000;
 
   constructor(
     private client: Client,
@@ -96,20 +104,22 @@ export class HealthServer {
   async stop(): Promise<void> {
     if (this.pingInterval) {
       clearInterval(this.pingInterval);
+      this.pingInterval = null;
     }
 
     if (this.discordNotifyInterval) {
       clearInterval(this.discordNotifyInterval);
+      this.discordNotifyInterval = null;
     }
 
     if (this.server) {
       this.server.stop();
+      this.server = null;
       logger.info('Health server stopped');
     }
 
     // Notify Discord channels of shutdown
     await this.notifyDiscordChannels('shutdown');
-    await this.sendFailurePing();
   }
 
   private async getHealthStatus(): Promise<HealthStatus> {
@@ -155,33 +165,107 @@ export class HealthServer {
     // Ping every 60 seconds (healthchecks.io best practice)
     this.pingInterval = setInterval(async () => {
       try {
-        const health = await this.getHealthStatus();
-
-        if (health.status === 'healthy') {
-          await fetch(this.healthchecksUrl!);
-          logger.debug('Healthchecks.io ping sent successfully');
-        } else {
-          // Send failure signal (append /fail to URL)
-          await fetch(`${this.healthchecksUrl}/fail`);
-          logger.warn('Healthchecks.io failure ping sent');
-        }
+        await this.runHealthchecksPing();
       } catch (error) {
         logger.error('Failed to ping healthchecks.io:', error);
       }
-    }, 60000); // 60 seconds
+    }, this.healthchecksPingIntervalMs); // 60 seconds
 
     logger.info('Healthchecks.io integration enabled');
   }
 
-  private async sendFailurePing(): Promise<void> {
-    if (!this.healthchecksUrl) return;
+  private buildHealthchecksUrl(mode: 'success' | 'fail' = 'success'): string | null {
+    if (!this.healthchecksUrl) {
+      return null;
+    }
+
+    const baseUrl = this.healthchecksUrl.replace(/\/+$/, '');
+    return mode === 'fail' ? `${baseUrl}/fail` : baseUrl;
+  }
+
+  private shouldSuppressFailurePing(now: number): { suppress: boolean; reason?: string } {
+    if (!this.hasObservedHealthyCheck && now - this.startTime < this.healthchecksStartupGraceMs) {
+      return {
+        suppress: true,
+        reason: 'startup_grace'
+      };
+    }
+
+    if (this.consecutiveUnhealthyChecks < this.healthchecksFailureThreshold) {
+      return {
+        suppress: true,
+        reason: 'failure_threshold'
+      };
+    }
+
+    if (this.lastHealthchecksStatus === 'unhealthy') {
+      return {
+        suppress: true,
+        reason: 'already_reported_unhealthy'
+      };
+    }
+
+    return { suppress: false };
+  }
+
+  private async pingHealthchecks(mode: 'success' | 'fail'): Promise<void> {
+    const url = this.buildHealthchecksUrl(mode);
+    if (!url) {
+      return;
+    }
+
+    const controller = new globalThis.AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.healthchecksRequestTimeoutMs);
 
     try {
-      await fetch(`${this.healthchecksUrl}/fail`);
-      logger.info('Sent failure ping to healthchecks.io');
-    } catch (error) {
-      logger.error('Failed to send failure ping:', error);
+      const response = await fetch(url, {
+        signal: controller.signal
+      });
+
+      if (!response.ok) {
+        throw new Error(`Healthchecks.io ping failed with status ${response.status}`);
+      }
+    } finally {
+      clearTimeout(timeout);
     }
+  }
+
+  private async runHealthchecksPing(): Promise<void> {
+    const health = await this.getHealthStatus();
+
+    if (health.status === 'healthy') {
+      const recoveredFromUnhealthy = this.lastHealthchecksStatus === 'unhealthy';
+
+      this.hasObservedHealthyCheck = true;
+      this.consecutiveUnhealthyChecks = 0;
+      this.lastHealthchecksStatus = 'healthy';
+
+      await this.pingHealthchecks('success');
+
+      if (recoveredFromUnhealthy) {
+        logger.info('Healthchecks.io recovery ping sent');
+      } else {
+        logger.debug('Healthchecks.io ping sent successfully');
+      }
+      return;
+    }
+
+    this.consecutiveUnhealthyChecks += 1;
+
+    const suppression = this.shouldSuppressFailurePing(Date.now());
+    if (suppression.suppress) {
+      logger.debug('Suppressing healthchecks.io failure ping', {
+        reason: suppression.reason,
+        consecutiveUnhealthyChecks: this.consecutiveUnhealthyChecks,
+        lastHealthchecksStatus: this.lastHealthchecksStatus,
+        uptimeSeconds: Math.floor((Date.now() - this.startTime) / 1000)
+      });
+      return;
+    }
+
+    await this.pingHealthchecks('fail');
+    this.lastHealthchecksStatus = 'unhealthy';
+    logger.warn('Healthchecks.io failure ping sent');
   }
 
   /**
@@ -189,22 +273,72 @@ export class HealthServer {
    * Only sends notifications when health status changes
    */
   private startDiscordHealthNotifications(): void {
-    // Check health and notify every 5 minutes, but only on status change
+    // Check health every 5 minutes. Notify Discord only for sustained outages
+    // and recovery after an outage alert has been sent.
     this.discordNotifyInterval = setInterval(async () => {
       try {
-        const health = await this.getHealthStatus();
-
-        // Only notify on status change
-        if (this.lastHealthStatus !== health.status) {
-          await this.notifyDiscordChannels(health.status);
-          this.lastHealthStatus = health.status;
-        }
+        await this.runDiscordHealthNotificationCheck();
       } catch (error) {
         logger.error('Failed to check health for Discord notifications:', error);
       }
     }, 300000); // 5 minutes
 
     logger.info('Discord health notifications enabled');
+  }
+
+  private shouldSuppressDiscordOutageAlert(now: number): { suppress: boolean; reason?: string } {
+    if (now - this.startTime < this.healthchecksStartupGraceMs) {
+      return {
+        suppress: true,
+        reason: 'startup_grace'
+      };
+    }
+
+    if (this.discordConsecutiveUnhealthyChecks < this.healthchecksFailureThreshold) {
+      return {
+        suppress: true,
+        reason: 'failure_threshold'
+      };
+    }
+
+    if (this.discordOutageAlerted) {
+      return {
+        suppress: true,
+        reason: 'already_reported_unhealthy'
+      };
+    }
+
+    return { suppress: false };
+  }
+
+  private async runDiscordHealthNotificationCheck(): Promise<void> {
+    const health = await this.getHealthStatus();
+
+    if (health.status === 'healthy') {
+      this.discordConsecutiveUnhealthyChecks = 0;
+
+      if (this.discordOutageAlerted) {
+        await this.notifyDiscordChannels('healthy');
+        this.discordOutageAlerted = false;
+      }
+
+      return;
+    }
+
+    this.discordConsecutiveUnhealthyChecks += 1;
+
+    const suppression = this.shouldSuppressDiscordOutageAlert(Date.now());
+    if (suppression.suppress) {
+      logger.debug('Suppressing Discord health outage notification', {
+        reason: suppression.reason,
+        consecutiveUnhealthyChecks: this.discordConsecutiveUnhealthyChecks,
+        uptimeSeconds: Math.floor((Date.now() - this.startTime) / 1000)
+      });
+      return;
+    }
+
+    await this.notifyDiscordChannels('unhealthy');
+    this.discordOutageAlerted = true;
   }
 
   /**

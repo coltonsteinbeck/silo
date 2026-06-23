@@ -1,8 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  buildSafetyResponseInstruction,
   buildModerationApiFailureResult,
   buildUserMessageForBlockedInput,
-  shouldBypassGuardrailsBlockForEdgyMode
+  detectSafeReplyDirective,
+  shouldBypassGuardrailsBlockForEdgyMode,
+  shouldBypassGuardrailsBlockForSafeReply
 } from '../../security/content-sanitizer';
 
 describe('content-sanitizer failure fallback', () => {
@@ -30,8 +33,8 @@ describe('content-sanitizer failure fallback', () => {
       flaggedCategories: ['guardrails/jailbreak']
     });
 
-    expect(message).toContain('blocked by safety policy');
-    expect(message).toContain('Please rephrase');
+    expect(message).toContain('bypass safety rules');
+    expect(message).toContain('safe version');
   });
 
   test('builds clear user message for fail-closed safety downtime', () => {
@@ -78,5 +81,72 @@ describe('content-sanitizer failure fallback', () => {
 
     expect(jailbreakBypass).toBe(false);
     expect(failClosedBypass).toBe(false);
+  });
+
+  test('allows safe reply bypass for contextual moderation blocks', () => {
+    const bypass = shouldBypassGuardrailsBlockForSafeReply({
+      responseDirective: 'contextual_assistance',
+      decision: {
+        allowed: false,
+        category: 'guardrails/moderation',
+        reason: 'hate'
+      }
+    });
+
+    expect(bypass).toBe(true);
+  });
+
+  test('allows safe reply bypass for safe rewrite moderation blocks', () => {
+    const bypass = shouldBypassGuardrailsBlockForSafeReply({
+      responseDirective: 'safe_rewrite',
+      decision: {
+        allowed: false,
+        category: 'guardrails/moderation',
+        reason: 'harassment, hate'
+      }
+    });
+
+    expect(bypass).toBe(true);
+  });
+
+  test('does not bypass sexual guardrail blocks for contextual assistance', () => {
+    const bypass = shouldBypassGuardrailsBlockForSafeReply({
+      responseDirective: 'contextual_assistance',
+      decision: {
+        allowed: false,
+        category: 'guardrails/nsfw',
+        reason: 'sexual'
+      }
+    });
+
+    expect(bypass).toBe(false);
+  });
+
+  test('detects contextual assistance and de-escalation reply directives', () => {
+    expect(
+      detectSafeReplyDirective('Can you explain why someone called me faggot?', 'message')
+    ).toBe('contextual_assistance');
+    expect(detectSafeReplyDirective('I hate you', 'message')).toBe('deescalate');
+    expect(
+      detectSafeReplyDirective('You stupid AI bot, you are going to be killed', 'message')
+    ).toBe('deescalate');
+  });
+
+  test('builds a safety instruction for contextual assistance replies', () => {
+    const instruction = buildSafetyResponseInstruction({
+      responseDirective: 'contextual_assistance'
+    });
+
+    expect(instruction).toContain('discussing harmful content');
+    expect(instruction).toContain('placeholders');
+  });
+
+  test('builds a safety instruction for safe rewrite replies', () => {
+    const instruction = buildSafetyResponseInstruction({
+      responseDirective: 'safe_rewrite'
+    });
+
+    expect(instruction).toContain('safer rewrite');
+    expect(instruction).toContain('professional language');
   });
 });

@@ -1,6 +1,7 @@
 import type { GuildMember } from 'discord.js';
 import type { AdminAdapter } from '../database/admin-adapter';
 import type { PermissionManager } from '../permissions/manager';
+import type { UserRole } from '@silo/core';
 import { logger } from '@silo/core';
 
 export type UsageType =
@@ -54,6 +55,14 @@ export class QuotaMiddleware {
   constructor(adminDb: AdminAdapter, permissions: PermissionManager) {
     this.adminDb = adminDb;
     this.permissions = permissions;
+  }
+
+  private resolveRoleTier(member: GuildMember, customRole: UserRole | null): RoleTier {
+    if (customRole) {
+      return customRole.roleTier;
+    }
+
+    return this.permissions.resolveRoleTierFromMember(member);
   }
 
   /**
@@ -145,16 +154,35 @@ export class QuotaMiddleware {
     usageType: UsageType,
     amount: number = 1
   ): Promise<QuotaCheckResult> {
-    // Fast path: guild exemptions
     const exemptions = await this.adminDb.isGuildExempt(guildId);
+
+    // Fast path: guild exemptions
     if (exemptions.quotaExempt) {
       logger.debug('Quota check: guild exempt', { guildId, userId, type: usageType });
       return { allowed: true, remaining: Infinity, max: Infinity };
     }
 
+    const adminDb = this.adminDb as AdminAdapter & {
+      getUserRole?: (guildId: string, userId: string) => Promise<UserRole | null>;
+    };
+    const resolveRoleTierFromMember = (
+      this.permissions as unknown as {
+        resolveRoleTierFromMember?: (member: GuildMember) => RoleTier;
+      }
+    ).resolveRoleTierFromMember;
+
     try {
+      const [customRole, guildCheck, userUsage] = await Promise.all([
+        adminDb.getUserRole ? adminDb.getUserRole(guildId, userId) : Promise.resolve(null),
+        this.adminDb.checkGuildQuota(guildId, usageType, amount),
+        this.adminDb.getUserDailyUsage(guildId, userId)
+      ]);
+
       // Get user's role tier
-      const tier = await this.permissions.getUserRoleTier(guildId, userId, member);
+      const tier =
+        typeof resolveRoleTierFromMember === 'function'
+          ? this.resolveRoleTier(member, customRole)
+          : await this.permissions.getUserRoleTier(guildId, userId, member);
 
       // Get user's quota limit from database (guild-specific or global fallback)
       const quotaLimits = await this.adminDb.getRoleTierQuota(guildId, tier);
@@ -195,8 +223,6 @@ export class QuotaMiddleware {
         };
       }
 
-      // Check guild quota first
-      const guildCheck = await this.adminDb.checkGuildQuota(guildId, usageType, amount);
       if (!guildCheck.allowed) {
         logger.warn('Quota check: guild limit reached', {
           guildId,
@@ -212,8 +238,6 @@ export class QuotaMiddleware {
         };
       }
 
-      // Get user's current daily usage
-      const userUsage = await this.adminDb.getUserDailyUsage(guildId, userId);
       const currentUsage = userUsage ? this.getUserUsageByType(userUsage, usageType) : 0;
       const remaining = Math.max(0, userLimit - currentUsage);
       const percentUsed = userLimit > 0 ? Math.round((currentUsage / userLimit) * 100) : 0;

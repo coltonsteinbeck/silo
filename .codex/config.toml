@@ -1,0 +1,3 @@
+# Repo-local Codex config.
+# Keep personal runtime settings and model preferences in user-level config.
+# Agent role files live in .codex/agents/.

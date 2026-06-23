@@ -6,6 +6,7 @@ import {
   DiscordGatewayAdapterCreator
 } from '@discordjs/voice';
 import type { VoiceBasedChannel } from 'discord.js';
+import { logger } from '@silo/core';
 import { RealtimeSession } from './realtime-session';
 
 interface SessionInfo {
@@ -72,29 +73,29 @@ export class VoiceSessionManager {
       selfMute: false
     });
 
-    console.log(
+    logger.info(
       `[VoiceSessionManager] Attempting to join channel ${channel.id} (${channel.name}), current state: ${connection.state.status}`
     );
 
     // Log state changes for debugging
     connection.on('stateChange', (oldState: { status: string }, newState: { status: string }) => {
-      console.log(
+      logger.debug(
         `[VoiceSessionManager] Connection state change: ${oldState.status} -> ${newState.status}`
       );
     });
 
     connection.on('error', (error: Error) => {
-      console.error('[VoiceSessionManager] Connection error:', error);
+      logger.error('[VoiceSessionManager] Connection error:', error);
     });
 
     // Wait for connection to be ready
     try {
       await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
-      console.log(
+      logger.info(
         `[VoiceSessionManager] Successfully connected to channel ${channel.id} (${channel.name})`
       );
     } catch (error) {
-      console.error(
+      logger.error(
         `[VoiceSessionManager] Connection timeout. Final state: ${connection.state.status}`,
         error
       );
@@ -167,7 +168,7 @@ export class VoiceSessionManager {
           this.playAudio(guildId, _audio);
         }),
       onError: (error: Error) => {
-        console.error(`[Voice] Realtime session error for user ${userId}:`, error);
+        logger.error(`[Voice] Realtime session error for user ${userId}:`, error);
         this.stopSpeaking(guildId, userId);
       },
       onClose: () => {
@@ -225,7 +226,7 @@ export class VoiceSessionManager {
       try {
         await realtimeSession.disconnect();
       } catch (error) {
-        console.error(`[Voice] Error stopping session for user ${userId}:`, error);
+        logger.error(`[Voice] Error stopping session for user ${userId}:`, error);
       }
     }
 
