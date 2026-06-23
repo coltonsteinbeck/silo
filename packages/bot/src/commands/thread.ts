@@ -4,10 +4,13 @@ import {
   ChannelType,
   ThreadAutoArchiveDuration
 } from 'discord.js';
+import { summarizeTextForTrace, withLangfuseGeneration } from '../telemetry/langfuse-client';
+import { buildLangfuseTags, buildLangfuseTraceMetadata } from '../telemetry/langfuse-metadata';
 import { Command } from './types';
 import { DatabaseAdapter } from '@silo/core';
 import { ProviderRegistry } from '../providers/registry';
 import { AdminAdapter } from '../database/admin-adapter';
+import { sanitizeDiscordMassMentions } from '../security/output-sanitizer';
 
 export class ThreadCommand implements Command {
   data = new SlashCommandBuilder()
@@ -34,6 +37,8 @@ export class ThreadCommand implements Command {
       return;
     }
 
+    const fallbackThreadName = `Chat with ${interaction.user.username}`;
+
     let threadName = interaction.options.getString('name');
 
     // AI-generate thread name if not provided
@@ -49,26 +54,79 @@ export class ThreadCommand implements Command {
         }
 
         const provider = this.registry.getTextProvider(preferredProvider);
+        const requestedModel = this.registry.getConfiguredTextModel(provider.name);
         const context = history.map(m => m.content).join('\n');
+        const generationMetadataInput = {
+          guildId: interaction.guildId,
+          channelId: interaction.channelId,
+          interactionId: interaction.id,
+          messageType: 'slash-command' as const,
+          commandName: 'thread',
+          provider: provider.name,
+          model: requestedModel,
+          adapter: provider.name,
+          hasConversationHistory: history.length > 0,
+          conversationMessageCount: history.length,
+          usesTools: false,
+          supportsImages: Boolean(provider.capabilities?.vision),
+          supportsVideo: Boolean(provider.capabilities?.videoGeneration),
+          supportsAudio: false,
+          isLocalModel: provider.name === 'local'
+        };
 
-        const response = await provider.generateText(
-          [
-            {
-              role: 'system',
-              content:
-                'Generate a short, descriptive thread name (2-4 words) based on the conversation context. Only respond with the name, no quotes or punctuation.'
+        const response = await withLangfuseGeneration(
+          {
+            name: 'slash-command-thread-name',
+            tags: buildLangfuseTags(generationMetadataInput),
+            input: {
+              historyMessageCount: history.length,
+              contextPreview: summarizeTextForTrace(context)
             },
-            {
-              role: 'user',
-              content: `Context:\n${context}`
-            }
-          ],
-          { maxTokens: 20 }
+            model: requestedModel || provider.name,
+            modelParameters: {
+              maxTokens: 20
+            },
+            metadata: buildLangfuseTraceMetadata(generationMetadataInput)
+          },
+          async generation => {
+            const providerResponse = await provider.generateText(
+              [
+                {
+                  role: 'system',
+                  content:
+                    'Generate a short, descriptive thread name (2-4 words) based on the conversation context. Only respond with the name, no quotes or punctuation.'
+                },
+                {
+                  role: 'user',
+                  content: `Context:\n${context}`
+                }
+              ],
+              { maxTokens: 20 }
+            );
+
+            generation?.update({
+              model: providerResponse.model || requestedModel || provider.name,
+              usageDetails: providerResponse.usage,
+              output: {
+                outputCharacters: providerResponse.content.length,
+                hasContent: Boolean(providerResponse.content.trim())
+              },
+              metadata: buildLangfuseTraceMetadata({
+                ...generationMetadataInput,
+                model: providerResponse.model || requestedModel || provider.name
+              })
+            });
+
+            return providerResponse;
+          }
         );
 
-        threadName = response.content.trim().slice(0, 100);
+        threadName = sanitizeDiscordMassMentions(response.content).trim().slice(0, 100);
+        if (!threadName) {
+          threadName = fallbackThreadName;
+        }
       } else {
-        threadName = `Chat with ${interaction.user.username}`;
+        threadName = fallbackThreadName;
       }
     }
 

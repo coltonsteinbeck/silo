@@ -8,6 +8,7 @@ import {
   ModalActionRowComponentBuilder
 } from 'discord.js';
 import type { Command } from './types';
+import { logger } from '@silo/core';
 import type { AdminAdapter } from '../database/admin-adapter';
 
 export class FeedbackCommand implements Command {
@@ -105,7 +106,7 @@ export class FeedbackCommand implements Command {
         ephemeral: true
       });
     } catch (error) {
-      console.error('[FeedbackCommand] Error saving feedback:', error);
+      logger.error('[FeedbackCommand] Error saving feedback:', error);
       await interaction.reply({
         content: 'There was an error submitting your feedback. Please try again later.',
         ephemeral: true

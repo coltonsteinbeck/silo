@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { sanitizeAssistantOutput } from '../../security/output-sanitizer';
+import {
+  sanitizeAssistantOutput,
+  sanitizeDiscordMassMentions
+} from '../../security/output-sanitizer';
 
 describe('sanitizeAssistantOutput', () => {
   test('strips internal referenced context labels', () => {
@@ -100,5 +103,35 @@ describe('sanitizeAssistantOutput', () => {
 
     expect(sanitized).toContain('x < 5');
     expect(sanitized).toContain('y > 1');
+  });
+
+  test('neutralizes Discord mass mentions by default', () => {
+    const raw = '@everyone please read this. @HERE too.';
+
+    const sanitized = sanitizeAssistantOutput(raw);
+
+    expect(sanitized).toBe('everyone please read this. here too.');
+    expect(sanitized).not.toContain('@everyone');
+    expect(sanitized).not.toContain('@HERE');
+  });
+
+  test('can preserve mass mention text when explicitly disabled', () => {
+    const raw = '@everyone test';
+
+    const sanitized = sanitizeAssistantOutput(raw, { neutralizeMassMentions: false });
+
+    expect(sanitized).toBe('@everyone test');
+  });
+
+  test('does not alter normal user or role mentions', () => {
+    const raw = '<@1234567890> <@&9876543210> @someone @everywhere';
+
+    expect(sanitizeDiscordMassMentions(raw)).toBe(raw);
+  });
+
+  test('neutralizes repeated mass mentions with punctuation', () => {
+    const raw = '@everyone, @here! @Everyone? @HeRe.';
+
+    expect(sanitizeDiscordMassMentions(raw)).toBe('everyone, here! everyone? here.');
   });
 });

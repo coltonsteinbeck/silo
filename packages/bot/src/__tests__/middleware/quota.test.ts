@@ -206,6 +206,25 @@ describe('QuotaMiddleware', () => {
       expect(result.reason).toContain('temporarily unavailable');
     });
 
+    test('fails closed when concurrent quota lookups reject', async () => {
+      mockAdminDb.checkGuildQuota = mock(async () => {
+        throw new Error('quota lookup failed');
+      });
+
+      const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
+      const result = await middleware.checkQuota(
+        'guild1',
+        'user1',
+        { id: 'user1' } as any,
+        'text_tokens',
+        100
+      );
+
+      expect(result.allowed).toBe(false);
+      expect(result.max).toBe(0);
+      expect(result.reason).toContain('temporarily unavailable');
+    });
+
     test('fails closed when resolved user limit is invalid', async () => {
       mockAdminDb.getRoleTierQuota = mock(async () => ({
         textTokens: Number.NaN,

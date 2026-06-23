@@ -84,6 +84,25 @@ export interface ImageAnalysisResponse {
   };
 }
 
+export interface WebSearchCitation {
+  url: string;
+  title?: string;
+  startIndex?: number;
+  endIndex?: number;
+}
+
+export interface WebSearchOptions {
+  model?: string;
+  maxResults?: number;
+}
+
+export interface WebSearchResponse {
+  content: string;
+  citations: WebSearchCitation[];
+  model?: string;
+  usage?: TextGenerationResponse['usage'];
+}
+
 export interface BaseProvider {
   name: string;
   capabilities?: ProviderCapabilities;
@@ -110,9 +129,13 @@ export interface VideoProvider extends BaseProvider {
   generateVideo(prompt: string, options?: VideoGenerationOptions): Promise<VideoGenerationResponse>;
 }
 
+export interface WebSearchProvider extends BaseProvider {
+  searchWeb(query: string, options?: WebSearchOptions): Promise<WebSearchResponse>;
+}
+
 export interface EmbeddingProvider extends BaseProvider {
   generateEmbedding(text: string): Promise<number[]>;
   generateEmbeddings(texts: string[]): Promise<number[][]>;
 }
 
-export type ProviderType = 'text' | 'image' | 'video' | 'embedding';
+export type ProviderType = 'text' | 'image' | 'video' | 'web_search' | 'embedding';

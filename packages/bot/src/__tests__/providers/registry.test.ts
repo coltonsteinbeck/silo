@@ -199,6 +199,44 @@ describe('ProviderRegistry', () => {
     });
   });
 
+  describe('getWebSearchProvider', () => {
+    const createWebSearchProvider = (name: string, configured: boolean) => ({
+      name,
+      isConfigured: () => configured,
+      searchWeb: async () => ({
+        content: `${name} result`,
+        citations: []
+      })
+    });
+
+    test('returns a named configured provider and null for missing or unconfigured providers', () => {
+      const registry = new ProviderRegistry(createMinimalConfig() as any);
+      const unconfiguredProvider = createWebSearchProvider('openai', false);
+      const configuredProvider = createWebSearchProvider('xai', true);
+
+      (registry as any).webSearchProviders = [unconfiguredProvider, configuredProvider];
+
+      expect(registry.getWebSearchProvider('xai')).toBe(configuredProvider);
+      expect(registry.getWebSearchProvider('openai')).toBeNull();
+      expect(registry.getWebSearchProvider('missing')).toBeNull();
+    });
+
+    test('returns the first configured provider or null when none are configured', () => {
+      const registry = new ProviderRegistry(createMinimalConfig() as any);
+      const firstProvider = createWebSearchProvider('openai', false);
+      const secondProvider = createWebSearchProvider('xai', true);
+
+      (registry as any).webSearchProviders = [firstProvider, secondProvider];
+      expect(registry.getWebSearchProvider()).toBe(secondProvider);
+
+      (registry as any).webSearchProviders = [firstProvider];
+      expect(registry.getWebSearchProvider()).toBeNull();
+
+      (registry as any).webSearchProviders = [];
+      expect(registry.getWebSearchProvider()).toBeNull();
+    });
+  });
+
   describe('getAvailableProviders', () => {
     test('returns empty arrays when no providers', () => {
       const config = createMinimalConfig();

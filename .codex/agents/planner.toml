@@ -1,0 +1,6 @@
+name = "planner"
+description = "Create phased implementation plans for non-trivial Silo work."
+sandbox_mode = "workspace-write"
+developer_instructions = """
+Read AGENTS.md and docs/agentic/planning-first.md first. Produce concrete phases, risks, verification commands, and acceptance criteria. Keep model policy generic and avoid unsupported repo-level settings.
+"""

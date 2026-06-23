@@ -131,6 +131,35 @@ function classifyWithHeuristics(text: string): SentimentClassification {
   };
 }
 
+function countWords(text: string): number {
+  return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
+function shouldUsePromptHeuristicFastPath(
+  text: string,
+  context: 'prompt' | 'response',
+  heuristic: SentimentClassification
+): boolean {
+  if (context !== 'prompt') {
+    return false;
+  }
+
+  if (!parseBoolean(process.env.SENTIMENT_PROMPT_FAST_PATH, true)) {
+    return false;
+  }
+
+  const wordCount = countWords(text);
+  if (wordCount <= 6 && text.length <= 80) {
+    return true;
+  }
+
+  if (heuristic.confidence >= getMinConfidence()) {
+    return true;
+  }
+
+  return heuristic.label === 'neutral' && wordCount <= 20 && text.length <= 240;
+}
+
 export function classifyPromptDeterministic(text: string): SentimentClassification | null {
   const trimmed = text.trim();
   if (!trimmed) {
@@ -218,6 +247,10 @@ async function classify(
   const heuristic = classifyWithHeuristics(trimmed);
   const mode = (process.env.SENTIMENT_MODE || 'hybrid').toLowerCase();
   if (mode === 'heuristic') {
+    return heuristic;
+  }
+
+  if (mode !== 'ai' && shouldUsePromptHeuristicFastPath(trimmed, context, heuristic)) {
     return heuristic;
   }
 

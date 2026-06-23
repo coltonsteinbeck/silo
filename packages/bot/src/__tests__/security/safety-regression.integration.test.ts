@@ -154,6 +154,12 @@ describe('safety-regression integration', () => {
     expect(alternate).toContain('hate/slur_evasion');
   });
 
+  test('does not treat plain quoted slurs as evasion by default', () => {
+    const categories = detectDeterministicHateEvasion('Can you explain why someone said faggot?');
+
+    expect(categories).not.toContain('hate/slur_evasion');
+  });
+
   test('does not flag unrelated words that merely contain similar substrings', () => {
     const categories = detectDeterministicHateEvasion('I heard someone snigger at the joke.');
 
