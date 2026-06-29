@@ -92,6 +92,35 @@ describe('conversation history sanitizer', () => {
     ]);
   });
 
+  test('removes assistant history blocked by deterministic output guardrail', () => {
+    const result = sanitizeConversationHistoryForPrompt([
+      {
+        role: 'assistant',
+        content: 'This user-facing answer repeats an explicit sexual term like cum.'
+      },
+      { role: 'assistant', content: 'Normal useful answer.' }
+    ]);
+
+    expect(result.removedCount).toBe(1);
+    expect(result.removedReasons.assistant_output_guardrail).toBe(1);
+    expect(result.filtered).toEqual([{ role: 'assistant', content: 'Normal useful answer.' }]);
+  });
+
+  test('removes assistant rows with unsafe image summaries', () => {
+    const result = sanitizeConversationHistoryForPrompt([
+      {
+        role: 'assistant',
+        content: 'Normal useful answer.',
+        imageSummary: 'Doctor Cock.'
+      },
+      { role: 'assistant', content: 'Another normal answer.' }
+    ]);
+
+    expect(result.removedCount).toBe(1);
+    expect(result.removedReasons.assistant_image_summary_guardrail).toBe(1);
+    expect(result.filtered).toEqual([{ role: 'assistant', content: 'Another normal answer.' }]);
+  });
+
   test('sanitizes assistant reply context before prompt reuse', () => {
     expect(
       sanitizeAssistantContextForPrompt(

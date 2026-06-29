@@ -87,6 +87,8 @@ const LOW_INFORMATION_FOLLOW_UP =
 const STANDALONE_STYLE_REQUEST =
   /^(?:(?:please|now)\s+)?(?:talk|speak|respond|write|act)\s+like\b|^be\s+(?:nice|nicer|mean|meaner)(?:\s+to\s+me)?$/i;
 const HARMLESS_REFUSAL_FOLLOW_UP = /\bi\s+can(?:'|’)?t\s+do\s+that\b/i;
+const REFUSAL_LOOP_RESET =
+  /\b(?:all\s+you\s+(?:ever\s+)?say\s+is\s+no|you\s+(?:only|just)\s+say\s+no|why\s+do\s+you\s+keep\s+(?:refusing|saying\s+no)|stop\s+(?:refusing|saying\s+no)|you\s+(?:keep|kept)\s+(?:refusing|saying\s+no)|can(?:'|’)?t\s+answer\s+anything|won(?:'|’)?t\s+answer\s+anything|guardrails?\s+(?:keep|keeps|kept)\s+(?:triggering|tripping)|trips?\s+the\s+wires?)\b/i;
 
 export function isStandaloneCasualCheckIn(text: string): boolean {
   const normalized = text.replace(/\s+/g, ' ').trim();
@@ -121,10 +123,23 @@ export function isLowContextStandaloneTurn(text: string): boolean {
     return true;
   }
 
+  if (isRefusalLoopResetTurn(plainWithoutTrailingPunctuation)) {
+    return true;
+  }
+
   return (
     STANDALONE_STYLE_REQUEST.test(plainWithoutTrailingPunctuation) &&
     !NON_STANDALONE_CONTEXT.test(plainWithoutTrailingPunctuation)
   );
+}
+
+export function isRefusalLoopResetTurn(text: string): boolean {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (!normalized || normalized.length > 180 || /https?:\/\//i.test(normalized)) {
+    return false;
+  }
+
+  return REFUSAL_LOOP_RESET.test(normalized);
 }
 
 export function shouldIncludeConversationHistoryForPrompt(params: {

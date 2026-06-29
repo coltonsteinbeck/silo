@@ -22,6 +22,17 @@ export type AgentSafetyState =
   | 'output_repaired'
   | 'bounded_failure';
 export type AgentGraphOutcome = 'success' | 'blocked' | 'repaired' | 'bounded_failure' | 'error';
+export type AgentSafetyAction = 'allowed' | 'blocked' | 'warned' | 'api_error_fail_closed';
+
+export interface AgentOutputSafetyResult {
+  blocked: boolean;
+  repaired: boolean;
+  action: AgentSafetyAction;
+  guardrailsAllowed: boolean;
+  categories: string[];
+  reasons: string[];
+  outputWasReplaced: boolean;
+}
 
 export interface AgentToolRequest {
   name: AgentToolName;
@@ -80,6 +91,7 @@ export interface AgentGraphResult {
   toolResults: AgentToolResult[];
   citations: Array<{ url: string; title?: string }>;
   mediaResult?: AgentMediaResult;
+  outputSafety?: AgentOutputSafetyResult;
   stepCount: number;
 }
 
@@ -91,6 +103,7 @@ export interface AgentGraphState extends AgentGraphInput {
   toolResults: AgentToolResult[];
   citations: Array<{ url: string; title?: string }>;
   mediaResult?: AgentMediaResult;
+  outputSafety?: AgentOutputSafetyResult;
   modelResponse?: TextGenerationResponse;
   outcome?: AgentGraphOutcome;
 }
