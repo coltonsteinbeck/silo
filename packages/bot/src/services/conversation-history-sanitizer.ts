@@ -1,8 +1,10 @@
 import { getManagedGuildAssistantOutputBlockedMessages } from '../security/guild-persona-policy';
+import { classifyAssistantOutputSafetyDeterministic } from '../security/prompt-safety';
 
 export interface ConversationHistoryMessage {
   role: string;
   content: string;
+  imageSummary?: string | null;
 }
 
 export interface ConversationHistorySanitizationResult<T extends ConversationHistoryMessage> {
@@ -58,7 +60,10 @@ export function isGenericSafetyFallbackContent(content: string): boolean {
   );
 }
 
-function getUnsafeAssistantHistoryReason(content: string): string | null {
+function getUnsafeAssistantHistoryReason(
+  content: string,
+  imageSummary?: string | null
+): string | null {
   const normalized = normalizeHistoryContent(content);
 
   if (!normalized) {
@@ -91,6 +96,18 @@ function getUnsafeAssistantHistoryReason(content: string): string | null {
       /\b(?:final boss|structural integrity|cursed group|extreme prejudice)\b/i.test(content))
   ) {
     return 'unsafe_banter_residue';
+  }
+
+  const outputSafety = classifyAssistantOutputSafetyDeterministic(content);
+  if (!outputSafety.allowed) {
+    return 'assistant_output_guardrail';
+  }
+
+  if (imageSummary) {
+    const imageSummarySafety = classifyAssistantOutputSafetyDeterministic(imageSummary);
+    if (!imageSummarySafety.allowed) {
+      return 'assistant_image_summary_guardrail';
+    }
   }
 
   return null;
@@ -187,7 +204,7 @@ export function sanitizeConversationHistoryForPrompt<T extends ConversationHisto
       return true;
     }
 
-    const reason = getUnsafeAssistantHistoryReason(msg.content);
+    const reason = getUnsafeAssistantHistoryReason(msg.content, msg.imageSummary);
     if (!reason) {
       return true;
     }

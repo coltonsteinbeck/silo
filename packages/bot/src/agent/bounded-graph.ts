@@ -6,6 +6,7 @@ import type {
   AgentGraphOutcome,
   AgentGraphResult,
   AgentGraphState,
+  AgentOutputSafetyResult,
   AgentSafetyState,
   AgentToolName,
   AgentToolRequest
@@ -75,6 +76,7 @@ const AgentGraphAnnotation = Annotation.Root({
     default: () => []
   }),
   mediaResult: Annotation<AgentGraphState['mediaResult'] | undefined>,
+  outputSafety: Annotation<AgentOutputSafetyResult | undefined>,
   modelResponse: Annotation<TextGenerationResponse | undefined>,
   outcome: Annotation<AgentGraphOutcome | undefined>
 });
@@ -185,6 +187,7 @@ function buildResult(state: State): AgentGraphResult {
     toolResults: state.toolResults,
     citations: state.citations,
     mediaResult: state.mediaResult,
+    outputSafety: state.outputSafety,
     stepCount: state.graphStep
   };
 }
@@ -562,15 +565,20 @@ async function outputSafetyNode(state: State): Promise<StateUpdate> {
             )
           : sanitizedContent
       };
+      const outputSafety: AgentOutputSafetyResult = {
+        blocked,
+        repaired,
+        action: decision.action,
+        guardrailsAllowed: safetyResult.allowed,
+        categories: safetyCategories,
+        reasons: safetyResult.reasons,
+        outputWasReplaced: repaired
+      };
 
       observation?.update({
         output: {
-          repaired,
-          blocked,
-          action: decision.action,
-          guardrailsAllowed: safetyResult.allowed,
-          safetyState,
-          categories: safetyCategories
+          ...outputSafety,
+          safetyState
         },
         metadata: buildNodeMetadata(state, 'output_safety', { safetyState, outcome })
       });
@@ -578,6 +586,7 @@ async function outputSafetyNode(state: State): Promise<StateUpdate> {
       return {
         graphStep: nextStep(state),
         modelResponse,
+        outputSafety,
         safetyState,
         outcome
       };
@@ -657,6 +666,7 @@ export async function runBoundedAgentGraph(input: AgentGraphInput): Promise<Agen
       toolResults: [],
       citations: [],
       mediaResult: undefined,
+      outputSafety: undefined,
       stepCount: input.limits.recursionLimit
     };
 

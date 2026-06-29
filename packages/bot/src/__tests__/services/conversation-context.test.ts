@@ -3,6 +3,7 @@ import {
   assembleConversationContext,
   buildEffectiveUserPrompt,
   buildConversationHistoryInstruction,
+  isRefusalLoopResetTurn,
   isLowContextStandaloneTurn,
   shouldIncludeConversationHistoryForPrompt,
   buildImageSummaryBlock
@@ -133,6 +134,8 @@ describe('conversation-context', () => {
       'Thanks',
       'maybe you can?',
       "I can't do that it's almost Father's Day",
+      'apparenlly all you say is no',
+      'why do you keep refusing',
       'now talk like a pirate',
       'please talk like a pirate captain in the 1600s',
       'be nice'
@@ -146,6 +149,19 @@ describe('conversation-context', () => {
         })
       ).toBe(false);
     }
+  });
+
+  test('detects harmless refusal-loop reset turns', () => {
+    expect(isRefusalLoopResetTurn('apparenlly all you say is no')).toBe(true);
+    expect(isRefusalLoopResetTurn('why do you keep refusing')).toBe(true);
+    expect(isRefusalLoopResetTurn('what did you mean by that?')).toBe(false);
+    expect(
+      shouldIncludeConversationHistoryForPrompt({
+        latestUserText: 'apparenlly all you say is no',
+        hasReplyContext: true,
+        hasVisionTargets: false
+      })
+    ).toBe(false);
   });
 
   test('keeps history for topical prompts and vision turns with text', () => {

@@ -89,6 +89,12 @@ describe('bounded agent graph', () => {
     expect(result.response.content).toBe('everyone graph update for here');
     expect(result.outcome).toBe('repaired');
     expect(result.safetyState).toBe('output_repaired');
+    expect(result.outputSafety).toMatchObject({
+      blocked: false,
+      repaired: true,
+      action: 'allowed',
+      outputWasReplaced: true
+    });
   });
 
   test('blocks unsafe assistant output inside graph output safety', async () => {
@@ -101,6 +107,12 @@ describe('bounded agent graph', () => {
     expect(result.response.content).toBe(
       'I can’t help with that request. Please rephrase and I can provide a safer alternative.'
     );
+    expect(result.outputSafety).toMatchObject({
+      blocked: true,
+      action: 'blocked',
+      outputWasReplaced: true
+    });
+    expect(result.outputSafety?.categories).toContain('sexual/unsafe_persona');
   });
 
   test('uses managed output-blocked message while preserving graph block state', async () => {
@@ -118,6 +130,11 @@ describe('bounded agent graph', () => {
     expect(result.response.content).toBe(
       'Nope. That one trips the wires. Rephrase it less cursed and I can help.'
     );
+    expect(result.outputSafety).toMatchObject({
+      blocked: true,
+      action: 'blocked',
+      outputWasReplaced: true
+    });
   });
 
   test('allows benign anatomy help output despite broad sexual moderation flag', async () => {

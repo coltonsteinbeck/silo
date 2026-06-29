@@ -38,6 +38,17 @@ export interface PromptSafetyModerationResult {
   scores: Record<string, number>;
 }
 
+interface DeterministicPromptSafetyDetails {
+  strictToolReasons: string[];
+  assistantOutputReasons: string[];
+  sexualMinorsReason: string[];
+}
+
+interface DeterministicPromptSafetyEvaluation {
+  result: PromptSafetyResult;
+  details: DeterministicPromptSafetyDetails;
+}
+
 interface IntentSignals {
   analysisOrSupport: boolean;
   transformRequest: boolean;
@@ -562,6 +573,145 @@ function shouldSuppressModerationCategory(params: {
   return !hasDeterministicSexualReason && hasBenignSexualAnatomyContext(params.content);
 }
 
+function buildBasePromptSafetyResult(options: PromptSafetyEvaluationOptions): PromptSafetyResult {
+  return {
+    allowed: true,
+    profile: options.profile,
+    source: options.source,
+    userId: options.userId,
+    jailbreak: {
+      detected: false,
+      matches: []
+    },
+    harmfulIntent: {
+      detected: false,
+      matches: []
+    },
+    moderationCategories: [],
+    moderationScores: {},
+    lexicalMatches: [],
+    reasons: []
+  };
+}
+
+function evaluateDeterministicPromptSafety(
+  input: string,
+  options: PromptSafetyEvaluationOptions
+): DeterministicPromptSafetyEvaluation {
+  const trimmed = input.trim();
+  const baseResult = buildBasePromptSafetyResult(options);
+  const emptyDetails: DeterministicPromptSafetyDetails = {
+    strictToolReasons: [],
+    assistantOutputReasons: [],
+    sexualMinorsReason: []
+  };
+
+  if (!trimmed) {
+    return {
+      result: baseResult,
+      details: emptyDetails
+    };
+  }
+
+  const signals = collectIntentSignals(trimmed);
+  const lexicalMatches = detectLexicalSlurMatches(trimmed);
+  const directSlurRequest = detectDirectSlurRequest(trimmed);
+  const hateEvasionMatches =
+    options.profile === 'chat_output' ? [] : detectHateEvasionMatches(trimmed);
+  const jailbreakMatches =
+    options.profile === 'chat_output' ? [] : detectStrongJailbreakMatches(trimmed);
+  const protectedGroupReasons =
+    options.profile === 'chat_output' ? [] : detectProtectedGroupRequestReason(trimmed);
+  const strictToolReasons =
+    options.profile === 'strict_tool_input' ? detectStrictToolReasons(trimmed) : [];
+  const assistantOutputReasons =
+    options.profile === 'assistant_output' ? detectAssistantOutputReasons(trimmed) : [];
+  const sexualMinorsReason = SEXUAL_MINORS_PATTERN.test(trimmed) ? ['sexual/minors'] : [];
+  const selfHarmAbuseReason = detectSelfHarmAbuseDirective(trimmed)
+    ? ['harassment/self_harm_abuse']
+    : [];
+  const directHarmTargetingReason = detectDirectHarmTargetingRequest(trimmed)
+    ? ['violence/harm_targeting_request']
+    : [];
+  const socialGroupTargetingReason =
+    options.profile === 'chat_input' || options.profile === 'strict_tool_input'
+      ? detectSocialGroupTargetingRequest(trimmed)
+        ? ['harassment/group_targeting_request']
+        : []
+      : [];
+  const allowContextualSlurUse =
+    options.profile !== 'chat_output' && canTreatSlurUseAsContext(trimmed, signals);
+
+  const reasons: string[] = [];
+  if (directSlurRequest) {
+    reasons.push('hate/slur_generation_request');
+  }
+
+  if (lexicalMatches.length > 0 && !allowContextualSlurUse) {
+    reasons.push('hate/slur_usage');
+  }
+
+  if (hateEvasionMatches.length > 0) {
+    reasons.push('hate/slur_obfuscation_request');
+  }
+
+  reasons.push(
+    ...protectedGroupReasons,
+    ...sexualMinorsReason,
+    ...strictToolReasons,
+    ...assistantOutputReasons,
+    ...selfHarmAbuseReason,
+    ...directHarmTargetingReason,
+    ...socialGroupTargetingReason
+  );
+
+  if (jailbreakMatches.length > 0) {
+    reasons.push('prompt_injection/policy_bypass');
+  }
+
+  const harmfulIntentMatches = unique([
+    ...hateEvasionMatches,
+    ...protectedGroupReasons,
+    ...strictToolReasons,
+    ...assistantOutputReasons,
+    ...sexualMinorsReason,
+    ...selfHarmAbuseReason,
+    ...directHarmTargetingReason,
+    ...socialGroupTargetingReason,
+    ...(directSlurRequest ? ['slur_generation_request'] : [])
+  ]);
+  const allReasons = unique(reasons);
+
+  return {
+    result: {
+      ...baseResult,
+      allowed: allReasons.length === 0,
+      jailbreak: {
+        detected: jailbreakMatches.length > 0,
+        matches: jailbreakMatches
+      },
+      harmfulIntent: {
+        detected: harmfulIntentMatches.length > 0,
+        matches: harmfulIntentMatches
+      },
+      lexicalMatches,
+      reasons: allReasons
+    },
+    details: {
+      strictToolReasons,
+      assistantOutputReasons,
+      sexualMinorsReason
+    }
+  };
+}
+
+export function classifyAssistantOutputSafetyDeterministic(input: string): PromptSafetyResult {
+  return evaluateDeterministicPromptSafety(input, {
+    profile: 'assistant_output',
+    source: 'conversation_history'
+  }).result;
+}
+
 async function runModeration(input: string): Promise<{
   flaggedCategories: string[];
   scores: Record<string, number>;
@@ -641,84 +791,10 @@ export async function evaluatePromptSafety(
   options: PromptSafetyEvaluationOptions
 ): Promise<PromptSafetyResult> {
   const trimmed = input.trim();
-  const signals = collectIntentSignals(trimmed);
-
-  const baseResult: PromptSafetyResult = {
-    allowed: true,
-    profile: options.profile,
-    source: options.source,
-    userId: options.userId,
-    jailbreak: {
-      detected: false,
-      matches: []
-    },
-    harmfulIntent: {
-      detected: false,
-      matches: []
-    },
-    moderationCategories: [],
-    moderationScores: {},
-    lexicalMatches: [],
-    reasons: []
-  };
+  const deterministic = evaluateDeterministicPromptSafety(trimmed, options);
 
   if (!trimmed) {
-    return baseResult;
-  }
-
-  const lexicalMatches = detectLexicalSlurMatches(trimmed);
-  const directSlurRequest = detectDirectSlurRequest(trimmed);
-  const hateEvasionMatches =
-    options.profile === 'chat_output' ? [] : detectHateEvasionMatches(trimmed);
-  const jailbreakMatches =
-    options.profile === 'chat_output' ? [] : detectStrongJailbreakMatches(trimmed);
-  const protectedGroupReasons =
-    options.profile === 'chat_output' ? [] : detectProtectedGroupRequestReason(trimmed);
-  const strictToolReasons =
-    options.profile === 'strict_tool_input' ? detectStrictToolReasons(trimmed) : [];
-  const assistantOutputReasons =
-    options.profile === 'assistant_output' ? detectAssistantOutputReasons(trimmed) : [];
-  const sexualMinorsReason = SEXUAL_MINORS_PATTERN.test(trimmed) ? ['sexual/minors'] : [];
-  const selfHarmAbuseReason = detectSelfHarmAbuseDirective(trimmed)
-    ? ['harassment/self_harm_abuse']
-    : [];
-  const directHarmTargetingReason = detectDirectHarmTargetingRequest(trimmed)
-    ? ['violence/harm_targeting_request']
-    : [];
-  const socialGroupTargetingReason =
-    options.profile === 'chat_input' || options.profile === 'strict_tool_input'
-      ? detectSocialGroupTargetingRequest(trimmed)
-        ? ['harassment/group_targeting_request']
-        : []
-      : [];
-  const allowContextualSlurUse =
-    options.profile !== 'chat_output' && canTreatSlurUseAsContext(trimmed, signals);
-
-  const reasons: string[] = [];
-  if (directSlurRequest) {
-    reasons.push('hate/slur_generation_request');
-  }
-
-  if (lexicalMatches.length > 0 && !allowContextualSlurUse) {
-    reasons.push('hate/slur_usage');
-  }
-
-  if (hateEvasionMatches.length > 0) {
-    reasons.push('hate/slur_obfuscation_request');
-  }
-
-  reasons.push(
-    ...protectedGroupReasons,
-    ...sexualMinorsReason,
-    ...strictToolReasons,
-    ...assistantOutputReasons,
-    ...selfHarmAbuseReason,
-    ...directHarmTargetingReason,
-    ...socialGroupTargetingReason
-  );
-
-  if (jailbreakMatches.length > 0) {
-    reasons.push('prompt_injection/policy_bypass');
+    return deterministic.result;
   }
 
   const moderation = await runModeration(trimmed);
@@ -729,45 +805,20 @@ export async function evaluatePromptSafety(
         category,
         content: trimmed,
         profile: options.profile,
-        strictToolReasons,
-        assistantOutputReasons,
-        sexualMinorsReason
+        strictToolReasons: deterministic.details.strictToolReasons,
+        assistantOutputReasons: deterministic.details.assistantOutputReasons,
+        sexualMinorsReason: deterministic.details.sexualMinorsReason
       })
   );
   const moderationScores = Object.fromEntries(
     moderationCategories.map(category => [category, moderation.scores[category] || 1])
   );
 
-  const harmfulIntentMatches = unique([
-    ...hateEvasionMatches,
-    ...protectedGroupReasons,
-    ...strictToolReasons,
-    ...assistantOutputReasons,
-    ...sexualMinorsReason,
-    ...selfHarmAbuseReason,
-    ...directHarmTargetingReason,
-    ...socialGroupTargetingReason,
-    ...(directSlurRequest ? ['slur_generation_request'] : [])
-  ]);
-  const allReasons = unique(reasons);
-
   return {
-    allowed: allReasons.length === 0 && moderationCategories.length === 0,
-    profile: options.profile,
-    source: options.source,
-    userId: options.userId,
-    jailbreak: {
-      detected: jailbreakMatches.length > 0,
-      matches: jailbreakMatches
-    },
-    harmfulIntent: {
-      detected: harmfulIntentMatches.length > 0,
-      matches: harmfulIntentMatches
-    },
+    ...deterministic.result,
+    allowed: deterministic.result.reasons.length === 0 && moderationCategories.length === 0,
     moderationCategories,
     moderationScores,
-    lexicalMatches,
-    reasons: allReasons,
     moderationError: moderation.error
   };
 }
