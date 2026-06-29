@@ -43,7 +43,8 @@ import {
   sentimentClassifier,
   buildSentimentStyleInstruction,
   shouldApplySentiment,
-  sanitizeAssistantProfanity
+  sanitizeAssistantProfanity,
+  type ModerationResult
 } from './security';
 import { hashPrompt } from './security/prompt-policy';
 import { sanitizeAssistantOutput, sanitizeDiscordMassMentions } from './security/output-sanitizer';
@@ -59,6 +60,7 @@ import {
 } from './services/conversation-context';
 import { sanitizeConversationHistoryForPrompt } from './services/conversation-history-sanitizer';
 import { buildMediaReplyPayload, resolveDeliverableMediaResult } from './services/media-delivery';
+import { buildConversationPersistenceMessages } from './services/conversation-persistence';
 import { resolveReplyContext } from './services/reply-context';
 import { shouldHandleAssistantMessage } from './services/message-trigger';
 import { fetchUrlContextBlock } from './services/url-context';
@@ -980,7 +982,9 @@ export async function startBot(): Promise<void> {
                 message.author.id,
                 'message',
                 {
-                  allowMildProfanityInput: managedAllowMildProfanity
+                  allowMildProfanityInput: managedAllowMildProfanity,
+                  profile: 'chat_input',
+                  source: 'chat_input'
                 }
               );
 
@@ -1838,6 +1842,7 @@ export async function startBot(): Promise<void> {
           // Discord has a 2000 character limit for messages
           const MAX_MESSAGE_LENGTH = 2000;
           let responseContent = response.content;
+          const graphOutputSafety = activeGraphResult.current?.outputSafety;
 
           const { outputGuardrailsDecision, assistantModeration } = await withLangfuseGuardrail(
             {
@@ -1856,18 +1861,31 @@ export async function startBot(): Promise<void> {
               }
             },
             async guardrail => {
-              const assistantModeration = await contentSanitizer.moderateContent(
-                response.content,
-                guildId,
-                message.author.id,
-                'message',
-                {
-                  profile: 'assistant_output',
-                  source: 'chat_output',
-                  allowMildProfanityInput: allowMildAssistantProfanity
-                }
-              );
-              const outputGuardrailsDecision = assistantModeration.allowed
+              const assistantModeration: ModerationResult = graphOutputSafety
+                ? {
+                    allowed: !graphOutputSafety.blocked,
+                    action: graphOutputSafety.action,
+                    flaggedCategories: graphOutputSafety.categories,
+                    scores: {},
+                    contentHash: contentSanitizer.hashContent(response.content),
+                    reasons: graphOutputSafety.reasons
+                  }
+                : await contentSanitizer.moderateContent(
+                    response.content,
+                    guildId,
+                    message.author.id,
+                    'message',
+                    {
+                      profile: 'assistant_output',
+                      source: 'chat_output',
+                      allowMildProfanityInput: allowMildAssistantProfanity
+                    }
+                  );
+              const outputGuardrailsDecision: {
+                allowed: boolean;
+                category?: string;
+                reason?: string;
+              } = assistantModeration.allowed
                 ? { allowed: true }
                 : {
                     allowed: false,
@@ -1891,6 +1909,11 @@ export async function startBot(): Promise<void> {
                   moderationError: assistantModeration.moderationError || null,
                   outputGuardrailCategory: outputGuardrailsDecision.category || null,
                   outputGuardrailReason: outputGuardrailsDecision.reason || null,
+                  outputSafetySource: graphOutputSafety
+                    ? 'agent_output_safety'
+                    : 'outer_output_safety',
+                  graphOutputRepaired: graphOutputSafety?.repaired ?? null,
+                  graphOutputWasReplaced: graphOutputSafety?.outputWasReplaced ?? null,
                   managedPersonaId: managedPersona?.personaId || null
                 }
               });
@@ -1934,9 +1957,11 @@ export async function startBot(): Promise<void> {
             logger.warn(
               `Assistant output blocked for guild ${guildId}, user ${message.author.id}: ${assistantModeration.flaggedCategories.join(', ')}`
             );
-            responseContent =
-              managedPersona?.assistantOutputBlockedMessage ||
-              'I can’t help with that request. Please rephrase and I can provide a safer alternative.';
+            if (!graphOutputSafety?.blocked) {
+              responseContent =
+                managedPersona?.assistantOutputBlockedMessage ||
+                'I can’t help with that request. Please rephrase and I can provide a safer alternative.';
+            }
           } else if (assistantModeration.action === 'warned') {
             safetyMonitor.recordIncident({
               guildId,
@@ -2049,9 +2074,12 @@ export async function startBot(): Promise<void> {
             allowedMentions: { repliedUser: false, parse: [] }
           });
 
-          const outputWasReplaced = responseContent !== response.content;
+          const outputWasReplaced =
+            responseContent !== response.content || Boolean(graphOutputSafety?.outputWasReplaced);
           const traceOutcome = outputBlockedBySafety
-            ? 'output_blocked'
+            ? graphOutputSafety?.blocked
+              ? 'graph_output_blocked'
+              : 'output_blocked'
             : activeGraphResult.current?.safetyState === 'output_blocked'
               ? 'graph_output_blocked'
               : 'success';
@@ -2082,6 +2110,9 @@ export async function startBot(): Promise<void> {
               outputResponseDirective: assistantModeration.responseDirective || 'none',
               outputGuardrailCategory: outputGuardrailsDecision.category || 'none',
               outputContentReplaced: outputWasReplaced,
+              outputSafetySource: graphOutputSafety ? 'agent_output_safety' : 'outer_output_safety',
+              graphOutputSafetyAction: graphOutputSafety?.action || null,
+              graphOutputSafetyCategories: graphOutputSafety?.categories || [],
               graphOutcome: activeGraphResult.current?.outcome || null,
               graphSafetyState: activeGraphResult.current?.safetyState || null,
               graphOutputBlocked: activeGraphResult.current?.safetyState === 'output_blocked',
@@ -2100,8 +2131,9 @@ export async function startBot(): Promise<void> {
 
           // Fire-and-forget: post-LLM writes don't block the user-facing response
           const assistantUserId = message.client.user?.id || message.author.id;
-          const conversationWrites = [
-            db.storeConversationMessage({
+          const conversationMessages = buildConversationPersistenceMessages({
+            outputBlockedBySafety,
+            userMessage: {
               guildId,
               channelId: message.channelId,
               userId: message.author.id,
@@ -2113,8 +2145,8 @@ export async function startBot(): Promise<void> {
               replyToUserId: conversationContext.directReplyUserId,
               referencedContent: conversationContext.referencedContent || null,
               imageSummary: imageSummaryBlock || null
-            }),
-            db.storeConversationMessage({
+            },
+            assistantMessage: {
               guildId,
               channelId: message.channelId,
               userId: assistantUserId,
@@ -2125,8 +2157,19 @@ export async function startBot(): Promise<void> {
               replyToUserId: conversationContext.directReplyUserId,
               referencedContent: conversationContext.referencedContent || null,
               imageSummary: imageSummaryBlock || null
-            })
-          ];
+            }
+          });
+          if (outputBlockedBySafety) {
+            logger.info('Skipped persisting blocked assistant fallback in prompt history', {
+              guildId,
+              channelId: message.channelId,
+              userId: message.author.id,
+              categories: assistantModeration.flaggedCategories
+            });
+          }
+          const conversationWrites = conversationMessages.map(conversationMessage =>
+            db.storeConversationMessage(conversationMessage)
+          );
           const sentimentEvent = adminDb.logEvent({
             guildId,
             userId: message.author.id,

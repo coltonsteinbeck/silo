@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import {
   buildPromptSafetyWarningMessage,
+  classifyAssistantOutputSafetyDeterministic,
   evaluatePromptSafety,
   resetPromptSafetyRuntimeForTests,
   setPromptSafetyRuntimeForTests
@@ -234,6 +235,16 @@ describe('evaluatePromptSafety', () => {
 
     expect(refusal.allowed).toBe(true);
     expect(medical.allowed).toBe(true);
+  });
+
+  test('deterministic assistant-output classifier blocks unsafe history without moderation', () => {
+    const result = classifyAssistantOutputSafetyDeterministic(
+      'This user-facing answer repeats an explicit sexual term like cum.'
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.reasons).toContain('sexual/explicit_generation');
+    expect(result.moderationCategories).toEqual([]);
   });
 
   test('strict_tool_input is stricter than chat_input for adult sexual prompts', async () => {
