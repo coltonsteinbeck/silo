@@ -16,9 +16,9 @@ import {
   detectDirectHarmTargetingRequest,
   detectSelfHarmAbuseDirective,
   detectSocialGroupTargetingRequest,
-  evaluatePromptSafety,
   type GuardrailProfile
 } from './prompt-safety';
+import { evaluateSafetyDecision, type SafetyDecision } from './safety-decision';
 import { classifyPromptDeterministic, SentimentClassification } from './sentiment-classifier';
 
 // Lazy-initialized OpenAI client (avoids error at module load time)
@@ -35,7 +35,11 @@ function getOpenAIClient(): OpenAI {
 
 export type ContentType = 'prompt' | 'memory' | 'feedback' | 'message';
 export type ModerationAction = 'allowed' | 'blocked' | 'warned' | 'api_error_fail_closed';
-export type ModerationResponseDirective = 'deescalate' | 'contextual_assistance' | 'safe_rewrite';
+export type ModerationResponseDirective =
+  | 'deescalate'
+  | 'contextual_assistance'
+  | 'safe_rewrite'
+  | 'boundary_redirect';
 
 export interface ModerationResult {
   allowed: boolean;
@@ -46,6 +50,7 @@ export interface ModerationResult {
   responseDirective?: ModerationResponseDirective;
   reasons?: string[];
   moderationError?: string;
+  safetyDecision?: SafetyDecision;
 }
 
 export interface ModerationOptions {
@@ -108,6 +113,10 @@ export function buildSafetyResponseInstruction(params: {
 
   if (params.responseDirective === 'contextual_assistance') {
     return '\n\nSafety response mode: The user appears to be discussing harmful content for explanation, moderation, reporting, or support. Help without repeating slurs, explicit sexual details, or violent instructions. Use neutral paraphrases or placeholders when needed.';
+  }
+
+  if (params.responseDirective === 'boundary_redirect') {
+    return '\n\nSafety response mode: Keep the response playful but non-explicit. Do not continue sexual roleplay or provide sexual instructions. Redirect with one brief joke, then offer a safe useful direction.';
   }
 
   return '';
@@ -881,25 +890,24 @@ class ContentSanitizer {
         : detectSafeReplyDirective(content, contentType);
 
     if (options.profile) {
-      const safetyResult = await evaluatePromptSafety(content, {
-        profile: options.profile,
+      const safetyDecision = await evaluateSafetyDecision(content, {
+        stage: options.profile === 'assistant_output' ? 'assistant_output' : 'input',
         source: options.source || contentType,
         userId
       });
-      const flaggedCategories = Array.from(
-        new Set([...safetyResult.reasons, ...safetyResult.moderationCategories])
-      );
-      const scores = buildSafetyCategoryScores(safetyResult.reasons, safetyResult.moderationScores);
-      const decision = evaluateModerationDecision(flaggedCategories, scores, {
-        allowMildProfanityInput: options.allowMildProfanityInput,
-        content,
-        responseDirective
-      });
+      const flaggedCategories = safetyDecision.categories;
+      const scores = safetyDecision.scores;
       const action: ModerationAction =
-        failClosedOnError && safetyResult.moderationError
+        safetyDecision.action === 'block' && safetyDecision.failed
           ? 'api_error_fail_closed'
-          : decision.action;
+          : safetyDecision.action === 'block'
+            ? 'blocked'
+            : safetyDecision.action === 'redirect'
+              ? 'warned'
+              : 'allowed';
       const allowed = action === 'allowed' || action === 'warned';
+      const resolvedDirective =
+        safetyDecision.action === 'redirect' ? 'boundary_redirect' : responseDirective;
 
       await this.logModerationResult({
         guildId,
@@ -918,9 +926,10 @@ class ContentSanitizer {
         flaggedCategories,
         scores,
         contentHash,
-        responseDirective: decision.responseDirective || responseDirective || undefined,
-        reasons: safetyResult.reasons,
-        moderationError: safetyResult.moderationError
+        responseDirective: resolvedDirective || undefined,
+        reasons: safetyDecision.reasons,
+        moderationError: safetyDecision.failureReason,
+        safetyDecision
       };
     }
 

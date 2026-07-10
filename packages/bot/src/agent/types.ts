@@ -8,6 +8,8 @@ import type { AgentGraphLimits } from './config';
 import type { AgentIntent } from './intent-router';
 import type { AgentMediaResult, AgentToolExecutor } from './tool-executor';
 import type { LangfuseMetadataInput } from '../telemetry/langfuse-metadata';
+import type { SafetyDecision } from '../security/safety-decision';
+import type { ResponseQualityResult } from '../services/response-quality';
 
 export type AgentToolName =
   | 'web_search'
@@ -19,19 +21,20 @@ export type AgentSafetyState =
   | 'allowed'
   | 'input_blocked'
   | 'output_blocked'
+  | 'quality_blocked'
   | 'output_repaired'
   | 'bounded_failure';
 export type AgentGraphOutcome = 'success' | 'blocked' | 'repaired' | 'bounded_failure' | 'error';
-export type AgentSafetyAction = 'allowed' | 'blocked' | 'warned' | 'api_error_fail_closed';
-
 export interface AgentOutputSafetyResult {
+  decision: SafetyDecision;
+  quality: ResponseQualityResult;
   blocked: boolean;
   repaired: boolean;
-  action: AgentSafetyAction;
-  guardrailsAllowed: boolean;
   categories: string[];
   reasons: string[];
   outputWasReplaced: boolean;
+  candidateHash: string;
+  candidatePreview: string;
 }
 
 export interface AgentToolRequest {
@@ -77,6 +80,9 @@ export interface AgentGraphInput {
   falsePositiveGuard?: string;
   outputBlockedMessage?: string;
   allowMildAssistantProfanity?: boolean;
+  inheritedSafetyRisk?: boolean;
+  recentAssistantMessages?: string[];
+  latestUserText?: string;
   requestedTools?: AgentToolRequest[];
   toolExecutor?: AgentToolExecutor;
   metadata: LangfuseMetadataInput;

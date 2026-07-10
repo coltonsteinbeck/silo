@@ -254,7 +254,20 @@ describe('bounded graph Langfuse e2e trace', () => {
       },
       async (_rootObservation, traceId) => {
         expect(traceId).toBe('trace-e2e');
-        return graph.runBoundedAgentGraph(graphInput);
+        return telemetry.withLangfuseSpan(
+          {
+            name: 'generate-assistant-response',
+            input: { promptPreview: 'newest Street Fighter patch notes' },
+            metadata: { provider: 'anthropic', temperature: 0.6 }
+          },
+          async observation => {
+            const graphResult = await graph.runBoundedAgentGraph(graphInput);
+            observation?.update({
+              output: { outputCharacters: graphResult.response.content.length }
+            });
+            return graphResult;
+          }
+        );
       }
     );
 
@@ -269,6 +282,7 @@ describe('bounded graph Langfuse e2e trace', () => {
 
     expect(observations.map(observation => observation.name)).toEqual([
       'discord.message.mention',
+      'generate-assistant-response',
       'agent.ingress',
       'agent.input-safety',
       'agent.context',
@@ -319,5 +333,29 @@ describe('bounded graph Langfuse e2e trace', () => {
         citationCount: 1
       }
     });
+
+    const childObservations = observations.filter(
+      observation => observation.name !== 'discord.message.mention'
+    );
+    for (const observation of childObservations) {
+      expect(
+        observation.updates.some(update => Object.prototype.hasOwnProperty.call(update, 'input')),
+        `${observation.name} should record sanitized input`
+      ).toBe(true);
+      expect(
+        observation.updates.some(update => Object.prototype.hasOwnProperty.call(update, 'output')),
+        `${observation.name} should record output`
+      ).toBe(true);
+    }
+
+    const usageUpdateCount = observations.reduce(
+      (count, observation) =>
+        count +
+        observation.updates.filter(update =>
+          Object.prototype.hasOwnProperty.call(update, 'usageDetails')
+        ).length,
+      0
+    );
+    expect(usageUpdateCount).toBe(1);
   });
 });

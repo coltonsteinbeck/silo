@@ -43,7 +43,63 @@ export interface ConversationMessage {
   replyToUserId?: string | null;
   referencedContent?: string | null;
   imageSummary?: string | null;
+  turnId?: string | null;
+  turnSequence?: number | null;
+  requesterUserId?: string | null;
+  promptEligible?: boolean;
+  safetyState?: string;
+  safetyCategories?: string[];
   createdAt: Date;
+}
+
+export interface ConversationTurn {
+  turnId: string;
+  requesterUserId: string;
+  promptEligible: boolean;
+  safetyState: string;
+  safetyCategories: string[];
+  userMessage: Omit<
+    ConversationMessage,
+    | 'id'
+    | 'createdAt'
+    | 'role'
+    | 'turnId'
+    | 'turnSequence'
+    | 'requesterUserId'
+    | 'promptEligible'
+    | 'safetyState'
+    | 'safetyCategories'
+  > & { role: 'user' };
+  assistantMessage: Omit<
+    ConversationMessage,
+    | 'id'
+    | 'createdAt'
+    | 'role'
+    | 'turnId'
+    | 'turnSequence'
+    | 'requesterUserId'
+    | 'promptEligible'
+    | 'safetyState'
+    | 'safetyCategories'
+  > & { role: 'assistant' };
+}
+
+export interface PromptContextQuery {
+  guildId: string;
+  channelId: string;
+  promptHash: string;
+  requesterUserId: string;
+  replyToMessageId?: string | null;
+  maxTurns?: number;
+  maxAgeMs?: number;
+}
+
+export interface PromptContextResult {
+  messages: ConversationMessage[];
+  scope: 'reply_chain' | 'same_user' | 'none';
+  selectedTurnCount: number;
+  excludedTurnCount: number;
+  exclusionReasons: Record<string, number>;
 }
 
 export interface DatabaseAdapter {
@@ -110,14 +166,18 @@ export interface DatabaseAdapter {
   setUserPreference(userId: string, key: string, value: string): Promise<void>;
 
   // Conversation History
+  /** @deprecated Use getPromptContext for model prompt assembly. */
   getConversationHistory(
     channelId: string,
     promptHash: string,
     limit?: number
   ): Promise<ConversationMessage[]>;
+  /** @deprecated Use storeConversationTurn so prompt history remains causally ordered. */
   storeConversationMessage(
     message: Omit<ConversationMessage, 'id' | 'createdAt'>
   ): Promise<ConversationMessage>;
+  storeConversationTurn(turn: ConversationTurn): Promise<ConversationMessage[]>;
+  getPromptContext(query: PromptContextQuery): Promise<PromptContextResult>;
   clearConversationHistory(channelId: string, promptHash?: string): Promise<void>;
 
   // Cleanup

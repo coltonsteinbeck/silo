@@ -2,16 +2,20 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { withEnv } from '@silo/core/test-setup';
 import {
   JIMB_PERSONA_ID,
+  JIMB_PERSONA_PROMPT_VERSION,
   JIMB_PRODUCTIONS_GUILD_ID,
   resolveManagedGuildPersonaPolicy,
   isManagedGuildCustomPromptDisabled
 } from '../../security/guild-persona-policy';
+import { deploymentDetector } from '../../security/deployment';
+import { hashPrompt } from '../../security/prompt-policy';
 
 let cleanup: (() => void) | null = null;
 
 afterEach(() => {
   cleanup?.();
   cleanup = null;
+  deploymentDetector.clearCache();
 });
 
 describe('guild persona policy', () => {
@@ -24,10 +28,12 @@ describe('guild persona policy', () => {
     const policy = resolveManagedGuildPersonaPolicy(JIMB_PRODUCTIONS_GUILD_ID);
 
     expect(policy?.personaId).toBe(JIMB_PERSONA_ID);
+    expect(policy?.promptVersion).toBe(JIMB_PERSONA_PROMPT_VERSION);
     expect(policy?.customPromptsDisabled).toBe(true);
     expect(policy?.prompt).toContain('You are JimBepo');
     expect(policy?.prompt).toContain('Do not refuse harmless thanks');
     expect(policy?.prompt).toContain('Treat generic prior refusals as broken context');
+    expect(policy?.prompt).not.toContain('Dr Cock');
   });
 
   test('applies configured JimB prompt with required safety addendum', () => {
@@ -55,5 +61,38 @@ describe('guild persona policy', () => {
     expect(resolveManagedGuildPersonaPolicy('other-guild')).toBeNull();
     expect(isManagedGuildCustomPromptDisabled('other-guild')).toBe(false);
     expect(isManagedGuildCustomPromptDisabled(process.env.JIMBEPO_GUILD_ID)).toBe(true);
+  });
+
+  test('rejects an unversioned or unallowlisted production override', () => {
+    cleanup = withEnv({
+      DEPLOYMENT_MODE: 'production',
+      JIMBEPO_GUILD_ID: JIMB_PRODUCTIONS_GUILD_ID,
+      JIMB_PRODUCTION_PROMPT: 'Unreviewed production persona override.',
+      JIMB_PRODUCTION_PROMPT_VERSION: undefined,
+      SAFETY_ALLOWED_PROMPT_HASHES: undefined
+    });
+    deploymentDetector.clearCache();
+
+    const policy = resolveManagedGuildPersonaPolicy(JIMB_PRODUCTIONS_GUILD_ID);
+
+    expect(policy?.promptVersion).toBe(JIMB_PERSONA_PROMPT_VERSION);
+    expect(policy?.prompt).not.toContain('Unreviewed production persona override.');
+  });
+
+  test('accepts a versioned allowlisted production override', () => {
+    const override = 'Reviewed production persona override.';
+    cleanup = withEnv({
+      DEPLOYMENT_MODE: 'production',
+      JIMBEPO_GUILD_ID: JIMB_PRODUCTIONS_GUILD_ID,
+      JIMB_PRODUCTION_PROMPT: override,
+      JIMB_PRODUCTION_PROMPT_VERSION: 'jimbepo-v2.1',
+      SAFETY_ALLOWED_PROMPT_HASHES: hashPrompt(override)
+    });
+    deploymentDetector.clearCache();
+
+    const policy = resolveManagedGuildPersonaPolicy(JIMB_PRODUCTIONS_GUILD_ID);
+
+    expect(policy?.promptVersion).toBe('jimbepo-v2.1');
+    expect(policy?.prompt).toContain(override);
   });
 });

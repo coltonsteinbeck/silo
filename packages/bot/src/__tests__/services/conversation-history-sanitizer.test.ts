@@ -1,12 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  JIMB_PRODUCTIONS_GUILD_ID,
-  resolveManagedGuildPersonaPolicy
-} from '../../security/guild-persona-policy';
-import {
   sanitizeAssistantContextForPrompt,
   sanitizeConversationHistoryForPrompt
 } from '../../services/conversation-history-sanitizer';
+
+const MANAGED_BLOCKED_OUTPUT_FALLBACK =
+  'Nope. That one trips the wires. Rephrase it less cursed and I can help.';
 
 describe('conversation history sanitizer', () => {
   test('removes unsafe assistant persona residue while preserving user messages', () => {
@@ -57,15 +56,10 @@ describe('conversation history sanitizer', () => {
   });
 
   test('removes managed blocked-output fallback from assistant history', () => {
-    const blockedMessage =
-      resolveManagedGuildPersonaPolicy(JIMB_PRODUCTIONS_GUILD_ID)?.assistantOutputBlockedMessage;
-
-    expect(blockedMessage).toBeDefined();
-
     const result = sanitizeConversationHistoryForPrompt([
       {
         role: 'assistant',
-        content: blockedMessage || ''
+        content: MANAGED_BLOCKED_OUTPUT_FALLBACK
       },
       { role: 'assistant', content: 'Normal useful answer.' }
     ]);
@@ -138,10 +132,7 @@ describe('conversation history sanitizer', () => {
       reason: null
     });
 
-    const blockedMessage =
-      resolveManagedGuildPersonaPolicy(JIMB_PRODUCTIONS_GUILD_ID)?.assistantOutputBlockedMessage;
-
-    expect(sanitizeAssistantContextForPrompt(blockedMessage || '')).toEqual({
+    expect(sanitizeAssistantContextForPrompt(MANAGED_BLOCKED_OUTPUT_FALLBACK)).toEqual({
       content: '',
       changed: true,
       reason: 'blocked_safety_fallback'

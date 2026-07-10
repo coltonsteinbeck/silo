@@ -41,6 +41,8 @@ export {
   evaluateUserPromptGuardrails,
   evaluateCustomSystemPromptGuardrails,
   evaluateAssistantOutputGuardrails,
+  evaluateSemanticUserPromptGuardrails,
+  evaluateSemanticAssistantOutputGuardrails,
   prewarmGuardrailsRuntime,
   isGuardrailsEnabled
 } from './openai-guardrails';
@@ -48,10 +50,26 @@ export type { GuardrailsPromptDecision } from './openai-guardrails';
 export {
   evaluatePromptSafety,
   buildPromptSafetyWarningMessage,
+  hasBenignMedicalOrAnatomyContext,
   resetPromptSafetyRuntimeForTests,
   setPromptSafetyRuntimeForTests
 } from './prompt-safety';
 export type { GuardrailProfile, PromptSafetyResult } from './prompt-safety';
+export {
+  evaluateSafetyDecision,
+  buildSafetyDecisionMessage,
+  buildContextReuseSafetyDecision,
+  hasExplicitAdultSexualIntent,
+  hasSemanticAssistantRisk,
+  hasSemanticJailbreakRisk,
+  hasSemanticNsfwInputRisk
+} from './safety-decision';
+export type {
+  SafetyAction,
+  SafetyDecision,
+  SafetyDetectorSource,
+  SafetyStage
+} from './safety-decision';
 
 export { composeSystemPromptWithSafety, IMMUTABLE_SAFETY_POLICY } from './safety-policy';
 export { resolvePromptPolicy } from './prompt-policy';

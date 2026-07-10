@@ -7,7 +7,7 @@ import { evaluatePromptSafety, type PromptSafetyResult } from './prompt-safety';
 type GuardrailsModule = typeof import('@openai/guardrails');
 type GuardrailsRunner = Pick<GuardrailsModule, 'runGuardrails'>;
 
-type PipelineKey = 'user_prompt' | 'custom_prompt' | 'assistant_output';
+type PipelineKey = 'user_prompt' | 'user_jailbreak' | 'custom_prompt' | 'assistant_output';
 
 interface GuardrailsCheckOptions {
   failClosedOnError?: boolean;
@@ -20,6 +20,7 @@ export interface GuardrailsPromptDecision {
   category?: string;
   reason?: string;
   executionFailed?: boolean;
+  evaluated?: boolean;
 }
 
 interface GuardrailSpec {
@@ -41,6 +42,7 @@ const SUSPICIOUS_SHORT_PROMPT_PATTERN =
   /ignore|forget|disregard|override|system\s*:|\[system\]|instruction|prompt|developer|jailbreak|roleplay|pretend\s+you\s+are|reveal|show\s+the\s+prompt|show\s+the\s+instructions/i;
 
 const USER_PROMPT_PIPELINE: PipelineKey = 'user_prompt';
+const USER_JAILBREAK_PIPELINE: PipelineKey = 'user_jailbreak';
 const CUSTOM_PROMPT_PIPELINE: PipelineKey = 'custom_prompt';
 const ASSISTANT_OUTPUT_PIPELINE: PipelineKey = 'assistant_output';
 
@@ -178,6 +180,18 @@ function buildGuardrailBundle(pipeline: PipelineKey): {
   const contentThreshold = getContentThreshold(pipeline);
   const maxTurns = parseMaxTurns(process.env.OPENAI_GUARDRAILS_MAX_TURNS);
 
+  if (pipeline === USER_JAILBREAK_PIPELINE) {
+    return {
+      version: 1,
+      guardrails: [
+        {
+          name: 'Jailbreak',
+          config: buildLlmConfig(model, jailbreakThreshold, maxTurns)
+        }
+      ]
+    };
+  }
+
   const guardrails: GuardrailSpec[] = [
     {
       name: 'NSFW Text',
@@ -247,7 +261,15 @@ async function getGuardrailLlmClient(): Promise<OpenAI> {
 }
 
 export function isGuardrailsEnabled(): boolean {
-  return process.env.OPENAI_GUARDRAILS_ENABLED === 'true';
+  const configured = process.env.OPENAI_GUARDRAILS_ENABLED?.trim().toLowerCase();
+  if (configured === 'true') {
+    return true;
+  }
+  if (configured === 'false') {
+    return false;
+  }
+
+  return deploymentDetector.getConfig().isProduction;
 }
 
 function shouldRaiseGuardrailErrors(): boolean {
@@ -402,7 +424,8 @@ function toTripwireDecision(pipeline: PipelineKey, result: unknown): GuardrailsP
   return {
     allowed: false,
     category: mapTripwireCategory(pipeline, guardrailName),
-    reason: extractGuardrailReason(result)
+    reason: extractGuardrailReason(result),
+    evaluated: true
   };
 }
 
@@ -417,14 +440,16 @@ function toPromptSafetyDecision(
       allowed: false,
       category: 'guardrails/api_error_fail_closed',
       reason: result.moderationError || 'Prompt safety moderation failed',
-      executionFailed: true
+      executionFailed: true,
+      evaluated: result.moderationEvaluated
     };
   }
 
   if (result.allowed) {
     return {
       allowed: true,
-      executionFailed
+      executionFailed,
+      evaluated: result.moderationEvaluated
     };
   }
 
@@ -433,7 +458,8 @@ function toPromptSafetyDecision(
       allowed: false,
       category: 'guardrails/jailbreak',
       reason: result.reasons.join(', '),
-      executionFailed
+      executionFailed,
+      evaluated: result.moderationEvaluated
     };
   }
 
@@ -445,7 +471,8 @@ function toPromptSafetyDecision(
           ? 'guardrails/output_moderation'
           : 'guardrails/moderation',
       reason: result.moderationCategories.join(', '),
-      executionFailed
+      executionFailed,
+      evaluated: result.moderationEvaluated
     };
   }
 
@@ -456,7 +483,8 @@ function toPromptSafetyDecision(
         ? 'guardrails/output_blocked'
         : 'guardrails/input_blocked',
     reason: result.reasons.join(', '),
-    executionFailed
+    executionFailed,
+    evaluated: result.moderationEvaluated
   };
 }
 
@@ -469,7 +497,7 @@ async function evaluateWithPipeline(
   options: GuardrailsCheckOptions = {}
 ): Promise<GuardrailsPromptDecision> {
   if (!isGuardrailsEnabled()) {
-    return { allowed: true };
+    return { allowed: true, evaluated: false };
   }
 
   const failClosed = shouldFailClosed(options);
@@ -485,13 +513,15 @@ async function evaluateWithPipeline(
         allowed: false,
         category: 'guardrails/api_error_fail_closed',
         reason: 'Guardrails API key missing',
-        executionFailed: true
+        executionFailed: true,
+        evaluated: true
       };
     }
 
     return {
       allowed: true,
-      executionFailed: true
+      executionFailed: true,
+      evaluated: true
     };
   }
 
@@ -528,17 +558,19 @@ async function evaluateWithPipeline(
           allowed: false,
           category: 'guardrails/api_error_fail_closed',
           reason: extractGuardrailReason(failedResult) || 'Guardrails execution failed',
-          executionFailed: true
+          executionFailed: true,
+          evaluated: true
         };
       }
 
       return {
         allowed: true,
-        executionFailed: true
+        executionFailed: true,
+        evaluated: true
       };
     }
 
-    return { allowed: true };
+    return { allowed: true, evaluated: true };
   } catch (error) {
     logger.error('OpenAI Guardrails execution failed', {
       pipeline,
@@ -550,13 +582,15 @@ async function evaluateWithPipeline(
         allowed: false,
         category: 'guardrails/api_error_fail_closed',
         reason: 'Guardrails execution failed',
-        executionFailed: true
+        executionFailed: true,
+        evaluated: true
       };
     }
 
     return {
       allowed: true,
-      executionFailed: true
+      executionFailed: true,
+      evaluated: true
     };
   }
 }
@@ -672,4 +706,28 @@ export async function evaluateAssistantOutputGuardrails(
   });
 
   return toPromptSafetyDecision(result, options);
+}
+
+export async function evaluateSemanticUserPromptGuardrails(
+  prompt: string,
+  options: GuardrailsCheckOptions = {}
+): Promise<GuardrailsPromptDecision> {
+  const normalized = prompt.trim();
+  if (!normalized) {
+    return { allowed: true };
+  }
+
+  return evaluateWithPipeline(USER_JAILBREAK_PIPELINE, normalized, options);
+}
+
+export async function evaluateSemanticAssistantOutputGuardrails(
+  output: string,
+  options: GuardrailsCheckOptions = {}
+): Promise<GuardrailsPromptDecision> {
+  const normalized = output.trim();
+  if (!normalized) {
+    return { allowed: true };
+  }
+
+  return evaluateWithPipeline(ASSISTANT_OUTPUT_PIPELINE, normalized, options);
 }

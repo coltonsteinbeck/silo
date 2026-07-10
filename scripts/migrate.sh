@@ -47,6 +47,9 @@ if [ -f "$ENV_FILE" ]; then
     set +a
 fi
 
+MIGRATIONS_DIR=${MIGRATIONS_DIR:-"$SCRIPT_DIR/../supabase/migrations"}
+LOCAL_POSTGRES_COMPAT_INIT=${LOCAL_POSTGRES_COMPAT_INIT:-"$SCRIPT_DIR/../docker/postgres-init/000_supabase_compat.sql"}
+
 normalize_identifier() {
     local value="$1"
     value=$(echo "$value" | xargs)
@@ -250,114 +253,20 @@ ORDER BY 1;
 SQL
 }
 
-record_migration_tracking_rows() {
+apply_migration_with_tracking() {
     local db_url="$1"
     local migration_file="$2"
     local filename
-    local stem
-    local prefix
 
     filename=$(basename "$migration_file")
-    stem="${filename%.sql}"
-    prefix="${stem%%_*}"
 
-    psql "$db_url" -v ON_ERROR_STOP=1 \
+    psql "$db_url" -v ON_ERROR_STOP=1 --single-transaction \
         -v mig_filename="$filename" \
-        -v mig_stem="$stem" \
-        -v mig_prefix="$prefix" <<'SQL'
-SELECT set_config('silo.mig_filename', :'mig_filename', false);
-SELECT set_config('silo.mig_stem', :'mig_stem', false);
-SELECT set_config('silo.mig_prefix', :'mig_prefix', false);
-
-DO $$
-DECLARE
-    target RECORD;
-    has_filename boolean;
-    has_version boolean;
-    has_name boolean;
-    insert_columns text;
-    insert_values text;
-    missing_required int;
-    mig_filename text := current_setting('silo.mig_filename', true);
-    mig_stem text := current_setting('silo.mig_stem', true);
-    mig_prefix text := current_setting('silo.mig_prefix', true);
-BEGIN
-    FOR target IN
-        SELECT table_schema, table_name
-        FROM information_schema.tables
-        WHERE (table_schema = 'supabase_migrations' AND table_name IN ('migrations', 'schema_migrations'))
-           OR (table_schema = 'public' AND table_name = 'schema_migrations')
-    LOOP
-        has_filename := EXISTS (
-            SELECT 1
-            FROM information_schema.columns
-            WHERE table_schema = target.table_schema
-              AND table_name = target.table_name
-              AND column_name = 'filename'
-        );
-
-        has_version := EXISTS (
-            SELECT 1
-            FROM information_schema.columns
-            WHERE table_schema = target.table_schema
-              AND table_name = target.table_name
-              AND column_name = 'version'
-        );
-
-        has_name := EXISTS (
-            SELECT 1
-            FROM information_schema.columns
-            WHERE table_schema = target.table_schema
-              AND table_name = target.table_name
-              AND column_name = 'name'
-        );
-
-        IF has_filename THEN
-            insert_columns := 'filename';
-            insert_values := quote_literal(mig_filename);
-        ELSIF has_version AND has_name THEN
-            insert_columns := 'version, name';
-            insert_values := quote_literal(mig_prefix) || ', ' || quote_literal(mig_filename);
-        ELSIF has_version THEN
-            insert_columns := 'version';
-            insert_values := quote_literal(mig_prefix);
-        ELSIF has_name THEN
-            insert_columns := 'name';
-            insert_values := quote_literal(mig_stem);
-        ELSE
-            CONTINUE;
-        END IF;
-
-        SELECT COUNT(*)
-        INTO missing_required
-        FROM information_schema.columns c
-        WHERE c.table_schema = target.table_schema
-          AND c.table_name = target.table_name
-          AND c.is_nullable = 'NO'
-          AND c.column_default IS NULL
-          AND c.identity_generation IS NULL
-          AND c.is_generated = 'NEVER'
-          AND c.column_name <> ALL (
-              string_to_array(replace(insert_columns, ' ', ''), ',')
-          );
-
-        IF missing_required > 0 THEN
-            RAISE NOTICE 'Skipping migration tracking insert for %.% due to unsupported required columns',
-                target.table_schema,
-                target.table_name;
-            CONTINUE;
-        END IF;
-
-        EXECUTE format(
-            'INSERT INTO %I.%I (%s) VALUES (%s) ON CONFLICT DO NOTHING',
-            target.table_schema,
-            target.table_name,
-            insert_columns,
-            insert_values
-        );
-    END LOOP;
-END;
-$$;
+        -f "$migration_file" \
+        -f - <<'SQL'
+INSERT INTO public.schema_migrations (filename)
+VALUES (:'mig_filename')
+ON CONFLICT (filename) DO NOTHING;
 SQL
 }
 
@@ -457,16 +366,34 @@ echo "DB host: $TARGET_HOST"
 MIGRATION_FILES=()
 while IFS= read -r migration_file; do
     MIGRATION_FILES+=("$migration_file")
-done < <(find supabase/migrations -maxdepth 1 -type f -name '*.sql' | sort)
+done < <(find "$MIGRATIONS_DIR" -maxdepth 1 -type f -name '*.sql' | sort)
 
 if [ ${#MIGRATION_FILES[@]} -eq 0 ]; then
-    echo "No migration files found in supabase/migrations"
+    echo "No migration files found in $MIGRATIONS_DIR"
     exit 0
 fi
 
 TABLE_COUNT=$(tracking_table_count "$DB_URL" | tr -d '\r')
-if [ "$TABLE_COUNT" = "0" ]; then
-    echo "Warning: no schema migration tracking table detected; all files will be treated as pending"
+if [ "$STATUS_ONLY" = "true" ] || [ "$DRY_RUN" = "true" ]; then
+    if [ "$TABLE_COUNT" = "0" ]; then
+        echo "Warning: no schema migration tracking table detected; all files will be treated as pending"
+    fi
+else
+    if [ "$TARGET" = "local" ] && [ -f "$LOCAL_POSTGRES_COMPAT_INIT" ]; then
+        echo "Ensuring local PostgreSQL compatibility roles and auth helpers"
+        psql "$DB_URL" -v ON_ERROR_STOP=1 -f "$LOCAL_POSTGRES_COMPAT_INIT"
+    fi
+
+    if [ "$TABLE_COUNT" = "0" ]; then
+        echo "Initializing public.schema_migrations for a fresh database"
+    fi
+    psql "$DB_URL" -v ON_ERROR_STOP=1 <<'SQL'
+CREATE TABLE IF NOT EXISTS public.schema_migrations (
+    filename TEXT PRIMARY KEY,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+SQL
+    TABLE_COUNT="1"
 fi
 
 APPLIED_KEYS=$(fetch_applied_migration_keys "$DB_URL" | tr -d '\r' || true)
@@ -509,8 +436,7 @@ fi
 
 for migration in "${PENDING_FILES[@]}"; do
     echo "Applying $(basename "$migration")..."
-    psql "$DB_URL" -v ON_ERROR_STOP=1 -f "$migration"
-    record_migration_tracking_rows "$DB_URL" "$migration"
+    apply_migration_with_tracking "$DB_URL" "$migration"
 done
 
 echo "Migrations complete"

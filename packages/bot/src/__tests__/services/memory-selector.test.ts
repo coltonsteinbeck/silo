@@ -1,5 +1,8 @@
 import { describe, test, expect, mock } from 'bun:test';
-import { selectMemoryContext } from '../../services/memory-selector';
+import {
+  isLoreMemoryExplicitlyReferenced,
+  selectMemoryContext
+} from '../../services/memory-selector';
 
 const baseConfig = {
   memory: {
@@ -16,6 +19,19 @@ const baseConfig = {
 } as any;
 
 describe('selectMemoryContext', () => {
+  test('requires the latest user message to explicitly reference selected lore', () => {
+    const lore = {
+      memoryContent: 'The third egg belongs to the screaming worm council.',
+      contextType: 'lore',
+      metadata: { entities: ['worm council'] },
+      title: 'worm council'
+    };
+
+    expect(isLoreMemoryExplicitlyReferenced('Talk to me', lore)).toBe(false);
+    expect(isLoreMemoryExplicitlyReferenced('What was the third egg?', lore)).toBe(true);
+    expect(isLoreMemoryExplicitlyReferenced('Tell me about the worm council', lore)).toBe(true);
+  });
+
   test('selects lore-triggered memory and enables mention on high keyword confidence', async () => {
     const db = {
       searchServerMemoriesByEmbedding: mock(async () => []),
