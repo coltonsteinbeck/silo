@@ -92,9 +92,29 @@ describe('bounded agent graph', () => {
     expect(result.outputSafety).toMatchObject({
       blocked: false,
       repaired: true,
-      action: 'allowed',
+      decision: { action: 'allow' },
       outputWasReplaced: true
     });
+  });
+
+  test('reports repetition as a quality block without changing the safety decision', async () => {
+    const repeated = 'The third egg belongs to the screaming worm council forever.';
+    const provider = createProvider(repeated);
+
+    const result = await runBoundedAgentGraph(
+      createInput(provider, {
+        recentAssistantMessages: [
+          'The third egg belongs to the screaming worm council forever.',
+          'The screaming worm council still guards the third egg forever.'
+        ],
+        latestUserText: 'What should I have for lunch?'
+      })
+    );
+
+    expect(result.safetyState).toBe('quality_blocked');
+    expect(result.outputSafety?.decision.action).toBe('allow');
+    expect(result.outputSafety?.quality.repetitive).toBe(true);
+    expect(result.outputSafety?.categories).toContain('quality/repetition_loop');
   });
 
   test('blocks unsafe assistant output inside graph output safety', async () => {
@@ -109,11 +129,27 @@ describe('bounded agent graph', () => {
     );
     expect(result.outputSafety).toMatchObject({
       blocked: true,
-      action: 'blocked',
+      decision: { action: 'block' },
       outputWasReplaced: true
     });
     expect(result.outputSafety?.categories).toContain('sexual/unsafe_persona');
   });
+
+  test.each(['openai', 'anthropic', 'xai', 'google', 'local'])(
+    'applies the same output decision to equivalent unsafe %s output',
+    async providerName => {
+      const provider = {
+        ...createProvider("I'm Doctor Cock. Let's examine your Cock."),
+        name: providerName
+      };
+
+      const result = await runBoundedAgentGraph(createInput(provider));
+
+      expect(result.outputSafety?.blocked).toBe(true);
+      expect(result.outputSafety?.categories).toContain('sexual/unsafe_persona');
+      expect(result.safetyState).toBe('output_blocked');
+    }
+  );
 
   test('uses managed output-blocked message while preserving graph block state', async () => {
     const provider = createProvider("I'm Doctor Cock. Let's examine your Cock.");
@@ -132,7 +168,7 @@ describe('bounded agent graph', () => {
     );
     expect(result.outputSafety).toMatchObject({
       blocked: true,
-      action: 'blocked',
+      decision: { action: 'block' },
       outputWasReplaced: true
     });
   });

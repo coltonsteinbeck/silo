@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { buildLangfuseTraceMetadata } from '../../telemetry/langfuse-metadata';
+import {
+  buildLangfuseTraceMetadata,
+  configureLangfuseMetadataDefaults
+} from '../../telemetry/langfuse-metadata';
 
 describe('Langfuse metadata', () => {
   test('includes bounded graph metadata fields', () => {
@@ -44,5 +47,90 @@ describe('Langfuse metadata', () => {
     expect(metadata.toolsCalled).toEqual(['web_search']);
     expect(metadata.safetyState).toBe('allowed');
     expect(metadata.graphOutcome).toBe('success');
+  });
+
+  test('includes scoped context and recovery metadata', () => {
+    const metadata = buildLangfuseTraceMetadata({
+      promptVersion: 'jimbepo-v2',
+      promptHash: 'prompt-hash',
+      contextScope: 'same_user',
+      contextSelectedTurnCount: 2,
+      contextExcludedTurnCount: 3,
+      contextExclusionReasons: ['legacy', 'unsafe', 'unpaired'],
+      inputContextEligible: false,
+      modelCircuitFailureCount: 3,
+      modelCircuitActivated: true,
+      modelCircuitContextDisabled: true,
+      modelCircuitContextDisabledUntil: '2026-07-09T18:00:00.000Z',
+      temperature: 0.2,
+      recoveryAttempt: 1,
+      recoveryContextFree: true
+    });
+
+    expect(metadata).toMatchObject({
+      promptVersion: 'jimbepo-v2',
+      promptHash: 'prompt-hash',
+      contextScope: 'same_user',
+      contextSelectedTurnCount: 2,
+      contextExcludedTurnCount: 3,
+      contextExclusionReasons: ['legacy', 'unsafe', 'unpaired'],
+      inputContextEligible: false,
+      modelCircuitFailureCount: 3,
+      modelCircuitActivated: true,
+      modelCircuitContextDisabled: true,
+      modelCircuitContextDisabledUntil: '2026-07-09T18:00:00.000Z',
+      temperature: 0.2,
+      recoveryAttempt: 1,
+      recoveryContextFree: true
+    });
+  });
+
+  test('resolves the release commit from explicit metadata and CI environment fallbacks', () => {
+    const originalReleaseCommit = process.env.RELEASE_COMMIT;
+    const originalGithubSha = process.env.GITHUB_SHA;
+
+    try {
+      process.env.RELEASE_COMMIT = 'release-commit-sha';
+      process.env.GITHUB_SHA = 'github-fallback-sha';
+
+      expect(buildLangfuseTraceMetadata({}).releaseCommit).toBe('release-commit-sha');
+      expect(
+        buildLangfuseTraceMetadata({ releaseCommit: 'explicit-config-sha' }).releaseCommit
+      ).toBe('explicit-config-sha');
+
+      delete process.env.RELEASE_COMMIT;
+      expect(buildLangfuseTraceMetadata({}).releaseCommit).toBe('github-fallback-sha');
+    } finally {
+      if (originalReleaseCommit === undefined) {
+        delete process.env.RELEASE_COMMIT;
+      } else {
+        process.env.RELEASE_COMMIT = originalReleaseCommit;
+      }
+      if (originalGithubSha === undefined) {
+        delete process.env.GITHUB_SHA;
+      } else {
+        process.env.GITHUB_SHA = originalGithubSha;
+      }
+    }
+  });
+
+  test('uses a configured release commit default before environment fallbacks', () => {
+    const originalReleaseCommit = process.env.RELEASE_COMMIT;
+
+    try {
+      process.env.RELEASE_COMMIT = 'environment-sha';
+      configureLangfuseMetadataDefaults({ releaseCommit: 'configured-default-sha' });
+
+      expect(buildLangfuseTraceMetadata({}).releaseCommit).toBe('configured-default-sha');
+      expect(buildLangfuseTraceMetadata({ releaseCommit: 'per-trace-sha' }).releaseCommit).toBe(
+        'per-trace-sha'
+      );
+    } finally {
+      if (originalReleaseCommit === undefined) {
+        delete process.env.RELEASE_COMMIT;
+      } else {
+        process.env.RELEASE_COMMIT = originalReleaseCommit;
+      }
+    }
   });
 });

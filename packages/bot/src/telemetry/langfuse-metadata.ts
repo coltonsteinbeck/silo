@@ -19,6 +19,7 @@ export type LangfuseMetadataInput = {
   appEnv?: string;
   hostName?: string;
   release?: string;
+  releaseCommit?: string;
   promptVersion?: string;
 
   guildId?: string | null;
@@ -38,6 +39,21 @@ export type LangfuseMetadataInput = {
 
   hasConversationHistory?: boolean;
   conversationMessageCount?: number;
+  contextScope?: string | null;
+  contextSelectedTurnCount?: number;
+  contextExcludedTurnCount?: number;
+  contextExclusionReasons?: string[];
+  inputSafetyAction?: string | null;
+  inputSafetyDetectorSources?: string[];
+  inputContextEligible?: boolean;
+  inheritedContextSafetyRisk?: boolean;
+  contextSafetyAction?: string | null;
+  contextSafetyCategories?: string[];
+  contextSafetyDetectorSources?: string[];
+  modelCircuitFailureCount?: number;
+  modelCircuitActivated?: boolean;
+  modelCircuitContextDisabled?: boolean;
+  modelCircuitContextDisabledUntil?: string | null;
 
   usesTools?: boolean;
   toolsAvailable?: string[];
@@ -80,11 +96,14 @@ export type LangfuseMetadataInput = {
   falsePositiveGuard?: string | null;
   safetyState?: string | null;
   graphOutcome?: string | null;
+  temperature?: number;
+  recoveryAttempt?: number;
+  recoveryContextFree?: boolean;
 };
 
 type LangfuseMetadataDefaults = Pick<
   LangfuseMetadataInput,
-  'appName' | 'appEnv' | 'hostName' | 'release' | 'promptVersion'
+  'appName' | 'appEnv' | 'hostName' | 'release' | 'releaseCommit' | 'promptVersion'
 > & {
   userHashSalt?: string;
 };
@@ -99,6 +118,8 @@ export function configureLangfuseMetadataDefaults(defaults: LangfuseMetadataDefa
     appEnv: normalizeOptionalString(defaults.appEnv) ?? metadataDefaults.appEnv,
     hostName: normalizeOptionalString(defaults.hostName) ?? metadataDefaults.hostName,
     release: normalizeOptionalString(defaults.release) ?? metadataDefaults.release,
+    releaseCommit:
+      normalizeOptionalString(defaults.releaseCommit) ?? metadataDefaults.releaseCommit,
     promptVersion:
       normalizeOptionalString(defaults.promptVersion) ?? metadataDefaults.promptVersion,
     userHashSalt: normalizeOptionalString(defaults.userHashSalt) ?? metadataDefaults.userHashSalt
@@ -114,12 +135,38 @@ function normalizeOptionalString(value: string | null | undefined): string | und
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function resolveReleaseCommitFromEnvironment(): string | undefined {
+  const candidates = [
+    process.env.RELEASE_COMMIT,
+    process.env.GITHUB_SHA,
+    process.env.CI_COMMIT_SHA,
+    process.env.VERCEL_GIT_COMMIT_SHA,
+    process.env.RAILWAY_GIT_COMMIT_SHA,
+    process.env.RENDER_GIT_COMMIT,
+    process.env.SOURCE_VERSION,
+    process.env.GIT_COMMIT
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = normalizeOptionalString(candidate);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return undefined;
+}
+
 function normalizeFiniteNumber(value: number | undefined): number | undefined {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return undefined;
   }
 
   return Math.max(0, Math.trunc(value));
+}
+
+function normalizeFiniteDecimal(value: number | undefined): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 function normalizeStringArray(values: string[] | undefined): string[] {
@@ -274,6 +321,13 @@ export function buildLangfuseTraceMetadata(input: LangfuseMetadataInput): TraceM
   );
   addMetadataField(
     metadata,
+    'releaseCommit',
+    normalizeOptionalString(input.releaseCommit) ||
+      metadataDefaults.releaseCommit ||
+      resolveReleaseCommitFromEnvironment()
+  );
+  addMetadataField(
+    metadata,
     'promptVersion',
     normalizeOptionalString(input.promptVersion) ||
       metadataDefaults.promptVersion ||
@@ -298,6 +352,69 @@ export function buildLangfuseTraceMetadata(input: LangfuseMetadataInput): TraceM
   }
 
   addMetadataField(metadata, 'conversationMessageCount', conversationMessageCount);
+  addMetadataField(metadata, 'contextScope', normalizeTagValue(input.contextScope));
+  addMetadataField(
+    metadata,
+    'contextSelectedTurnCount',
+    normalizeFiniteNumber(input.contextSelectedTurnCount)
+  );
+  addMetadataField(
+    metadata,
+    'contextExcludedTurnCount',
+    normalizeFiniteNumber(input.contextExcludedTurnCount)
+  );
+  if (input.contextExclusionReasons) {
+    addMetadataField(
+      metadata,
+      'contextExclusionReasons',
+      normalizeStringArray(input.contextExclusionReasons)
+    );
+  }
+  addMetadataField(metadata, 'inputSafetyAction', normalizeTagValue(input.inputSafetyAction));
+  if (input.inputSafetyDetectorSources) {
+    addMetadataField(
+      metadata,
+      'inputSafetyDetectorSources',
+      normalizeStringArray(input.inputSafetyDetectorSources)
+    );
+  }
+  if (typeof input.inputContextEligible === 'boolean') {
+    addMetadataField(metadata, 'inputContextEligible', input.inputContextEligible);
+  }
+  if (typeof input.inheritedContextSafetyRisk === 'boolean') {
+    addMetadataField(metadata, 'inheritedContextSafetyRisk', input.inheritedContextSafetyRisk);
+  }
+  addMetadataField(metadata, 'contextSafetyAction', normalizeTagValue(input.contextSafetyAction));
+  if (input.contextSafetyCategories) {
+    addMetadataField(
+      metadata,
+      'contextSafetyCategories',
+      normalizeStringArray(input.contextSafetyCategories)
+    );
+  }
+  if (input.contextSafetyDetectorSources) {
+    addMetadataField(
+      metadata,
+      'contextSafetyDetectorSources',
+      normalizeStringArray(input.contextSafetyDetectorSources)
+    );
+  }
+  addMetadataField(
+    metadata,
+    'modelCircuitFailureCount',
+    normalizeFiniteNumber(input.modelCircuitFailureCount)
+  );
+  if (typeof input.modelCircuitActivated === 'boolean') {
+    addMetadataField(metadata, 'modelCircuitActivated', input.modelCircuitActivated);
+  }
+  if (typeof input.modelCircuitContextDisabled === 'boolean') {
+    addMetadataField(metadata, 'modelCircuitContextDisabled', input.modelCircuitContextDisabled);
+  }
+  addMetadataField(
+    metadata,
+    'modelCircuitContextDisabledUntil',
+    normalizeOptionalString(input.modelCircuitContextDisabledUntil)
+  );
 
   if (typeof input.usesTools === 'boolean') {
     addMetadataField(metadata, 'usesTools', input.usesTools);
@@ -419,6 +536,11 @@ export function buildLangfuseTraceMetadata(input: LangfuseMetadataInput): TraceM
   addMetadataField(metadata, 'falsePositiveGuard', normalizeTagValue(input.falsePositiveGuard));
   addMetadataField(metadata, 'safetyState', normalizeTagValue(input.safetyState));
   addMetadataField(metadata, 'graphOutcome', normalizeTagValue(input.graphOutcome));
+  addMetadataField(metadata, 'temperature', normalizeFiniteDecimal(input.temperature));
+  addMetadataField(metadata, 'recoveryAttempt', normalizeFiniteNumber(input.recoveryAttempt));
+  if (typeof input.recoveryContextFree === 'boolean') {
+    addMetadataField(metadata, 'recoveryContextFree', input.recoveryContextFree);
+  }
 
   return metadata;
 }

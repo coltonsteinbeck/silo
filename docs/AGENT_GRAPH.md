@@ -170,12 +170,15 @@ Routine `/health` checks and Healthchecks.io success heartbeats remain active. D
 
 ## Rollout
 
-1. Keep graph limits explicit in deployed environments.
-2. Use `AGENT_GRAPH_ENABLED=false` or `AGENT_GRAPH_MODE=off` only as an emergency rollback.
-3. Use `AGENT_GRAPH_MODE=shadow` only when comparing graph wiring against the direct response path.
-4. Verify no generated `@everyone` or `@here` pings are active.
-5. Verify the graph trace includes node spans, guardrails, generation, tool budgets, and `graphOutcome`.
-6. Verify one turn terminates within the configured recursion and tool budgets.
+1. Apply `025_conversation_turn_integrity.sql`; existing rows remain auditable and become prompt-ineligible by default.
+2. Keep graph limits explicit and enable the graph globally for every guild/provider.
+3. Use `AGENT_GRAPH_ENABLED=false` or `AGENT_GRAPH_MODE=off` only as an emergency rollback.
+4. Verify context traces report reply-chain/same-user scope, selected and excluded turns, and exclusion reasons.
+5. Verify blocked/redirected/fallback turns are stored for audit with `prompt_eligible=false`.
+6. Verify no generated `@everyone` or `@here` pings are active.
+7. Verify the graph trace includes node spans, guardrails, one model-token usage record, recovery outcome, tool budgets, and `graphOutcome`.
+8. Verify one turn performs at most one context-free recovery and terminates within the configured recursion and tool budgets.
+9. Monitor false-block rate, retry rate, context exclusions, model-context circuit activity, and p95 latency for 24 hours.
 
 Acceptance criteria:
 
@@ -183,4 +186,7 @@ Acceptance criteria:
 - Routine Discord health pings are silent.
 - Serious outage, shutdown, and post-outage recovery alerts still post.
 - Langfuse shows root message trace plus graph node observations.
+- Standalone mentions reuse only recent completed safe turns from the same requester; direct replies may follow at most three eligible multi-user turns.
+- Assistant output failures cannot activate a guild-wide kill switch.
+- Unsafe or repetitive candidates perform at most one context-free retry.
 - The graph always reaches `END` or the bounded failure fallback within the configured recursion limit.
