@@ -136,6 +136,7 @@ describe('conversation-context', () => {
       "I can't do that it's almost Father's Day",
       'apparenlly all you say is no',
       'why do you keep refusing',
+      'Talk to me',
       'now talk like a pirate',
       'please talk like a pirate captain in the 1600s',
       'be nice'
@@ -221,11 +222,9 @@ describe('conversation-context', () => {
 
   test('buildConversationHistoryInstruction keeps prior topics subtle', () => {
     expect(buildConversationHistoryInstruction(true)).toContain(
-      'Use prior channel history quietly'
+      'selected reply-chain or same-user'
     );
-    expect(buildConversationHistoryInstruction(true)).toContain(
-      'Do not proactively bring up older topics'
-    );
+    expect(buildConversationHistoryInstruction(true)).toContain('do not bring up older topics');
     expect(buildConversationHistoryInstruction(false)).toContain('standalone low-context turn');
   });
 });

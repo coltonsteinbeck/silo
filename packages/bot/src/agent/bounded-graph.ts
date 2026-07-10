@@ -1,5 +1,6 @@
 import { Annotation, END, GraphRecursionError, START, StateGraph } from '@langchain/langgraph';
 import type { TextGenerationResponse } from '@silo/core';
+import { createHash } from 'node:crypto';
 import { AGENT_GRAPH_NAME, AGENT_GRAPH_VERSION, type AgentGraphLimits } from './config';
 import type {
   AgentGraphInput,
@@ -12,12 +13,9 @@ import type {
   AgentToolRequest
 } from './types';
 import { executeBoundedToolPlan, resolveAllowedAgentTools } from './tool-registry';
-import {
-  buildSafetyCategoryScores,
-  evaluateModerationDecision
-} from '../security/content-sanitizer';
-import { evaluatePromptSafety } from '../security/prompt-safety';
+import { evaluateSafetyDecision } from '../security/safety-decision';
 import { sanitizeAssistantOutput, sanitizeDiscordMassMentions } from '../security/output-sanitizer';
+import { detectResponseRepetition } from '../services/response-quality';
 import {
   summarizeTextForTrace,
   withLangfuseGeneration,
@@ -50,6 +48,9 @@ const AgentGraphAnnotation = Annotation.Root({
   falsePositiveGuard: Annotation<string | undefined>,
   outputBlockedMessage: Annotation<string | undefined>,
   allowMildAssistantProfanity: Annotation<boolean | undefined>,
+  inheritedSafetyRisk: Annotation<boolean | undefined>,
+  recentAssistantMessages: Annotation<string[] | undefined>,
+  latestUserText: Annotation<string | undefined>,
   metadata: Annotation<LangfuseMetadataInput>,
   graphStep: Annotation<number>({
     reducer: (_current, update) => update,
@@ -86,10 +87,6 @@ type StateUpdate = Partial<State>;
 
 function nextStep(state: Pick<State, 'graphStep'>): number {
   return state.graphStep + 1;
-}
-
-function unique<T>(values: T[]): T[] {
-  return Array.from(new Set(values));
 }
 
 function buildToolBudget(limits: AgentGraphLimits): Record<string, number> {
@@ -529,26 +526,23 @@ async function outputSafetyNode(state: State): Promise<StateUpdate> {
         stripInternalMetadata: true,
         stripXmlLikeTags: true
       });
-      const safetyResult = await evaluatePromptSafety(sanitizedContent, {
-        profile: 'assistant_output',
-        source: 'agent_output_safety'
+      const decision = await evaluateSafetyDecision(sanitizedContent, {
+        stage: 'assistant_output',
+        source: 'agent_output_safety',
+        inheritedRisk: state.inheritedSafetyRisk
       });
-      const safetyCategories = unique([
-        ...safetyResult.reasons,
-        ...safetyResult.moderationCategories
-      ]);
-      const safetyScores = buildSafetyCategoryScores(
-        safetyResult.reasons,
-        safetyResult.moderationScores
-      );
-      const decision = evaluateModerationDecision(safetyCategories, safetyScores, {
-        allowMildProfanityInput: state.allowMildAssistantProfanity,
-        content: sanitizedContent
+      const quality = detectResponseRepetition({
+        candidate: sanitizedContent,
+        recentAssistantMessages: state.recentAssistantMessages || [],
+        latestUserText: state.latestUserText || ''
       });
-      const blocked = decision.action === 'blocked';
+      const safetyBlocked = decision.action === 'block';
+      const blocked = safetyBlocked || quality.repetitive;
       const repaired = sanitizedContent !== response.content || blocked;
       const safetyState: AgentSafetyState = blocked
-        ? 'output_blocked'
+        ? safetyBlocked
+          ? 'output_blocked'
+          : 'quality_blocked'
         : repaired
           ? 'output_repaired'
           : state.safetyState;
@@ -566,13 +560,18 @@ async function outputSafetyNode(state: State): Promise<StateUpdate> {
           : sanitizedContent
       };
       const outputSafety: AgentOutputSafetyResult = {
+        decision,
+        quality,
         blocked,
         repaired,
-        action: decision.action,
-        guardrailsAllowed: safetyResult.allowed,
-        categories: safetyCategories,
-        reasons: safetyResult.reasons,
-        outputWasReplaced: repaired
+        categories: [
+          ...decision.categories,
+          ...(quality.repetitive ? ['quality/repetition_loop'] : [])
+        ],
+        reasons: [...decision.reasons, ...(quality.reason ? [`quality/${quality.reason}`] : [])],
+        outputWasReplaced: repaired,
+        candidateHash: createHash('sha256').update(sanitizedContent).digest('hex'),
+        candidatePreview: summarizeTextForTrace(sanitizedContent, 160)
       };
 
       observation?.update({

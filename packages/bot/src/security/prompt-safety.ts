@@ -28,6 +28,7 @@ export interface PromptSafetyResult {
   };
   moderationCategories: string[];
   moderationScores: Record<string, number>;
+  moderationEvaluated?: boolean;
   lexicalMatches: string[];
   reasons: string[];
   moderationError?: string;
@@ -108,19 +109,32 @@ const BLOCKED_SLUR_TOKENS = [
   'spic',
   'gook',
   'wetback',
-  'tranny'
+  'tranny',
+  'dyke',
+  'lesbo',
+  'coon',
+  'darkie',
+  'jigaboo',
+  'porchmonkey',
+  'retard',
+  'retarded',
+  'mongoloid',
+  'beaner',
+  'raghead',
+  'towelhead',
+  'sandnigger',
+  'sandmonkey',
+  'slanteye',
+  'zipperhead',
+  'zippercunt',
+  'chinaman',
+  'dothead'
 ];
 
-const LETTER_SEPARATED_SLUR_PATTERNS: LabeledPattern[] = [
-  { label: 'faggot', pattern: /\bf[\W_]+a[\W_]+g[\W_]+g[\W_]+o[\W_]+t(?:s)?\b/i },
-  { label: 'nigger', pattern: /\bn[\W_]+i[\W_]+g[\W_]+g[\W_]+e[\W_]+r(?:s)?\b/i },
-  { label: 'kike', pattern: /\bk[\W_]+i[\W_]+k[\W_]+e(?:s)?\b/i },
-  { label: 'chink', pattern: /\bc[\W_]+h[\W_]+i[\W_]+n[\W_]+k(?:s)?\b/i },
-  { label: 'spic', pattern: /\bs[\W_]+p[\W_]+i[\W_]+c(?:s)?\b/i },
-  { label: 'gook', pattern: /\bg[\W_]+o[\W_]+o[\W_]+k(?:s)?\b/i },
-  { label: 'wetback', pattern: /\bw[\W_]+e[\W_]+t[\W_]+b[\W_]+a[\W_]+c[\W_]+k(?:s)?\b/i },
-  { label: 'tranny', pattern: /\bt[\W_]+r[\W_]+a[\W_]+n[\W_]+n[\W_]+y(?:ies)?\b/i }
-];
+const LETTER_SEPARATED_SLUR_PATTERNS: LabeledPattern[] = BLOCKED_SLUR_TOKENS.map(label => ({
+  label,
+  pattern: new RegExp(`\\b${label.split('').join('[\\W_]+')}(?:[\\W_]+s)?\\b`, 'i')
+}));
 
 const ANALYSIS_OR_SUPPORT_CUE_PATTERN =
   /\b(what\s+does|what\s+did|why\s+(?:is|does|did|do)|explain|help\s+me\s+(?:respond|reply|report|understand)|analy[sz]e|moderat(?:e|ion)|is\s+this|summari[sz]e|someone\s+said|they\s+said|he\s+said|she\s+said|sent\s+me|called\s+me|threatened\s+me|harassed\s+me|quoted?)\b/i;
@@ -223,8 +237,41 @@ const PROTECTED_GROUP_PATTERN = new RegExp(
   'i'
 );
 
-const SEXUAL_MINORS_PATTERN =
-  /\b(?:minor|minors|child|children|kid|kids|underage|teen|teens|teenager|teenagers|13-year-old|14-year-old|15-year-old|16-year-old|17-year-old|middle\s+schooler|high\s+schooler|young\s+boy|young\s+girl)\b[\s\S]{0,80}\b(?:sex|sexual|nude|naked|explicit|porn|erotic|blowjob|handjob|anal|hook\s*up|make\s*out|fetish|roleplay)\b|\b(?:sex|sexual|nude|naked|explicit|porn|erotic|blowjob|handjob|anal|hook\s*up|make\s*out|fetish|roleplay)\b[\s\S]{0,80}\b(?:minor|minors|child|children|kid|kids|underage|teen|teens|teenager|teenagers|13-year-old|14-year-old|15-year-old|16-year-old|17-year-old|middle\s+schooler|high\s+schooler|young\s+boy|young\s+girl)\b/i;
+const SEXUAL_CONTENT_TERM_FRAGMENT =
+  '(?:sex(?:ual)?|sexuali[sz](?:e|ed|ing|ation)|sext(?:ing)?|intercourse|nude|naked|explicit|porn(?:ography)?|erotic|lewd|blowjob|handjob|anal|hook\\s*up|make\\s*out|fetish|roleplay)';
+const SPELLED_MINOR_AGE_FRAGMENT =
+  '(?:(?:age|aged)\\s+(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen)|(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen)(?:[-\\s]+(?:years?|yrs?)[-\\s]+olds?|[-\\s]*year[-\\s]*olds?|[-\\s]*y\\/?o))';
+const NAMED_MINOR_REFERENCE_FRAGMENT =
+  '(?:minors?|child(?:ren)?|kids?|underage|teens?|teenagers?|pre[-\\s]?teens?|adolescents?|middle\\s+schoolers?|high[-\\s]+school(?:ers?|\\s+students?|\\s+seniors?)|(?:students?|seniors?)\\s+in\\s+high\\s+school|(?:[1-9]|1[0-2])(?:st|nd|rd|th)?[-\\s]+graders?|(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth)[-\\s]+graders?|school[-\\s]+aged?|schoolgirls?|schoolboys?|young\\s+(?:boys?|girls?)|freshm(?:an|en)|barely[-\\s]+legal|(?:minimum|lowest|youngest)(?:[-\\s]+(?:legal|permitted|allowed))?[-\\s]+age)';
+const NUMERIC_MINOR_VALUE_FRAGMENT = '(?:[0-9]|1[0-7])';
+const NUMERIC_MINOR_AGE_FRAGMENT = `(?:(?:age|aged)\\s+${NUMERIC_MINOR_VALUE_FRAGMENT}|${NUMERIC_MINOR_VALUE_FRAGMENT}(?:[-\\s]*(?:years?|yrs?)[-\\s]*olds?|[-\\s]*y\\/?o)|(?:character|person|someone|somebody|boy|girl|he|she|they)(?:\\s+who)?\\s+is\\s+${NUMERIC_MINOR_VALUE_FRAGMENT})`;
+const MINOR_REFERENCE_FRAGMENT = `(?:${NAMED_MINOR_REFERENCE_FRAGMENT}|${SPELLED_MINOR_AGE_FRAGMENT}|${NUMERIC_MINOR_AGE_FRAGMENT})`;
+const SEXUAL_MINORS_PATTERN = new RegExp(
+  `(?:\\b${MINOR_REFERENCE_FRAGMENT}\\b[\\s\\S]{0,100}\\b${SEXUAL_CONTENT_TERM_FRAGMENT}\\b|\\b${SEXUAL_CONTENT_TERM_FRAGMENT}\\b[\\s\\S]{0,100}\\b${MINOR_REFERENCE_FRAGMENT}\\b)`,
+  'i'
+);
+const SEXUAL_CONTENT_TERM_PATTERN = new RegExp(`\\b${SEXUAL_CONTENT_TERM_FRAGMENT}\\b`, 'i');
+const BIRTH_YEAR_PATTERN = /\bborn\s+in\s+((?:19|20)\d{2})\b/gi;
+
+function hasSexualMinorContent(content: string): boolean {
+  if (SEXUAL_MINORS_PATTERN.test(content)) {
+    return true;
+  }
+
+  if (!SEXUAL_CONTENT_TERM_PATTERN.test(content)) {
+    return false;
+  }
+
+  const currentYear = new Date().getUTCFullYear();
+  for (const match of content.matchAll(BIRTH_YEAR_PATTERN)) {
+    const birthYear = Number(match[1]);
+    if (birthYear >= currentYear - 17 && birthYear <= currentYear) {
+      return true;
+    }
+  }
+
+  return false;
+}
 
 const EXPLICIT_SEX_TOPIC_PATTERN =
   /\b(porn|pornography|nsfw|xxx|sext(?:ing)?|sexual\s+roleplay|erp|fetish|blowjob|handjob|deepthroat|cum(?:ming)?|anal)\b/i;
@@ -232,7 +279,7 @@ const EXPLICIT_SEX_TOPIC_PATTERN =
 const EXPLICIT_SEX_INTENT_PATTERN =
   /\b(talk\s+to\s+me\s+about|describe|write|roleplay|act\s+like|tell\s+me|fantas(?:y|ize)|dirty\s+talk|moan|explain|how\s+to|techniques?|tips?|advice)\b/i;
 
-const ASSISTANT_UNSAFE_SEXUAL_PERSONA_PATTERN = /\b(?:doctor\s+cock|dr\.?\s+dick|doctor\s+dick)\b/i;
+const ASSISTANT_UNSAFE_SEXUAL_PERSONA_PATTERN = /\b(?:(?:dr\.?|doctor)\s+(?:ass|cock|dick))\b/i;
 
 const ASSISTANT_EXPLICIT_SEXUAL_OUTPUT_PATTERN =
   /\b(?:cock|dick|cum|cumming|balls?-deep|thrust(?:ing|s)?|pound(?:ing|s)?|deepthroat|blowjob|handjob|anal|frenulum|semen|erection|prostate\s+(?:switch|pleasure|massage)|sexual\s+roleplay|erp)\b/i;
@@ -274,8 +321,20 @@ const DIRECT_HARM_TARGETING_REQUEST_PATTERN = new RegExp(
 const SOCIAL_GROUP_TARGETING_REQUEST_PATTERN =
   /\bwho\s+(?:do|should|can)\s+(?:i|we)\s+(?:purge|remove|ban|kick)\s+from\s+(?:the\s+)?(?:gc|group\s+chat|server|discord|chat)\b|\b(?:purge|remove|ban|kick)\s+(?:someone|a\s+member|a\s+user|people)\s+from\s+(?:the\s+)?(?:gc|group\s+chat|server|discord|chat)\b/i;
 
-const BENIGN_SEXUAL_ANATOMY_CONTEXT_PATTERN =
-  /\b(?:balls?|testicles?|genitalia|penis|prostate)\b[\s\S]{0,100}\b(?:help|fell\s+off|hurt|pain|doctor|medical|urgent|emergency|clinic|glue|back\s+on|screening|question)\b|\b(?:help|fell\s+off|hurt|pain|doctor|medical|urgent|emergency|clinic|glue|back\s+on|screening|question)\b[\s\S]{0,100}\b(?:balls?|testicles?|genitalia|penis|prostate)\b/i;
+const MEDICAL_ANATOMY_TERM_PATTERN =
+  /\b(?:anal|anus|rectal|fissure|balls?|testicles?|genitalia|penis|prostate|frenulum|semen|erection|cock|dick)\b/i;
+const MEDICAL_CONTEXT_CUE_PATTERN =
+  /\b(?:advice|care|cause|causes|clinic|condition|diagnos(?:e|ed|is|tic)|emergency|exam(?:ination|ine|ined)?|fissure|health|help|hurt|infection|injury|medical|pain|screening|seek|symptom|treatment|urgent|bleed(?:ing)?|swell(?:ing)?)\b/i;
+const EDUCATIONAL_ANATOMY_CUE_PATTERN =
+  /\b(?:anatomy|anatomical|definition|defined|refers\s+to|means|physiology|biological|blood\s+flow|fold\s+of\s+tissue|contains?|glands?|health\s+risks?|protection|safer\s+sex|rectum)\b/i;
+const SEXUAL_HEALTH_REDUCTION_CUE_PATTERN =
+  /\b(?:health\s+risks?|protection|condoms?|safer\s+sex|sti|std|infection|screening|consent)\b/i;
+const SEXUALIZED_MEDICAL_CONTEXT_PATTERN =
+  /\b(?:arous(?:al|ed|ing)|balls?-deep|blowjob|climax(?:ing)?|cum(?:ming)?|deepthroat|dirty\s+talk|erp|erotic|fetish|fuck(?:ing|s)?|handjob|masturbat(?:e|ing|ion)|orgasm(?:s|ing)?|penetrat(?:e|ing|ion)|porn|pound(?:ing|s)?|sex(?:ual)?|sexual\s+roleplay|thrust(?:ing|s)?|for\s+pleasure)\b/i;
+const EXPLICIT_ANATOMY_TECHNIQUE_PATTERN =
+  /\b(?:how\s+to\s+(?:do|finger|give|massage|penetrate|perform|stimulate|use)|step[-\s]+by[-\s]+step[\s\S]{0,60}(?:anal|anus|penis|prostate)|(?:finger|insert|penetrate|rub|stimulate|stroke)[\s\S]{0,50}(?:for\s+pleasure|sexually|until\s+(?:climax|orgasm)))\b/i;
+const COCK_UP_IDIOM_PATTERN =
+  /\bcock[-\s]+up(?:\s+of)?\s+(?:the\s+)?(?:booking|calendar|job|order|paperwork|plan|project|release|schedule|timing)\b/gi;
 
 const ILLICIT_DRUG_TOPIC_PATTERN =
   /\b(cocaine|meth(?:amphetamine)?|heroin|fentanyl|mdma|ecstasy|lsd|acid|crack|opioids?|molly)\b/i;
@@ -301,6 +360,69 @@ const LEETSPEAK_CHAR_MAP: Record<string, string> = {
   '+': 't'
 };
 
+// Normalize common cross-script lookalikes before lexical safety checks. NFKD
+// handles compatibility forms, but it intentionally does not collapse Greek or
+// Cyrillic characters that are visually confusable with Latin letters.
+const UNICODE_CONFUSABLE_CHAR_MAP: Record<string, string> = {
+  // Cyrillic
+  '\u0410': 'A',
+  '\u0430': 'a',
+  '\u0412': 'B',
+  '\u0432': 'b',
+  '\u0421': 'C',
+  '\u0441': 'c',
+  '\u0415': 'E',
+  '\u0435': 'e',
+  '\u0406': 'I',
+  '\u0456': 'i',
+  '\u0408': 'J',
+  '\u0458': 'j',
+  '\u041A': 'K',
+  '\u043A': 'k',
+  '\u041C': 'M',
+  '\u043C': 'm',
+  '\u041E': 'O',
+  '\u043E': 'o',
+  '\u0420': 'P',
+  '\u0440': 'p',
+  '\u0405': 'S',
+  '\u0455': 's',
+  '\u0422': 'T',
+  '\u0442': 't',
+  '\u0425': 'X',
+  '\u0445': 'x',
+  '\u0423': 'Y',
+  '\u0443': 'y',
+  '\u04CF': 'l',
+  // Greek
+  '\u0391': 'A',
+  '\u03B1': 'a',
+  '\u0392': 'B',
+  '\u03B2': 'b',
+  '\u03F9': 'C',
+  '\u03F2': 'c',
+  '\u0395': 'E',
+  '\u03B5': 'e',
+  '\u0397': 'H',
+  '\u03B7': 'h',
+  '\u0399': 'I',
+  '\u03B9': 'i',
+  '\u039A': 'K',
+  '\u03BA': 'k',
+  '\u039C': 'M',
+  '\u03BC': 'm',
+  '\u039D': 'N',
+  '\u039F': 'O',
+  '\u03BF': 'o',
+  '\u03A1': 'P',
+  '\u03C1': 'p',
+  '\u03A4': 'T',
+  '\u03C4': 't',
+  '\u03A7': 'X',
+  '\u03C7': 'x',
+  '\u03A5': 'Y'
+};
+
 let moderationRunnerForTests: PromptSafetyModerationRunner | null = null;
 let openai: OpenAI | null = null;
 
@@ -322,10 +444,15 @@ function parseBoolean(value: string | undefined, fallback: boolean): boolean {
 }
 
 function isPromptSafetyModerationEnabled(): boolean {
-  return parseBoolean(
-    process.env.OPENAI_GUARDRAILS_ENABLED,
-    deploymentDetector.getConfig().isProduction
-  );
+  if (process.env.OPENAI_MODERATION_ENABLED !== undefined) {
+    return parseBoolean(process.env.OPENAI_MODERATION_ENABLED, false);
+  }
+
+  if (process.env.NODE_ENV === 'test') {
+    return false;
+  }
+
+  return Boolean(process.env.OPENAI_API_KEY) || deploymentDetector.getConfig().isProduction;
 }
 
 function getOpenAIClient(): OpenAI {
@@ -359,7 +486,7 @@ function normalizeCharactersForEvasion(content: string): string {
       if (code >= 0x24b6 && code <= 0x24cf) return String.fromCharCode(code - 0x24b6 + 0x41);
       if (code >= 0x24d0 && code <= 0x24e9) return String.fromCharCode(code - 0x24d0 + 0x61);
 
-      return char;
+      return UNICODE_CONFUSABLE_CHAR_MAP[char] || char;
     })
     .join('');
 }
@@ -462,23 +589,52 @@ export function detectSocialGroupTargetingRequest(content: string): boolean {
   );
 }
 
+function detectBenignAmbiguousSlurSenses(content: string): Set<string> {
+  const benign = new Set<string>();
+
+  if (/\bchink\s+in\s+(?:the\s+)?armor\b/i.test(content)) {
+    benign.add('chink');
+  }
+  if (
+    /\b(?:levee|embankment|flood\s+barrier|water\s+barrier)\b[\s\S]{0,80}\bdyke\b|\bdyke\b[\s\S]{0,80}\b(?:levee|embankment|flood\s+barrier|water\s+barrier)\b/i.test(
+      content
+    )
+  ) {
+    benign.add('dyke');
+  }
+  if (
+    /\b(?:engine|ignition|spark|cam|valve)\b[\s\S]{0,80}\b(?:timing\s+)?(?:is\s+)?retarded\b|\bretarded\s+by\s+\d+(?:\.\d+)?\s+degrees?\b/i.test(
+      content
+    )
+  ) {
+    benign.add('retarded');
+    benign.add('retard');
+  }
+
+  return benign;
+}
+
 function detectLexicalSlurMatches(content: string): string[] {
+  const benignSenses = detectBenignAmbiguousSlurSenses(content);
   const visibleMatches = extractVisibleTokens(content)
     .map(token => normalizeTokenForEvasionDetection(token))
-    .filter(token => matchesBlockedSlurToken(token));
+    .filter(token => matchesBlockedSlurToken(token) && !benignSenses.has(token));
   const separatedMatches = LETTER_SEPARATED_SLUR_PATTERNS.filter(({ pattern }) =>
     pattern.test(content)
-  ).map(({ label }) => label);
+  )
+    .map(({ label }) => label)
+    .filter(label => !benignSenses.has(label));
 
   return unique([...visibleMatches, ...separatedMatches]);
 }
 
 function detectDirectSlurRequest(content: string): boolean {
+  if (!DIRECT_SLUR_REQUEST_PATTERN.test(content)) {
+    return false;
+  }
+
   return (
-    DIRECT_SLUR_REQUEST_PATTERN.test(content) &&
-    /\b(n[\s-]?word|hard[\s-]?r|faggot|nigger|kike|chink|spic|gook|wetback|tranny)s?\b/i.test(
-      content
-    )
+    /\b(?:n[\s-]?word|hard[\s-]?r)\b/i.test(content) || detectLexicalSlurMatches(content).length > 0
   );
 }
 
@@ -526,7 +682,10 @@ function detectStrictToolReasons(content: string): string[] {
 
 function detectAssistantOutputReasons(content: string): string[] {
   const reasons: string[] = [];
-  const hasExplicitSexualOutput = ASSISTANT_EXPLICIT_SEXUAL_OUTPUT_PATTERN.test(content);
+  const contentWithoutCockUpIdioms = content.replace(COCK_UP_IDIOM_PATTERN, 'mistake');
+  const hasExplicitSexualOutput =
+    ASSISTANT_EXPLICIT_SEXUAL_OUTPUT_PATTERN.test(contentWithoutCockUpIdioms) &&
+    !hasBenignMedicalOrAnatomyContext(content);
 
   if (ASSISTANT_UNSAFE_SEXUAL_PERSONA_PATTERN.test(content)) {
     reasons.push('sexual/unsafe_persona');
@@ -543,12 +702,20 @@ function detectAssistantOutputReasons(content: string): string[] {
   return reasons;
 }
 
-function hasBenignSexualAnatomyContext(content: string): boolean {
+export function hasBenignMedicalOrAnatomyContext(content: string): boolean {
+  const hasEducationalOrMedicalContext =
+    MEDICAL_CONTEXT_CUE_PATTERN.test(content) || EDUCATIONAL_ANATOMY_CUE_PATTERN.test(content);
+  const sexualizedButHarmReducing =
+    SEXUALIZED_MEDICAL_CONTEXT_PATTERN.test(content) &&
+    SEXUAL_HEALTH_REDUCTION_CUE_PATTERN.test(content);
+
   return (
-    BENIGN_SEXUAL_ANATOMY_CONTEXT_PATTERN.test(content) &&
-    !EXPLICIT_SEX_TOPIC_PATTERN.test(content) &&
-    !EXPLICIT_SEX_INTENT_PATTERN.test(content) &&
-    !SEXUAL_MINORS_PATTERN.test(content)
+    MEDICAL_ANATOMY_TERM_PATTERN.test(content) &&
+    hasEducationalOrMedicalContext &&
+    !ASSISTANT_UNSAFE_SEXUAL_PERSONA_PATTERN.test(content) &&
+    (!SEXUALIZED_MEDICAL_CONTEXT_PATTERN.test(content) || sexualizedButHarmReducing) &&
+    !EXPLICIT_ANATOMY_TECHNIQUE_PATTERN.test(content) &&
+    !hasSexualMinorContent(content)
   );
 }
 
@@ -570,7 +737,7 @@ function shouldSuppressModerationCategory(params: {
     ...params.sexualMinorsReason
   ].some(reason => reason.startsWith('sexual/'));
 
-  return !hasDeterministicSexualReason && hasBenignSexualAnatomyContext(params.content);
+  return !hasDeterministicSexualReason && hasBenignMedicalOrAnatomyContext(params.content);
 }
 
 function buildBasePromptSafetyResult(options: PromptSafetyEvaluationOptions): PromptSafetyResult {
@@ -589,6 +756,7 @@ function buildBasePromptSafetyResult(options: PromptSafetyEvaluationOptions): Pr
     },
     moderationCategories: [],
     moderationScores: {},
+    moderationEvaluated: false,
     lexicalMatches: [],
     reasons: []
   };
@@ -626,7 +794,7 @@ function evaluateDeterministicPromptSafety(
     options.profile === 'strict_tool_input' ? detectStrictToolReasons(trimmed) : [];
   const assistantOutputReasons =
     options.profile === 'assistant_output' ? detectAssistantOutputReasons(trimmed) : [];
-  const sexualMinorsReason = SEXUAL_MINORS_PATTERN.test(trimmed) ? ['sexual/minors'] : [];
+  const sexualMinorsReason = hasSexualMinorContent(trimmed) ? ['sexual/minors'] : [];
   const selfHarmAbuseReason = detectSelfHarmAbuseDirective(trimmed)
     ? ['harassment/self_harm_abuse']
     : [];
@@ -640,7 +808,9 @@ function evaluateDeterministicPromptSafety(
         : []
       : [];
   const allowContextualSlurUse =
-    options.profile !== 'chat_output' && canTreatSlurUseAsContext(trimmed, signals);
+    options.profile !== 'chat_output' &&
+    options.profile !== 'assistant_output' &&
+    canTreatSlurUseAsContext(trimmed, signals);
 
   const reasons: string[] = [];
   if (directSlurRequest) {
@@ -715,35 +885,40 @@ export function classifyAssistantOutputSafetyDeterministic(input: string): Promp
 async function runModeration(input: string): Promise<{
   flaggedCategories: string[];
   scores: Record<string, number>;
+  evaluated: boolean;
   error?: string;
 }> {
-  if (!isPromptSafetyModerationEnabled()) {
-    return {
-      flaggedCategories: [],
-      scores: {}
-    };
-  }
-
   if (moderationRunnerForTests) {
     try {
       const result = await moderationRunnerForTests(input);
       return {
         flaggedCategories: result.flaggedCategories,
-        scores: result.scores || {}
+        scores: result.scores || {},
+        evaluated: true
       };
     } catch (error) {
       return {
         flaggedCategories: [],
         scores: {},
+        evaluated: true,
         error: error instanceof Error ? error.message : String(error)
       };
     }
+  }
+
+  if (!isPromptSafetyModerationEnabled()) {
+    return {
+      flaggedCategories: [],
+      scores: {},
+      evaluated: false
+    };
   }
 
   if (!process.env.OPENAI_API_KEY) {
     return {
       flaggedCategories: [],
       scores: {},
+      evaluated: true,
       error: 'missing_openai_api_key'
     };
   }
@@ -759,6 +934,7 @@ async function runModeration(input: string): Promise<{
       return {
         flaggedCategories: [],
         scores: {},
+        evaluated: true,
         error: 'missing_moderation_result'
       };
     }
@@ -775,12 +951,14 @@ async function runModeration(input: string): Promise<{
 
     return {
       flaggedCategories,
-      scores
+      scores,
+      evaluated: true
     };
   } catch (error) {
     return {
       flaggedCategories: [],
       scores: {},
+      evaluated: true,
       error: error instanceof Error ? error.message : String(error)
     };
   }
@@ -819,6 +997,7 @@ export async function evaluatePromptSafety(
     allowed: deterministic.result.reasons.length === 0 && moderationCategories.length === 0,
     moderationCategories,
     moderationScores,
+    moderationEvaluated: moderation.evaluated,
     moderationError: moderation.error
   };
 }
