@@ -8,6 +8,7 @@ import type {
   TextGenerationOptions,
   TextGenerationResponse
 } from '@silo/core';
+import { normalizeTextGenerationFinishReason } from './finish-reason';
 
 interface InlineImagePart {
   inline_data: {
@@ -28,6 +29,7 @@ interface GoogleGenerateContentCandidate {
   content?: {
     parts?: GoogleGenerateContentPart[];
   };
+  finishReason?: string;
 }
 
 interface GoogleGenerateContentResponse {
@@ -298,9 +300,10 @@ export class GoogleTextProvider implements TextProvider {
     const json = (await response.json()) as GoogleGenerateContentResponse;
     const candidates = Array.isArray(json.candidates) ? json.candidates : [];
 
+    const firstCandidate = candidates[0];
     const parts =
-      candidates[0]?.content?.parts && Array.isArray(candidates[0].content.parts)
-        ? candidates[0].content.parts
+      firstCandidate?.content?.parts && Array.isArray(firstCandidate.content.parts)
+        ? firstCandidate.content.parts
         : [];
 
     const textContent = parts
@@ -336,6 +339,8 @@ export class GoogleTextProvider implements TextProvider {
     return {
       content: textContent,
       model,
+      finishReason: normalizeTextGenerationFinishReason(firstCandidate?.finishReason),
+      providerFinishReason: firstCandidate?.finishReason,
       usage: {
         promptTokens,
         completionTokens,

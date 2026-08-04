@@ -14,6 +14,13 @@ export interface TextGenerationOptions {
   };
 }
 
+export type TextGenerationFinishReason =
+  | 'stop'
+  | 'length'
+  | 'content_filter'
+  | 'tool_calls'
+  | 'other';
+
 export interface TextGenerationResponse {
   content: string;
   usage?: {
@@ -25,6 +32,8 @@ export interface TextGenerationResponse {
     cacheReadTokens?: number; // Tokens read from cache
   };
   model: string;
+  finishReason?: TextGenerationFinishReason;
+  providerFinishReason?: string;
   thinking?: string; // Internal reasoning for models with extended thinking
 }
 

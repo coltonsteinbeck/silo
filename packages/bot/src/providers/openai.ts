@@ -18,6 +18,7 @@ import {
   type WebSearchProvider,
   type WebSearchResponse
 } from '@silo/core';
+import { normalizeTextGenerationFinishReason } from './finish-reason';
 
 type OpenAIImageToolQuality = 'auto' | 'high' | 'medium' | 'low';
 type OpenAIImageToolAction = 'auto' | 'generate' | 'edit';
@@ -236,7 +237,9 @@ export class OpenAIProvider implements TextProvider, ImageProvider, WebSearchPro
               .cache_read_input_tokens as number | undefined
           }
         : undefined,
-      model: chatResponse.model
+      model: chatResponse.model,
+      finishReason: normalizeTextGenerationFinishReason(choice.finish_reason),
+      providerFinishReason: choice.finish_reason || undefined
     };
   }
 

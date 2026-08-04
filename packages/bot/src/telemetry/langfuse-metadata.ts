@@ -41,6 +41,9 @@ export type LangfuseMetadataInput = {
   conversationMessageCount?: number;
   contextScope?: string | null;
   contextSelectedTurnCount?: number;
+  contextSelectedMessageCount?: number;
+  contextTurnBudget?: number;
+  contextMessageBudget?: number;
   contextExcludedTurnCount?: number;
   contextExclusionReasons?: string[];
   inputSafetyAction?: string | null;
@@ -97,8 +100,17 @@ export type LangfuseMetadataInput = {
   safetyState?: string | null;
   graphOutcome?: string | null;
   temperature?: number;
+  generationSource?: string | null;
+  configuredMaxOutputTokens?: number;
+  effectiveMaxOutputTokens?: number;
+  completionTokens?: number;
+  finishReason?: string | null;
+  providerFinishReason?: string | null;
   recoveryAttempt?: number;
   recoveryContextFree?: boolean;
+  recoveryReason?: string | null;
+  recoveryContextRetained?: boolean;
+  deliveryTruncated?: boolean;
 };
 
 type LangfuseMetadataDefaults = Pick<
@@ -360,6 +372,17 @@ export function buildLangfuseTraceMetadata(input: LangfuseMetadataInput): TraceM
   );
   addMetadataField(
     metadata,
+    'contextSelectedMessageCount',
+    normalizeFiniteNumber(input.contextSelectedMessageCount)
+  );
+  addMetadataField(metadata, 'contextTurnBudget', normalizeFiniteNumber(input.contextTurnBudget));
+  addMetadataField(
+    metadata,
+    'contextMessageBudget',
+    normalizeFiniteNumber(input.contextMessageBudget)
+  );
+  addMetadataField(
+    metadata,
     'contextExcludedTurnCount',
     normalizeFiniteNumber(input.contextExcludedTurnCount)
   );
@@ -537,9 +560,34 @@ export function buildLangfuseTraceMetadata(input: LangfuseMetadataInput): TraceM
   addMetadataField(metadata, 'safetyState', normalizeTagValue(input.safetyState));
   addMetadataField(metadata, 'graphOutcome', normalizeTagValue(input.graphOutcome));
   addMetadataField(metadata, 'temperature', normalizeFiniteDecimal(input.temperature));
+  addMetadataField(metadata, 'generationSource', normalizeTagValue(input.generationSource));
+  addMetadataField(
+    metadata,
+    'configuredMaxOutputTokens',
+    normalizeFiniteNumber(input.configuredMaxOutputTokens)
+  );
+  addMetadataField(
+    metadata,
+    'effectiveMaxOutputTokens',
+    normalizeFiniteNumber(input.effectiveMaxOutputTokens)
+  );
+  addMetadataField(metadata, 'completionTokens', normalizeFiniteNumber(input.completionTokens));
+  addMetadataField(metadata, 'finishReason', normalizeTagValue(input.finishReason));
+  addMetadataField(
+    metadata,
+    'providerFinishReason',
+    normalizeOptionalString(input.providerFinishReason)
+  );
   addMetadataField(metadata, 'recoveryAttempt', normalizeFiniteNumber(input.recoveryAttempt));
   if (typeof input.recoveryContextFree === 'boolean') {
     addMetadataField(metadata, 'recoveryContextFree', input.recoveryContextFree);
+  }
+  addMetadataField(metadata, 'recoveryReason', normalizeTagValue(input.recoveryReason));
+  if (typeof input.recoveryContextRetained === 'boolean') {
+    addMetadataField(metadata, 'recoveryContextRetained', input.recoveryContextRetained);
+  }
+  if (typeof input.deliveryTruncated === 'boolean') {
+    addMetadataField(metadata, 'deliveryTruncated', input.deliveryTruncated);
   }
 
   return metadata;

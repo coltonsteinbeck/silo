@@ -115,6 +115,43 @@ describe('assistant response recovery', () => {
       totalTokens: 26
     });
     expect(result.originalCandidateHash).toBe('blocked-candidate-hash');
+    expect(result.recoveryReason).toBe('safety');
+    expect(result.recoveryContextRetained).toBe(false);
+  });
+
+  test('uses the task-retaining retry for a quality rejection', async () => {
+    let contextFreeCalls = 0;
+    let retainedCalls = 0;
+    const primary = graphResult(false, 'repeated candidate');
+    primary.safetyState = 'quality_blocked';
+    primary.outcome = 'blocked';
+    primary.outputSafety!.blocked = true;
+    primary.outputSafety!.quality = {
+      repetitive: true,
+      reason: 'high_similarity',
+      maxSimilarity: 0.9,
+      recurringPhraseCount: 0
+    };
+    primary.outputSafety!.categories = ['quality/repetition_loop'];
+
+    const result = await recoverUnsafeAgentResponse({
+      primaryResult: primary,
+      inputSafetyAction: 'allow',
+      runContextFreeRetry: async () => {
+        contextFreeCalls += 1;
+        return graphResult(false, 'wrong retry');
+      },
+      runContextRetainedRetry: async () => {
+        retainedCalls += 1;
+        return graphResult(false, 'task-aware retry');
+      }
+    });
+
+    expect(contextFreeCalls).toBe(0);
+    expect(retainedCalls).toBe(1);
+    expect(result.result.response.content).toBe('task-aware retry');
+    expect(result.recoveryReason).toBe('quality');
+    expect(result.recoveryContextRetained).toBe(true);
   });
 
   test('never loops when the single retry is also unsafe', async () => {
@@ -220,7 +257,8 @@ describe('direct assistant response recovery', () => {
   });
 
   test('performs exactly one retry for a quality-repetitive primary', async () => {
-    let retryCalls = 0;
+    let contextFreeCalls = 0;
+    let retainedCalls = 0;
     const result = await recoverUnsafeDirectResponse({
       primaryResponse: { content: 'repetitive primary', model: 'mock-model' },
       inputSafetyAction: 'allow',
@@ -229,17 +267,24 @@ describe('direct assistant response recovery', () => {
           ? directAssessment('allow', { repetitive: true })
           : directAssessment('allow'),
       runContextFreeRetry: async () => {
-        retryCalls += 1;
+        contextFreeCalls += 1;
+        return { content: 'wrong retry', model: 'mock-model' };
+      },
+      runContextRetainedRetry: async () => {
+        retainedCalls += 1;
         return { content: 'fresh retry', model: 'mock-model' };
       },
       buildFallback: () => 'unused fallback'
     });
 
-    expect(retryCalls).toBe(1);
+    expect(contextFreeCalls).toBe(0);
+    expect(retainedCalls).toBe(1);
     expect(result.retryCount).toBe(1);
     expect(result.retrySucceeded).toBe(true);
     expect(result.response.content).toBe('fresh retry');
     expect(result.originalAssessment?.quality.repetitive).toBe(true);
+    expect(result.recoveryReason).toBe('quality');
+    expect(result.recoveryContextRetained).toBe(true);
   });
 
   test('uses one stable fallback when the single retry is also unsafe', async () => {

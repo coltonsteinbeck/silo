@@ -46,6 +46,7 @@ import {
   resolveManagedGuildPersonaPolicy,
   safetyMonitor,
   sentimentClassifier,
+  classifyPromptDeterministic,
   buildSentimentStyleInstruction,
   shouldApplySentiment,
   sanitizeAssistantProfanity,
@@ -70,7 +71,19 @@ import {
   recoverUnsafeDirectResponse,
   type DirectCandidateAssessment
 } from './services/assistant-response-recovery';
-import { detectResponseRepetition } from './services/response-quality';
+import {
+  detectResponseRepetition,
+  selectLatestTaskDefiningUserText
+} from './services/response-quality';
+import {
+  DEFAULT_MAX_TEXT_RESPONSE_TOKENS,
+  resolveTextResponseTokenLimit
+} from './services/response-budget';
+import {
+  parseIntegerRangeRequest,
+  renderIntegerRangeResponse,
+  type IntegerRangeResponse
+} from './services/integer-range';
 import { resolveReplyContext } from './services/reply-context';
 import { shouldHandleAssistantMessage } from './services/message-trigger';
 import { fetchUrlContextBlock, hasUrlContextCandidate } from './services/url-context';
@@ -97,6 +110,10 @@ import { handleReactionFeedback } from './runtime/reaction-feedback';
 
 const MAX_STARTUP_CUSTOM_PROMPT_WARMUPS = 10;
 const PROMPT_FALLBACK_NOTICE_COOLDOWN_MS = 30 * 60 * 1000;
+const PROMPT_CONTEXT_MAX_TURNS = 5;
+const PROMPT_CONTEXT_MAX_MESSAGES = PROMPT_CONTEXT_MAX_TURNS * 2;
+const MAX_DISCORD_MESSAGE_LENGTH = 2000;
+const MAX_TRACEABLE_RANGE_BOUND = 1_000_000;
 const promptFallbackNoticeByGuild = new Map<
   string,
   { emittedAt: number; reason: PromptFallbackNoticeReason }
@@ -1126,7 +1143,11 @@ export async function startBot(): Promise<void> {
             );
           }
 
-          const promptSentiment = await sentimentClassifier.classifyPrompt(processedContent);
+          const deterministicRangeRequest =
+            currentImageUrls.length === 0 ? parseIntegerRangeRequest(processedContent) : null;
+          const promptSentiment = deterministicRangeRequest
+            ? classifyPromptDeterministic(processedContent)
+            : await sentimentClassifier.classifyPrompt(processedContent);
           const sentimentApplied = shouldApplySentiment(promptSentiment);
           logger.info('Sentiment classification for prompt', {
             guildId,
@@ -1148,7 +1169,6 @@ export async function startBot(): Promise<void> {
             userText: conversationContext.mergedUserContent,
             hasVisionTargets: conversationContext.visionTargets.length > 0
           });
-
           messageTrace?.update({
             input: {
               promptPreview: summarizeTextForTrace(effectiveUserPrompt || processedContent),
@@ -1194,7 +1214,6 @@ export async function startBot(): Promise<void> {
           let estimatedTokens = 0;
           let visionUserLimit: number | undefined;
           let textUserLimit: number | undefined;
-          const DEFAULT_MAX_TEXT_RESPONSE_TOKENS = 180;
           let maxTextResponseTokens = DEFAULT_MAX_TEXT_RESPONSE_TOKENS;
 
           if (useVision) {
@@ -1221,7 +1240,7 @@ export async function startBot(): Promise<void> {
             }
 
             visionUserLimit = visionQuotaCheck.max;
-          } else {
+          } else if (!deterministicRangeRequest) {
             const quotaStatus = await quotaMiddleware.checkQuota(
               guildId,
               message.author.id,
@@ -1243,10 +1262,7 @@ export async function startBot(): Promise<void> {
               return;
             }
 
-            maxTextResponseTokens = Math.min(
-              DEFAULT_MAX_TEXT_RESPONSE_TOKENS,
-              quotaStatus.remaining
-            );
+            maxTextResponseTokens = resolveTextResponseTokenLimit(quotaStatus.remaining);
             estimatedTokens = await quotaMiddleware.estimateResponseTokensWithCap(
               processedContent.length,
               maxTextResponseTokens
@@ -1299,7 +1315,7 @@ export async function startBot(): Promise<void> {
           });
           const systemPrompt = composeSystemPromptWithSafety(promptPolicy.effectivePrompt);
           const conciseResponseInstruction =
-            '\n\nResponse style rule: Keep responses concise and clear by default (2-4 sentences). Only provide longer responses when the user explicitly asks for detail.';
+            '\n\nResponse style rule: Keep responses concise and clear by default (2-4 sentences). Only provide longer responses when the user explicitly asks for detail. When the user requests a finite exact output such as a list, range, table, or code block, complete the requested output before adding persona commentary; never replace requested items with shorthand.';
           const userUsedEmoji = /\p{Extended_Pictographic}/u.test(processedContent);
           const userRequestedRichFormatting =
             /\b(markdown|format|formatted|bullet|bulleted|list|table|code\s*block|bold|italic|emoji|emojis|styled|style)\b/i.test(
@@ -1334,6 +1350,13 @@ export async function startBot(): Promise<void> {
             promptFallbackReason && shouldEmitPromptFallbackNotice(guildId, promptFallbackReason)
               ? buildPromptFallbackNotice(promptFallbackReason)
               : null;
+          const deterministicRangeResponse: IntegerRangeResponse | null = deterministicRangeRequest
+            ? renderIntegerRangeResponse(
+                deterministicRangeRequest,
+                MAX_DISCORD_MESSAGE_LENGTH -
+                  (promptFallbackNotice ? promptFallbackNotice.length + 2 : 0)
+              )
+            : null;
 
           logger.info(
             `Prompt context for guild ${guildId}: promptHash=${promptHash}, source=${managedPersona ? 'managed_persona' : promptPolicy.usedCustomPrompt ? 'custom' : 'default'}, customPromptHash=${promptPolicy.customPromptHash || 'none'}`
@@ -1402,6 +1425,7 @@ export async function startBot(): Promise<void> {
             hasVisionTargets: conversationContext.visionTargets.length > 0
           });
           const contextReuseDisabledForTurn =
+            Boolean(deterministicRangeResponse) ||
             inheritedContextDisabled ||
             inputSafetyDecision?.contextEligible === false ||
             lowContextHistoryDisabled;
@@ -1506,9 +1530,11 @@ export async function startBot(): Promise<void> {
                 exclusionReasons: {
                   [inheritedContextDisabled
                     ? 'model_circuit_context_disabled'
-                    : inputSafetyDecision?.contextEligible === false
-                      ? 'input_safety_context_ineligible'
-                      : 'low_context_standalone']: 1
+                    : deterministicRangeResponse
+                      ? 'deterministic_range'
+                      : inputSafetyDecision?.contextEligible === false
+                        ? 'input_safety_context_ineligible'
+                        : 'low_context_standalone']: 1
                 }
               })
             : db.getPromptContext({
@@ -1517,7 +1543,7 @@ export async function startBot(): Promise<void> {
                 promptHash,
                 requesterUserId: message.author.id,
                 replyToMessageId: conversationContext.directReplyMessageId,
-                maxTurns: 3,
+                maxTurns: PROMPT_CONTEXT_MAX_TURNS,
                 maxAgeMs: 30 * 60 * 1000
               });
 
@@ -1675,6 +1701,9 @@ export async function startBot(): Promise<void> {
             adapter: textProvider.name,
             routerDecision,
             routerReason,
+            generationSource: deterministicRangeResponse ? 'deterministic_range' : 'provider',
+            configuredMaxOutputTokens: DEFAULT_MAX_TEXT_RESPONSE_TOKENS,
+            effectiveMaxOutputTokens: deterministicRangeResponse ? 0 : maxTextResponseTokens,
             hasConversationHistory: messages.length > 0,
             conversationMessageCount: messages.length,
             usesTools: false,
@@ -1693,6 +1722,9 @@ export async function startBot(): Promise<void> {
             conversationHistoryIncluded: includeConversationHistory,
             contextScope: promptContext.scope,
             contextSelectedTurnCount: promptContext.selectedTurnCount,
+            contextSelectedMessageCount: messages.length,
+            contextTurnBudget: PROMPT_CONTEXT_MAX_TURNS,
+            contextMessageBudget: PROMPT_CONTEXT_MAX_MESSAGES,
             contextExcludedTurnCount: promptContext.excludedTurnCount,
             contextExclusionReasons: Object.keys(promptContext.exclusionReasons),
             inheritedContextSafetyRisk,
@@ -1716,6 +1748,9 @@ export async function startBot(): Promise<void> {
               conversationHistoryIncluded: includeConversationHistory,
               contextScope: promptContext.scope,
               contextSelectedTurnCount: promptContext.selectedTurnCount,
+              contextSelectedMessageCount: messages.length,
+              contextTurnBudget: PROMPT_CONTEXT_MAX_TURNS,
+              contextMessageBudget: PROMPT_CONTEXT_MAX_MESSAGES,
               contextExcludedTurnCount: promptContext.excludedTurnCount,
               contextExclusionReasons: Object.keys(promptContext.exclusionReasons),
               contextSafetyAction: contextSafetyDecision.action,
@@ -1752,6 +1787,14 @@ export async function startBot(): Promise<void> {
           let originalCandidateHash: string | null = null;
           let originalCandidatePreview: string | null = null;
           let originalCandidateCategories: string[] = [];
+          let recoveryReason: 'safety' | 'quality' | null = null;
+          let recoveryContextRetained = false;
+          const generationSource = deterministicRangeResponse ? 'deterministic_range' : 'provider';
+          const traceableRangeBounds = Boolean(
+            deterministicRangeResponse &&
+            Math.abs(deterministicRangeResponse.start) <= MAX_TRACEABLE_RANGE_BOUND &&
+            Math.abs(deterministicRangeResponse.end) <= MAX_TRACEABLE_RANGE_BOUND
+          );
           const directOutputAssessment: { current: DirectCandidateAssessment | null } = {
             current: null
           };
@@ -1770,10 +1813,53 @@ export async function startBot(): Promise<void> {
                 ...buildLangfuseTraceMetadata(generationMetadataInput),
                 preferredProvider: preferredProvider || 'auto',
                 hasPromptFallbackNotice: Boolean(promptFallbackNotice),
+                generationSource,
+                configuredMaxOutputTokens: DEFAULT_MAX_TEXT_RESPONSE_TOKENS,
+                effectiveMaxOutputTokens: deterministicRangeResponse ? 0 : maxTextResponseTokens,
                 temperature: 0.6
               }
             },
             async generation => {
+              if (deterministicRangeResponse) {
+                const deterministicResponse = {
+                  content: deterministicRangeResponse.content,
+                  model: 'deterministic-integer-range',
+                  finishReason: 'stop' as const,
+                  providerFinishReason:
+                    deterministicRangeResponse.status === 'rendered'
+                      ? 'deterministic_complete'
+                      : 'deterministic_too_large',
+                  usage: {
+                    promptTokens: 0,
+                    completionTokens: 0,
+                    totalTokens: 0
+                  }
+                };
+                generation?.update({
+                  output: {
+                    outputCharacters: deterministicResponse.content.length,
+                    hasContent: true,
+                    generationSource,
+                    requestedRangeStart: traceableRangeBounds
+                      ? deterministicRangeResponse.start
+                      : null,
+                    requestedRangeEnd: traceableRangeBounds ? deterministicRangeResponse.end : null,
+                    requestedRangeItemCount: deterministicRangeResponse.itemCount,
+                    renderedRangeItemCount: deterministicRangeResponse.renderedItemCount,
+                    rangeRenderStatus: deterministicRangeResponse.status,
+                    rangeBoundsRedacted: !traceableRangeBounds
+                  },
+                  metadata: {
+                    ...buildLangfuseTraceMetadata(generationMetadataInput),
+                    generationSource,
+                    finishReason: deterministicResponse.finishReason,
+                    providerFinishReason: deterministicResponse.providerFinishReason,
+                    completionTokens: 0
+                  }
+                });
+                return deterministicResponse;
+              }
+
               if (useVision && visionProvider?.analyzeImage) {
                 for (const [index, target] of conversationContext.visionTargets.entries()) {
                   const sourceLabel =
@@ -1866,6 +1952,15 @@ export async function startBot(): Promise<void> {
                   content: enrichedUserPrompt || processedContent
                 }
               ];
+              const latestSafeTaskUserText = selectLatestTaskDefiningUserText(
+                historyForPrompt
+                  .filter(historyMessage => historyMessage.role === 'user')
+                  .map(historyMessage => historyMessage.content)
+              );
+              const qualityRecoveryUserPrompt = latestSafeTaskUserText
+                ? `Previous safe user request:\n${latestSafeTaskUserText}\n\nLatest user follow-up:\n${mergedUserPrompt || processedContent}`
+                : mergedUserPrompt || processedContent;
+              const qualityRecoverySystemPrompt = `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${sentimentStyleInstruction}\n\nQuality recovery rule: Resolve the latest follow-up using only the previous safe user request supplied below. Complete the requested task without reviving assistant lore or unrelated conversation topics.`;
 
               const graphActive =
                 agentGraphConfig.enabled &&
@@ -2034,7 +2129,7 @@ export async function startBot(): Promise<void> {
                       limits: agentGraphConfig.limits,
                       intent: 'answer',
                       intentConfidence: 1,
-                      intentReason: 'context-free recovery after output safety or quality failure',
+                      intentReason: 'context-free recovery after output safety failure',
                       outputBlockedMessage: managedPersona?.assistantOutputBlockedMessage,
                       allowMildAssistantProfanity,
                       inheritedSafetyRisk: inputNsfwRisk,
@@ -2047,10 +2142,49 @@ export async function startBot(): Promise<void> {
                         graphVersion: 'v2',
                         recoveryAttempt: 1,
                         recoveryContextFree: true,
+                        recoveryReason: 'safety',
+                        recoveryContextRetained: false,
                         temperature: 0.2
                       }
                     });
-                  }
+                  },
+                  ...(latestSafeTaskUserText
+                    ? {
+                        runContextRetainedRetry: async () =>
+                          runBoundedAgentGraph({
+                            messages: [
+                              { role: 'system', content: qualityRecoverySystemPrompt },
+                              { role: 'user', content: qualityRecoveryUserPrompt }
+                            ],
+                            textProvider,
+                            generationOptions: {
+                              maxTokens: maxTextResponseTokens,
+                              temperature: 0.2
+                            },
+                            provider: toAgentProviderCapabilities(toolCapabilities),
+                            limits: agentGraphConfig.limits,
+                            intent: 'answer',
+                            intentConfidence: 1,
+                            intentReason: 'task-retaining recovery after output quality failure',
+                            outputBlockedMessage: managedPersona?.assistantOutputBlockedMessage,
+                            allowMildAssistantProfanity,
+                            inheritedSafetyRisk: inputNsfwRisk,
+                            recentAssistantMessages,
+                            latestUserText: mergedUserPrompt || processedContent,
+                            requestedTools: [],
+                            metadata: {
+                              ...generationMetadataInput,
+                              graphName: 'discord-message-agent',
+                              graphVersion: 'v2',
+                              recoveryAttempt: 1,
+                              recoveryContextFree: false,
+                              recoveryReason: 'quality',
+                              recoveryContextRetained: true,
+                              temperature: 0.2
+                            }
+                          })
+                      }
+                    : {})
                 });
                 activeGraphResult.current = recovery.result;
                 outputRetryCount = recovery.retryCount;
@@ -2058,6 +2192,8 @@ export async function startBot(): Promise<void> {
                 originalCandidateHash = recovery.originalCandidateHash;
                 originalCandidatePreview = recovery.originalCandidatePreview;
                 originalCandidateCategories = recovery.originalCandidateCategories;
+                recoveryReason = recovery.recoveryReason;
+                recoveryContextRetained = recovery.recoveryContextRetained;
                 providerResponse = activeGraphResult.current.response;
               } else {
                 const latestUserText = mergedUserPrompt || processedContent;
@@ -2091,7 +2227,9 @@ export async function startBot(): Promise<void> {
                       usageDetails: candidate.usage,
                       output: {
                         outputCharacters: candidate.content.length,
-                        hasContent: Boolean(candidate.content.trim())
+                        hasContent: Boolean(candidate.content.trim()),
+                        finishReason: candidate.finishReason || null,
+                        providerFinishReason: candidate.providerFinishReason || null
                       }
                     });
                     return candidate;
@@ -2141,6 +2279,8 @@ export async function startBot(): Promise<void> {
                           ...buildLangfuseTraceMetadata(generationMetadataInput),
                           recoveryAttempt: 1,
                           recoveryContextFree: true,
+                          recoveryReason: 'safety',
+                          recoveryContextRetained: false,
                           inputNsfwRisk
                         },
                         tags: buildLangfuseTags(generationMetadataInput)
@@ -2155,13 +2295,68 @@ export async function startBot(): Promise<void> {
                           usageDetails: candidate.usage,
                           output: {
                             outputCharacters: candidate.content.length,
-                            hasContent: Boolean(candidate.content.trim())
+                            hasContent: Boolean(candidate.content.trim()),
+                            finishReason: candidate.finishReason || null,
+                            providerFinishReason: candidate.providerFinishReason || null
                           }
                         });
                         return candidate;
                       }
                     );
                   },
+                  ...(latestSafeTaskUserText
+                    ? {
+                        runContextRetainedRetry: () => {
+                          const recoveryMessages = [
+                            {
+                              role: 'system' as const,
+                              content: qualityRecoverySystemPrompt
+                            },
+                            { role: 'user' as const, content: qualityRecoveryUserPrompt }
+                          ];
+                          return withLangfuseGeneration(
+                            {
+                              name: 'direct.model-quality-recovery-generation',
+                              input: {
+                                messageCount: recoveryMessages.length,
+                                lastUserMessagePreview: summarizeTextForTrace(latestUserText, 240)
+                              },
+                              model: requestedTextModel || textProvider.name,
+                              modelParameters: {
+                                maxTokens: maxTextResponseTokens,
+                                temperature: 0.2
+                              },
+                              metadata: {
+                                ...buildLangfuseTraceMetadata(generationMetadataInput),
+                                recoveryAttempt: 1,
+                                recoveryContextFree: false,
+                                recoveryReason: 'quality',
+                                recoveryContextRetained: true,
+                                inputNsfwRisk
+                              },
+                              tags: buildLangfuseTags(generationMetadataInput)
+                            },
+                            async retryGeneration => {
+                              const candidate = await textProvider.generateText(recoveryMessages, {
+                                maxTokens: maxTextResponseTokens,
+                                temperature: 0.2
+                              });
+                              retryGeneration?.update({
+                                model: candidate.model || requestedTextModel || textProvider.name,
+                                usageDetails: candidate.usage,
+                                output: {
+                                  outputCharacters: candidate.content.length,
+                                  hasContent: Boolean(candidate.content.trim()),
+                                  finishReason: candidate.finishReason || null,
+                                  providerFinishReason: candidate.providerFinishReason || null
+                                }
+                              });
+                              return candidate;
+                            }
+                          );
+                        }
+                      }
+                    : {}),
                   buildFallback: assessment =>
                     assessment.quality.repetitive
                       ? 'My brain got stuck repeating itself. Give me one more shot with a little more detail.'
@@ -2171,6 +2366,8 @@ export async function startBot(): Promise<void> {
                 directOutputAssessment.current = directRecovery.assessment;
                 outputRetryCount = directRecovery.retryCount;
                 outputRetrySucceeded = directRecovery.retrySucceeded;
+                recoveryReason = directRecovery.recoveryReason;
+                recoveryContextRetained = directRecovery.recoveryContextRetained;
                 if (directRecovery.originalContent) {
                   originalCandidateHash = contentSanitizer.hashContent(
                     directRecovery.originalContent
@@ -2192,6 +2389,9 @@ export async function startBot(): Promise<void> {
                 output: {
                   outputCharacters: providerResponse.content.length,
                   hasContent: Boolean(providerResponse.content.trim()),
+                  generationSource,
+                  finishReason: providerResponse.finishReason || null,
+                  providerFinishReason: providerResponse.providerFinishReason || null,
                   usedVision,
                   visionSummaryCount: imageSummaries.length
                 },
@@ -2223,7 +2423,10 @@ export async function startBot(): Promise<void> {
                   originalCandidateHash,
                   originalCandidatePreview,
                   outputRetryCount,
-                  outputRetrySucceeded
+                  outputRetrySucceeded,
+                  recoveryReason,
+                  recoveryContextRetained,
+                  completionTokens: providerResponse.usage?.completionTokens ?? null
                 }
               });
 
@@ -2236,8 +2439,6 @@ export async function startBot(): Promise<void> {
           );
 
           // === Phase 5: Moderate output, reply, then fire-and-forget post-LLM writes ===
-          // Discord has a 2000 character limit for messages
-          const MAX_MESSAGE_LENGTH = 2000;
           let responseContent = response.content;
           const graphOutputSafety = activeGraphResult.current?.outputSafety;
           const outputSafetyDecision =
@@ -2435,7 +2636,10 @@ export async function startBot(): Promise<void> {
           let assistantCircuitDecision: ReturnType<
             typeof safetyMonitor.recordAssistantIncident
           > | null = null;
-          if (originalCandidateHash || !assistantModeration.allowed) {
+          if (
+            generationSource === 'provider' &&
+            (originalCandidateHash || !assistantModeration.allowed)
+          ) {
             const circuitDecision = safetyMonitor.recordAssistantIncident({
               provider: textProvider.name,
               model: modelCircuitKey,
@@ -2520,18 +2724,20 @@ export async function startBot(): Promise<void> {
             responseContent = `${promptFallbackNotice}\n\n${responseContent}`;
           }
 
-          if (responseContent.length > MAX_MESSAGE_LENGTH) {
+          let deliveryTruncated = false;
+          if (responseContent.length > MAX_DISCORD_MESSAGE_LENGTH) {
             // Truncate and add ellipsis
-            responseContent = responseContent.substring(0, MAX_MESSAGE_LENGTH - 4) + '...';
+            deliveryTruncated = true;
+            responseContent = responseContent.substring(0, MAX_DISCORD_MESSAGE_LENGTH - 4) + '...';
             logger.warn(
               `Response truncated for message in guild ${guildId}: ${response.content.length} -> ${responseContent.length} characters`
             );
           }
 
-          const actualTokens = quotaMiddleware.getChargeableTextTokens(
-            response.usage,
-            responseContent
-          );
+          const actualTokens =
+            generationSource === 'deterministic_range'
+              ? 0
+              : quotaMiddleware.getChargeableTextTokens(response.usage, responseContent);
           if (usedVision) {
             const safeVisionUserLimit = Number.isFinite(visionUserLimit)
               ? visionUserLimit
@@ -2543,7 +2749,7 @@ export async function startBot(): Promise<void> {
               Math.max(visionTokensUsed, actualTokens),
               safeVisionUserLimit
             );
-          } else {
+          } else if (generationSource !== 'deterministic_range') {
             const safeTextUserLimit = Number.isFinite(textUserLimit) ? textUserLimit : undefined;
             await quotaMiddleware.recordUsage(
               guildId,
@@ -2626,6 +2832,16 @@ export async function startBot(): Promise<void> {
               ...buildLangfuseTraceMetadata({
                 ...generationMetadataInput,
                 model: response.model || requestedTextModel || undefined,
+                generationSource,
+                configuredMaxOutputTokens: DEFAULT_MAX_TEXT_RESPONSE_TOKENS,
+                effectiveMaxOutputTokens:
+                  generationSource === 'deterministic_range' ? 0 : maxTextResponseTokens,
+                completionTokens: response.usage?.completionTokens,
+                finishReason: response.finishReason,
+                providerFinishReason: response.providerFinishReason,
+                recoveryReason,
+                recoveryContextRetained,
+                deliveryTruncated,
                 modelCircuitFailureCount: assistantCircuitDecision?.failureCountInWindow || 0,
                 modelCircuitActivated: assistantCircuitDecision?.circuitActivated || false,
                 modelCircuitContextDisabled:
@@ -2681,6 +2897,26 @@ export async function startBot(): Promise<void> {
                 summarizeTextForTrace(response.content),
               outputRetryCount,
               outputRetrySucceeded,
+              recoveryReason,
+              recoveryContextRetained,
+              generationSource,
+              configuredMaxOutputTokens: DEFAULT_MAX_TEXT_RESPONSE_TOKENS,
+              effectiveMaxOutputTokens:
+                generationSource === 'deterministic_range' ? 0 : maxTextResponseTokens,
+              completionTokens: response.usage?.completionTokens ?? null,
+              finishReason: response.finishReason || null,
+              providerFinishReason: response.providerFinishReason || null,
+              deliveryTruncated,
+              requestedRangeStart: traceableRangeBounds
+                ? (deterministicRangeResponse?.start ?? null)
+                : null,
+              requestedRangeEnd: traceableRangeBounds
+                ? (deterministicRangeResponse?.end ?? null)
+                : null,
+              requestedRangeItemCount: deterministicRangeResponse?.itemCount ?? null,
+              renderedRangeItemCount: deterministicRangeResponse?.renderedItemCount ?? null,
+              rangeRenderStatus: deterministicRangeResponse?.status ?? null,
+              rangeBoundsRedacted: Boolean(deterministicRangeResponse) && !traceableRangeBounds,
               finalPersistenceEligible,
               finalSafetyState,
               langfuseTraceId: langfuseTraceId || undefined
@@ -2762,11 +2998,12 @@ export async function startBot(): Promise<void> {
               },
               moderationAction: assistantModeration.action,
               usedVision,
+              generationSource,
               langfuseTraceId
             }
           });
 
-          if (usedVision) {
+          if (usedVision || generationSource === 'deterministic_range') {
             Promise.all([conversationWrite, sentimentEvent]).catch(err => {
               logger.error('Failed to complete post-response writes:', err);
             });

@@ -10,7 +10,8 @@ describe('AnthropicProvider', () => {
     createMock = mock(async () => ({
       content: [{ type: 'text', text: 'hello world' }],
       usage: { input_tokens: 10, output_tokens: 6 },
-      model: 'claude-test'
+      model: 'claude-test',
+      stop_reason: 'end_turn'
     }));
 
     (provider as any).client = {
@@ -38,6 +39,14 @@ describe('AnthropicProvider', () => {
     expect(result.content).toBe('first segment\n\nsecond segment');
     expect(result.usage?.promptTokens).toBe(20);
     expect(result.usage?.completionTokens).toBe(8);
+    expect(result.finishReason).toBeUndefined();
+  });
+
+  test('maps Anthropic stop reasons', async () => {
+    const result = await provider.generateText([{ role: 'user', content: 'hello' }]);
+
+    expect(result.finishReason).toBe('stop');
+    expect(result.providerFinishReason).toBe('end_turn');
   });
 
   test('throws when response has no text content blocks', async () => {

@@ -17,6 +17,7 @@ import {
 import { shouldIncludeConversationHistoryForPrompt } from '../../services/conversation-context';
 import { sanitizeConversationHistoryForPrompt } from '../../services/conversation-history-sanitizer';
 import { recoverUnsafeAgentResponse } from '../../services/assistant-response-recovery';
+import { selectLatestTaskDefiningUserText } from '../../services/response-quality';
 
 type SafetyState =
   | 'legacy'
@@ -475,6 +476,47 @@ describe('anonymized contaminated-conversation replay', () => {
     ).toBe(3);
   });
 
+  test('keeps the five newest complete turns as ten messages without splitting pairs', async () => {
+    const continuityTurns = Array.from(
+      { length: 6 },
+      (_, index): TurnFixture => ({
+        turnId: `continuity-turn-${index + 1}`,
+        requesterUserId: 'continuity-user',
+        userMessageId: `continuity-user-message-${index + 1}`,
+        assistantMessageId: `continuity-assistant-message-${index + 1}`,
+        userContent: `continuity question ${index + 1}`,
+        assistantContent: `continuity answer ${index + 1}`,
+        promptEligible: true,
+        safetyState: 'allowed',
+        createdAt: `2026-07-09T13:0${index}:00.000Z`
+      })
+    );
+    const continuityRows = materializeRows({
+      ...fixture,
+      legacyRows: [],
+      unpairedRows: [],
+      turns: continuityTurns
+    });
+    const adapter = adapterBackedByReplayRows(continuityRows);
+
+    const context = await adapter.getPromptContext({
+      ...fixture.scope,
+      requesterUserId: 'continuity-user',
+      maxTurns: 99,
+      maxAgeMs: 30 * 60 * 1000
+    });
+
+    expect(context.selectedTurnCount).toBe(5);
+    expect(context.messages).toHaveLength(10);
+    expect(selectedTurnIds(context.messages)).toEqual(
+      continuityTurns.slice(1).map(turn => turn.turnId)
+    );
+    expect(context.messages.map(message => message.role)).toEqual(
+      Array.from({ length: 5 }).flatMap(() => ['user' as const, 'assistant' as const])
+    );
+    expect(context.exclusionReasons).toEqual({ over_limit: 1 });
+  });
+
   test.each(fixture.standaloneCases)(
     '$name selects clean context before graph generation',
     async replayCase => {
@@ -576,7 +618,7 @@ describe('anonymized contaminated-conversation replay', () => {
     expect(context.messages.map(message => message.turnSequence)).toEqual([0, 1, 0, 1]);
   });
 
-  test('invented-lore repetition is a quality repair followed by one context-free retry', async () => {
+  test('invented-lore repetition is a quality repair with only the latest safe task retained', async () => {
     const replay = fixture.repetitionRecovery;
     const adapter = adapterBackedByReplayRows(rows);
     const context = await adapter.getPromptContext({
@@ -617,15 +659,24 @@ describe('anonymized contaminated-conversation replay', () => {
     });
     const retryCalls: Array<Array<{ role: string; content: string }>> = [];
     const retryProvider = graphProvider(fixture.forbiddenResidue, retryCalls);
+    const previousSafeUserRequest = selectLatestTaskDefiningUserText(
+      sanitation.filtered.filter(message => message.role === 'user').map(message => message.content)
+    );
     const recovered = await recoverUnsafeAgentResponse({
       primaryResult: primary,
       inputSafetyAction: 'allow',
-      runContextFreeRetry: () =>
+      runContextFreeRetry: async () => {
+        throw new Error('quality recovery must retain the safe task referent');
+      },
+      runContextRetainedRetry: () =>
         runGraph({
           provider: retryProvider,
           messages: [
-            { role: 'system', content: 'Answer only the latest user message.' },
-            { role: 'user', content: replay.prompt }
+            { role: 'system', content: 'Use only the supplied safe user requests.' },
+            {
+              role: 'user',
+              content: `Previous safe user request: ${previousSafeUserRequest}\nLatest follow-up: ${replay.prompt}`
+            }
           ],
           latestUserText: replay.prompt,
           recentAssistantMessages: [],
@@ -640,6 +691,8 @@ describe('anonymized contaminated-conversation replay', () => {
     expect(primary.outputSafety?.categories).toContain('quality/repetition_loop');
     expect(recovered.retryCount).toBe(1);
     expect(recovered.retrySucceeded).toBe(true);
+    expect(recovered.recoveryReason).toBe('quality');
+    expect(recovered.recoveryContextRetained).toBe(true);
     expect(primaryCalls).toHaveLength(1);
     expect(retryCalls).toHaveLength(1);
     expect(retryCalls[0]!.map(message => message.role)).toEqual(['system', 'user']);
