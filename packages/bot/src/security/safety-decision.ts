@@ -6,12 +6,14 @@ import {
   classifyAssistantOutputSafetyDeterministic,
   evaluatePromptSafety,
   hasBenignMedicalOrAnatomyContext,
-  type GuardrailProfile
+  type GuardrailProfile,
+  type ModerationFailure
 } from './prompt-safety';
 
 export type SafetyAction = 'allow' | 'redirect' | 'block';
 export type SafetyStage = 'input' | 'context_reuse' | 'assistant_output';
 export type SafetyDetectorSource = 'deterministic' | 'moderation' | 'semantic' | 'policy';
+export type SafetyFailurePolicy = 'fail_open' | 'fail_closed';
 
 export interface SafetyDecision {
   action: SafetyAction;
@@ -23,6 +25,7 @@ export interface SafetyDecision {
   contextEligible: boolean;
   failed: boolean;
   failureReason?: string;
+  failure?: ModerationFailure;
   semanticRisk: boolean;
 }
 
@@ -31,6 +34,7 @@ export interface SafetyDecisionOptions {
   source: string;
   userId?: string;
   inheritedRisk?: boolean;
+  failurePolicy?: SafetyFailurePolicy;
 }
 
 export function buildContextReuseSafetyDecision(params: {
@@ -126,6 +130,8 @@ const CRITICAL_BLOCK_CATEGORIES = new Set([
   'hate/slur_usage',
   'hate/slur_generation_request',
   'hate/slur_obfuscation_request',
+  'hate/slur_evasion',
+  'hate/slur_acronym_evasion',
   'hate/protected_group_joke_request',
   'hate/protected_group_attack_request',
   'sexual/minors',
@@ -418,6 +424,10 @@ export function buildSafetyDecisionMessage(decision: Pick<SafetyDecision, 'categ
     return 'The safety checker face-planted on that one. Try again in a moment.';
   }
 
+  if (decision.categories.includes('hate/slur_acronym_evasion')) {
+    return 'That acronym resolves to a slur. Reorder or rename the words and I can help make a clean version.';
+  }
+
   if (
     decision.categories.includes('prompt_injection/policy_bypass') ||
     decision.categories.includes('guardrails/jailbreak')
@@ -463,6 +473,9 @@ export async function evaluateSafetyDecision(
     source: options.source,
     userId: options.userId
   });
+  const failurePolicy =
+    options.failurePolicy ?? (options.stage === 'assistant_output' ? 'fail_closed' : 'fail_open');
+  const moderationFailedClosed = Boolean(safety.moderationError) && failurePolicy === 'fail_closed';
   const contextualContent = isContextualSafetyDiscussion(content);
   const contextualHarmResidue =
     contextualContent &&
@@ -495,6 +508,12 @@ export async function evaluateSafetyDecision(
   );
   for (const reason of safetyReasons) {
     scores[reason] = Math.max(scores[reason] ?? 0, 1);
+  }
+
+  if (moderationFailedClosed) {
+    categories.push('guardrails/api_error_fail_closed');
+    scores['guardrails/api_error_fail_closed'] = 1;
+    detectorSources.push('policy');
   }
 
   const explicitAdult = hasExplicitAdultSexualIntent(content);
@@ -593,7 +612,7 @@ export async function evaluateSafetyDecision(
   );
   let action: SafetyAction = 'allow';
 
-  if (semanticFailure || semanticBlocked || hasCriticalBlock) {
+  if (moderationFailedClosed || semanticFailure || semanticBlocked || hasCriticalBlock) {
     action = 'block';
   } else if (options.stage === 'assistant_output') {
     if (
@@ -630,12 +649,14 @@ export async function evaluateSafetyDecision(
       ...safetyReasons,
       ...semanticReasons,
       ...normalizedCategories,
+      ...(moderationFailedClosed && safety.moderationError ? [safety.moderationError] : []),
       ...(semanticFailure ? [semanticFailure] : [])
     ]),
     detectorSources: unique(detectorSources),
     contextEligible,
     failed: Boolean(safety.moderationError || semanticFailure),
     failureReason: semanticFailure || safety.moderationError,
+    failure: safety.moderationFailure,
     semanticRisk
   };
 }

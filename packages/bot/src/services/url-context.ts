@@ -49,6 +49,13 @@ interface FetchUrlContextOptions {
 
 const URL_PATTERN = /https?:\/\/[^\s<>()]+/gi;
 
+export function hasUrlContextCandidate(text: string): boolean {
+  URL_PATTERN.lastIndex = 0;
+  const hasCandidate = URL_PATTERN.test(text);
+  URL_PATTERN.lastIndex = 0;
+  return hasCandidate;
+}
+
 const SUSPICIOUS_FILE_EXTENSION_PATTERN =
   /\.(?:exe|dll|dmg|pkg|msi|apk|bat|cmd|ps1|scr|jar|js|vbs|hta|iso|img)(?:$|[?#])/i;
 
