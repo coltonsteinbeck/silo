@@ -21,6 +21,7 @@ export type { GuildInfo, WaitlistEntry, JoinResult } from './guild-manager';
 
 export {
   contentSanitizer,
+  ContentSanitizer,
   buildSafetyResponseInstruction,
   buildUserMessageForBlockedInput
 } from './content-sanitizer';
@@ -54,7 +55,7 @@ export {
   resetPromptSafetyRuntimeForTests,
   setPromptSafetyRuntimeForTests
 } from './prompt-safety';
-export type { GuardrailProfile, PromptSafetyResult } from './prompt-safety';
+export type { GuardrailProfile, ModerationFailure, PromptSafetyResult } from './prompt-safety';
 export {
   evaluateSafetyDecision,
   buildSafetyDecisionMessage,
@@ -68,6 +69,7 @@ export type {
   SafetyAction,
   SafetyDecision,
   SafetyDetectorSource,
+  SafetyFailurePolicy,
   SafetyStage
 } from './safety-decision';
 

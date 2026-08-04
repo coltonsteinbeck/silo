@@ -13,12 +13,15 @@ import type { GuardrailsPromptDecision } from './openai-guardrails';
 import { detectMildProfanity } from './profanity-policy';
 import {
   buildPromptSafetyWarningMessage,
+  classifyModerationFailure,
   detectDirectHarmTargetingRequest,
   detectSelfHarmAbuseDirective,
   detectSocialGroupTargetingRequest,
-  type GuardrailProfile
+  type GuardrailProfile,
+  type ModerationFailure
 } from './prompt-safety';
 import { evaluateSafetyDecision, type SafetyDecision } from './safety-decision';
+import { detectSlurSafety, hasPlainCanonicalSlur, normalizeSafetyText } from './slur-detection';
 import { classifyPromptDeterministic, SentimentClassification } from './sentiment-classifier';
 
 // Lazy-initialized OpenAI client (avoids error at module load time)
@@ -50,6 +53,7 @@ export interface ModerationResult {
   responseDirective?: ModerationResponseDirective;
   reasons?: string[];
   moderationError?: string;
+  moderationFailure?: ModerationFailure;
   safetyDecision?: SafetyDecision;
 }
 
@@ -408,17 +412,6 @@ const WARN_BLOCK_CATEGORIES = ['sexual', 'harassment', 'harassment/threatening']
 // Threshold for category scores to trigger action (0.0 - 1.0)
 const SCORE_THRESHOLD = 0.7;
 
-const BLOCKED_SLUR_TOKENS = [
-  'faggot',
-  'nigger',
-  'kike',
-  'chink',
-  'spic',
-  'gook',
-  'wetback',
-  'tranny'
-];
-
 const CONTEXTUAL_ASSISTANCE_ROUTE_CATEGORIES = ['hate', 'harassment', 'violence'];
 
 const DEESCALATION_ROUTE_CATEGORIES = [
@@ -430,17 +423,6 @@ const DEESCALATION_ROUTE_CATEGORIES = [
 ];
 
 const SAFE_REWRITE_ROUTE_CATEGORIES = ['hate', 'harassment', 'harassment/threatening', 'violence'];
-
-const LETTER_SEPARATED_SLUR_PATTERNS = [
-  /\bf[\W_]+a[\W_]+g[\W_]+g[\W_]+o[\W_]+t(?:s)?\b/i,
-  /\bn[\W_]+i[\W_]+g[\W_]+g[\W_]+e[\W_]+r(?:s)?\b/i,
-  /\bk[\W_]+i[\W_]+k[\W_]+e(?:s)?\b/i,
-  /\bc[\W_]+h[\W_]+i[\W_]+n[\W_]+k(?:s)?\b/i,
-  /\bs[\W_]+p[\W_]+i[\W_]+c(?:s)?\b/i,
-  /\bg[\W_]+o[\W_]+o[\W_]+k(?:s)?\b/i,
-  /\bw[\W_]+e[\W_]+t[\W_]+b[\W_]+a[\W_]+c[\W_]+k(?:s)?\b/i,
-  /\bt[\W_]+r[\W_]+a[\W_]+n[\W_]+n[\W_]+y(?:ies)?\b/i
-];
 
 const ANALYSIS_OR_SUPPORT_CUE_PATTERN =
   /\b(what\s+does|what\s+did|why\s+(?:is|does|did|do)|explain|help\s+me\s+(?:respond|reply|report|understand)|analy[sz]e|moderat(?:e|ion)|is\s+this|summari[sz]e|someone\s+said|they\s+said|he\s+said|she\s+said|sent\s+me|called\s+me|threatened\s+me|harassed\s+me|quoted?)\b/i;
@@ -461,24 +443,6 @@ const DEESCALATION_ABUSE_CUE_PATTERN =
 
 const DIRECT_SLUR_REQUEST_PATTERN =
   /^\s*(?:please\s+|just\s+|can\s+you\s+|could\s+you\s+|will\s+you\s+|i\s+want\s+you\s+to\s+|go\s+ahead\s+and\s+)?(?:say|repeat|write|output|spell|type|drop|use|complete|list)\b/i;
-
-const LEETSPEAK_CHAR_MAP: Record<string, string> = {
-  '0': 'o',
-  '1': 'i',
-  '2': 'z',
-  '3': 'e',
-  '4': 'a',
-  '5': 's',
-  '6': 'g',
-  '7': 't',
-  '8': 'b',
-  '9': 'g',
-  '@': 'a',
-  $: 's',
-  '!': 'i',
-  '|': 'i',
-  '+': 't'
-};
 
 const PROMPT_INJECTION_PATTERNS = [
   /ignore\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|rules?)/i,
@@ -543,65 +507,8 @@ export function hasUnsafeSexualContext(content: string): boolean {
   );
 }
 
-function normalizeTokenForEvasionDetection(content: string): string {
-  const normalized = normalizeCharactersForEvasion(content)
-    .toLowerCase()
-    .split('')
-    .map(char => LEETSPEAK_CHAR_MAP[char] || char)
-    .join('');
-
-  return normalized.replace(/[^a-z]/g, '');
-}
-
-function normalizeCharactersForEvasion(content: string): string {
-  return content
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .split('')
-    .map(char => {
-      const code = char.codePointAt(0);
-      if (!code) return char;
-
-      // Full-width digits and letters
-      if (code >= 0xff10 && code <= 0xff19) return String.fromCharCode(code - 0xff10 + 0x30);
-      if (code >= 0xff21 && code <= 0xff3a) return String.fromCharCode(code - 0xff21 + 0x41);
-      if (code >= 0xff41 && code <= 0xff5a) return String.fromCharCode(code - 0xff41 + 0x61);
-
-      // Circled letters
-      if (code >= 0x24b6 && code <= 0x24cf) return String.fromCharCode(code - 0x24b6 + 0x41);
-      if (code >= 0x24d0 && code <= 0x24e9) return String.fromCharCode(code - 0x24d0 + 0x61);
-
-      return char;
-    })
-    .join('');
-}
-
-function matchesBlockedSlurToken(token: string): boolean {
-  if (BLOCKED_SLUR_TOKENS.includes(token)) {
-    return true;
-  }
-
-  if (token.endsWith('s') && BLOCKED_SLUR_TOKENS.includes(token.slice(0, -1))) {
-    return true;
-  }
-
-  if (token.endsWith('ies') && BLOCKED_SLUR_TOKENS.includes(`${token.slice(0, -3)}y`)) {
-    return true;
-  }
-
-  return false;
-}
-
-function extractVisibleTokens(content: string): string[] {
-  return normalizeCharactersForEvasion(content)
-    .toLowerCase()
-    .split(/\s+/)
-    .map(token => token.replace(/^[^a-z]+|[^a-z]+$/g, ''))
-    .filter(Boolean);
-}
-
 function hasPlainSlurUsage(content: string): boolean {
-  return extractVisibleTokens(content).some(token => matchesBlockedSlurToken(token));
+  return hasPlainCanonicalSlur(content);
 }
 
 function collectGuardrailIntentSignals(content: string): GuardrailIntentSignals {
@@ -654,9 +561,8 @@ function hasDirectSlurGenerationRequest(content: string | undefined): boolean {
 
   return (
     DIRECT_SLUR_REQUEST_PATTERN.test(content) &&
-    /\b(n[\s-]?word|hard[\s-]?r|faggot|nigger|kike|chink|spic|gook|wetback|tranny)s?\b/i.test(
-      content
-    )
+    (/\b(n[\s-]?word|hard[\s-]?r)\b/i.test(content) ||
+      detectSlurSafety(content, 'input').lexicalMatches.length > 0)
   );
 }
 
@@ -697,67 +603,22 @@ export function hasPromptInjectionPattern(content: string): boolean {
 }
 
 export function normalizeContentForEvasionDetection(content: string): string {
-  return normalizeCharactersForEvasion(content)
-    .toLowerCase()
-    .split('')
-    .map(char => LEETSPEAK_CHAR_MAP[char] || char)
-    .join('')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function buildInitialism(value: string): string {
-  return value
-    .split(/\s+/)
-    .filter(Boolean)
-    .map(word => word[0]?.toLowerCase() || '')
-    .join('');
-}
-
-function extractQuotedSegments(content: string): string[] {
-  const matches = content.matchAll(/["“]([^"”]+)["”]/g);
-  return Array.from(matches, match => match[1]?.trim() || '').filter(Boolean);
-}
-
-function hasInitialismBypassIntent(content: string): boolean {
-  return /(abbreviation|acronym|first\s+letter|initials?)/i.test(content);
+  return normalizeSafetyText(content).replace(/\s+/g, ' ').trim();
 }
 
 export function detectDeterministicHateEvasion(content: string): string[] {
+  const detection = detectSlurSafety(content, 'input');
   const categories: string[] = [];
-  const visibleTokens = extractVisibleTokens(content);
 
-  const hasSeparatedSlur = LETTER_SEPARATED_SLUR_PATTERNS.some(pattern => pattern.test(content));
-  const hasNormalizedSlur = visibleTokens.some(token => {
-    const normalizedToken = normalizeTokenForEvasionDetection(token);
-    if (!matchesBlockedSlurToken(normalizedToken)) {
-      return false;
-    }
-
-    const visibleLettersOnly = normalizeCharactersForEvasion(token)
-      .toLowerCase()
-      .replace(/[^a-z]/g, '');
-
-    return visibleLettersOnly !== normalizedToken;
-  });
-
-  if (hasSeparatedSlur || hasNormalizedSlur) {
+  if (detection.evasionMatches.length > 0) {
     categories.push('hate/slur_evasion');
   }
 
-  if (hasInitialismBypassIntent(content)) {
-    const quotedSegments = extractQuotedSegments(content);
-    const generatedAcronyms = quotedSegments
-      .map(segment => buildInitialism(segment))
-      .filter(Boolean);
-
-    const hasSlurAcronym = generatedAcronyms.some(acronym => BLOCKED_SLUR_TOKENS.includes(acronym));
-    if (hasSlurAcronym) {
-      categories.push('hate/slur_acronym_evasion');
-    }
+  if (detection.initialismMatches.length > 0) {
+    categories.push('hate/slur_acronym_evasion');
   }
 
-  return [...new Set(categories)];
+  return categories;
 }
 
 function detectDeterministicSlurUsage(content: string): string[] {
@@ -844,7 +705,7 @@ export function detectDeterministicIllicitContent(content: string): string[] {
   ];
 }
 
-class ContentSanitizer {
+export class ContentSanitizer {
   private pool: Pool | null = null;
 
   /**
@@ -893,18 +754,21 @@ class ContentSanitizer {
       const safetyDecision = await evaluateSafetyDecision(content, {
         stage: options.profile === 'assistant_output' ? 'assistant_output' : 'input',
         source: options.source || contentType,
-        userId
+        userId,
+        failurePolicy:
+          failClosedOnError || options.profile === 'assistant_output' ? 'fail_closed' : 'fail_open'
       });
       const flaggedCategories = safetyDecision.categories;
       const scores = safetyDecision.scores;
-      const action: ModerationAction =
-        safetyDecision.action === 'block' && safetyDecision.failed
-          ? 'api_error_fail_closed'
-          : safetyDecision.action === 'block'
-            ? 'blocked'
-            : safetyDecision.action === 'redirect'
-              ? 'warned'
-              : 'allowed';
+      const action: ModerationAction = safetyDecision.categories.includes(
+        'guardrails/api_error_fail_closed'
+      )
+        ? 'api_error_fail_closed'
+        : safetyDecision.action === 'block'
+          ? 'blocked'
+          : safetyDecision.action === 'redirect'
+            ? 'warned'
+            : 'allowed';
       const allowed = action === 'allowed' || action === 'warned';
       const resolvedDirective =
         safetyDecision.action === 'redirect' ? 'boundary_redirect' : responseDirective;
@@ -929,6 +793,7 @@ class ContentSanitizer {
         responseDirective: resolvedDirective || undefined,
         reasons: safetyDecision.reasons,
         moderationError: safetyDecision.failureReason,
+        moderationFailure: safetyDecision.failure,
         safetyDecision
       };
     }
@@ -1016,7 +881,13 @@ class ContentSanitizer {
         responseDirective: decision.responseDirective
       };
     } catch (error) {
-      logger.error('Content moderation failed:', error);
+      const moderationFailure = classifyModerationFailure(error);
+      logger.error('Content moderation failed', {
+        stage: options.profile || 'legacy',
+        status: moderationFailure.status,
+        code: moderationFailure.code,
+        type: moderationFailure.type
+      });
 
       const failureResult = buildModerationApiFailureResult(contentHash, failClosedOnError);
 
@@ -1031,7 +902,11 @@ class ContentSanitizer {
         actionTaken: failureResult.action
       });
 
-      return failureResult;
+      return {
+        ...failureResult,
+        moderationError: moderationFailure.message,
+        moderationFailure
+      };
     }
   }
 

@@ -7,6 +7,40 @@
 
 import { mock } from 'bun:test';
 
+// Unit and graph tests must never inherit production provider credentials from
+// a developer's local .env. Individual provider tests can install explicit
+// mock credentials after this preload runs.
+for (const credential of [
+  'OPENAI_API_KEY',
+  'ANTHROPIC_API_KEY',
+  'XAI_API_KEY',
+  'GOOGLE_API_KEY',
+  'LOCAL_API_KEY'
+]) {
+  delete process.env[credential];
+}
+process.env.OPENAI_GUARDRAILS_ENABLED = 'false';
+process.env.OPENAI_MODERATION_ENABLED = 'false';
+
+const providerApiHosts = new Set([
+  'api.openai.com',
+  'api.anthropic.com',
+  'api.x.ai',
+  'generativelanguage.googleapis.com'
+]);
+const nativeFetch = globalThis.fetch;
+globalThis.fetch = (async (
+  input: Parameters<typeof globalThis.fetch>[0],
+  init?: Parameters<typeof globalThis.fetch>[1]
+) => {
+  const url =
+    typeof input === 'string' ? new URL(input) : input instanceof URL ? input : new URL(input.url);
+  if (providerApiHosts.has(url.hostname)) {
+    throw new Error(`Outbound provider call blocked by test harness: ${url.hostname}`);
+  }
+  return nativeFetch(input, init);
+}) as typeof globalThis.fetch;
+
 // ============================================================================
 // Discord.js Mocks
 // ============================================================================

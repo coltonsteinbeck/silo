@@ -100,6 +100,12 @@ function getUnsafeAssistantHistoryReason(
 
   const outputSafety = classifyAssistantOutputSafetyDeterministic(content);
   if (!outputSafety.allowed) {
+    const evasionCategory = outputSafety.reasons.find(reason =>
+      ['hate/slur_evasion', 'hate/slur_acronym_evasion'].includes(reason)
+    );
+    if (evasionCategory) {
+      return evasionCategory;
+    }
     return 'assistant_output_guardrail';
   }
 

@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { deploymentDetector } from './deployment';
+import { detectSlurSafety, normalizeSafetyToken, type SlurDetectionStage } from './slur-detection';
 
 export type GuardrailProfile =
   | 'chat_input'
@@ -32,6 +33,15 @@ export interface PromptSafetyResult {
   lexicalMatches: string[];
   reasons: string[];
   moderationError?: string;
+  moderationFailure?: ModerationFailure;
+}
+
+export interface ModerationFailure {
+  message: string;
+  stage?: GuardrailProfile;
+  status?: number;
+  code?: string;
+  type?: string;
 }
 
 export interface PromptSafetyModerationResult {
@@ -100,41 +110,6 @@ const PROFILE_MODERATION_CATEGORIES: Record<GuardrailProfile, readonly string[]>
     'violence/graphic'
   ]
 };
-
-const BLOCKED_SLUR_TOKENS = [
-  'faggot',
-  'nigger',
-  'kike',
-  'chink',
-  'spic',
-  'gook',
-  'wetback',
-  'tranny',
-  'dyke',
-  'lesbo',
-  'coon',
-  'darkie',
-  'jigaboo',
-  'porchmonkey',
-  'retard',
-  'retarded',
-  'mongoloid',
-  'beaner',
-  'raghead',
-  'towelhead',
-  'sandnigger',
-  'sandmonkey',
-  'slanteye',
-  'zipperhead',
-  'zippercunt',
-  'chinaman',
-  'dothead'
-];
-
-const LETTER_SEPARATED_SLUR_PATTERNS: LabeledPattern[] = BLOCKED_SLUR_TOKENS.map(label => ({
-  label,
-  pattern: new RegExp(`\\b${label.split('').join('[\\W_]+')}(?:[\\W_]+s)?\\b`, 'i')
-}));
 
 const ANALYSIS_OR_SUPPORT_CUE_PATTERN =
   /\b(what\s+does|what\s+did|why\s+(?:is|does|did|do)|explain|help\s+me\s+(?:respond|reply|report|understand)|analy[sz]e|moderat(?:e|ion)|is\s+this|summari[sz]e|someone\s+said|they\s+said|he\s+said|she\s+said|sent\s+me|called\s+me|threatened\s+me|harassed\s+me|quoted?)\b/i;
@@ -342,87 +317,6 @@ const ILLICIT_DRUG_TOPIC_PATTERN =
 const ILLICIT_DRUG_INTENT_PATTERN =
   /\b(how\s+to|where\s+can\s+i|buy|get|score|cook|make|synthesi[sz]e|dose|snort|inject|smoke|sell|dealer)\b/i;
 
-const LEETSPEAK_CHAR_MAP: Record<string, string> = {
-  '0': 'o',
-  '1': 'i',
-  '2': 'z',
-  '3': 'e',
-  '4': 'a',
-  '5': 's',
-  '6': 'g',
-  '7': 't',
-  '8': 'b',
-  '9': 'g',
-  '@': 'a',
-  $: 's',
-  '!': 'i',
-  '|': 'i',
-  '+': 't'
-};
-
-// Normalize common cross-script lookalikes before lexical safety checks. NFKD
-// handles compatibility forms, but it intentionally does not collapse Greek or
-// Cyrillic characters that are visually confusable with Latin letters.
-const UNICODE_CONFUSABLE_CHAR_MAP: Record<string, string> = {
-  // Cyrillic
-  '\u0410': 'A',
-  '\u0430': 'a',
-  '\u0412': 'B',
-  '\u0432': 'b',
-  '\u0421': 'C',
-  '\u0441': 'c',
-  '\u0415': 'E',
-  '\u0435': 'e',
-  '\u0406': 'I',
-  '\u0456': 'i',
-  '\u0408': 'J',
-  '\u0458': 'j',
-  '\u041A': 'K',
-  '\u043A': 'k',
-  '\u041C': 'M',
-  '\u043C': 'm',
-  '\u041E': 'O',
-  '\u043E': 'o',
-  '\u0420': 'P',
-  '\u0440': 'p',
-  '\u0405': 'S',
-  '\u0455': 's',
-  '\u0422': 'T',
-  '\u0442': 't',
-  '\u0425': 'X',
-  '\u0445': 'x',
-  '\u0423': 'Y',
-  '\u0443': 'y',
-  '\u04CF': 'l',
-  // Greek
-  '\u0391': 'A',
-  '\u03B1': 'a',
-  '\u0392': 'B',
-  '\u03B2': 'b',
-  '\u03F9': 'C',
-  '\u03F2': 'c',
-  '\u0395': 'E',
-  '\u03B5': 'e',
-  '\u0397': 'H',
-  '\u03B7': 'h',
-  '\u0399': 'I',
-  '\u03B9': 'i',
-  '\u039A': 'K',
-  '\u03BA': 'k',
-  '\u039C': 'M',
-  '\u03BC': 'm',
-  '\u039D': 'N',
-  '\u039F': 'O',
-  '\u03BF': 'o',
-  '\u03A1': 'P',
-  '\u03C1': 'p',
-  '\u03A4': 'T',
-  '\u03C4': 't',
-  '\u03A7': 'X',
-  '\u03C7': 'x',
-  '\u03A5': 'Y'
-};
-
 let moderationRunnerForTests: PromptSafetyModerationRunner | null = null;
 let openai: OpenAI | null = null;
 
@@ -467,61 +361,6 @@ function getOpenAIClient(): OpenAI {
 
 function unique<T>(values: T[]): T[] {
   return Array.from(new Set(values));
-}
-
-function normalizeCharactersForEvasion(content: string): string {
-  return content
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .split('')
-    .map(char => {
-      const code = char.codePointAt(0);
-      if (!code) {
-        return char;
-      }
-
-      if (code >= 0xff10 && code <= 0xff19) return String.fromCharCode(code - 0xff10 + 0x30);
-      if (code >= 0xff21 && code <= 0xff3a) return String.fromCharCode(code - 0xff21 + 0x41);
-      if (code >= 0xff41 && code <= 0xff5a) return String.fromCharCode(code - 0xff41 + 0x61);
-      if (code >= 0x24b6 && code <= 0x24cf) return String.fromCharCode(code - 0x24b6 + 0x41);
-      if (code >= 0x24d0 && code <= 0x24e9) return String.fromCharCode(code - 0x24d0 + 0x61);
-
-      return UNICODE_CONFUSABLE_CHAR_MAP[char] || char;
-    })
-    .join('');
-}
-
-function normalizeTokenForEvasionDetection(content: string): string {
-  return normalizeCharactersForEvasion(content)
-    .toLowerCase()
-    .split('')
-    .map(char => LEETSPEAK_CHAR_MAP[char] || char)
-    .join('')
-    .replace(/[^a-z]/g, '');
-}
-
-function matchesBlockedSlurToken(token: string): boolean {
-  if (BLOCKED_SLUR_TOKENS.includes(token)) {
-    return true;
-  }
-
-  if (token.endsWith('s') && BLOCKED_SLUR_TOKENS.includes(token.slice(0, -1))) {
-    return true;
-  }
-
-  if (token.endsWith('ies') && BLOCKED_SLUR_TOKENS.includes(`${token.slice(0, -3)}y`)) {
-    return true;
-  }
-
-  return false;
-}
-
-function extractVisibleTokens(content: string): string[] {
-  return normalizeCharactersForEvasion(content)
-    .toLowerCase()
-    .split(/\s+/)
-    .map(token => token.replace(/^[^a-z]+|[^a-z]+$/g, ''))
-    .filter(Boolean);
 }
 
 function collectIntentSignals(content: string): IntentSignals {
@@ -614,18 +453,11 @@ function detectBenignAmbiguousSlurSenses(content: string): Set<string> {
   return benign;
 }
 
-function detectLexicalSlurMatches(content: string): string[] {
+function detectLexicalSlurMatches(content: string, stage: SlurDetectionStage = 'input'): string[] {
   const benignSenses = detectBenignAmbiguousSlurSenses(content);
-  const visibleMatches = extractVisibleTokens(content)
-    .map(token => normalizeTokenForEvasionDetection(token))
-    .filter(token => matchesBlockedSlurToken(token) && !benignSenses.has(token));
-  const separatedMatches = LETTER_SEPARATED_SLUR_PATTERNS.filter(({ pattern }) =>
-    pattern.test(content)
-  )
-    .map(({ label }) => label)
-    .filter(label => !benignSenses.has(label));
-
-  return unique([...visibleMatches, ...separatedMatches]);
+  return detectSlurSafety(content, stage).lexicalMatches.filter(
+    match => !benignSenses.has(normalizeSafetyToken(match))
+  );
 }
 
 function detectDirectSlurRequest(content: string): boolean {
@@ -634,7 +466,8 @@ function detectDirectSlurRequest(content: string): boolean {
   }
 
   return (
-    /\b(?:n[\s-]?word|hard[\s-]?r)\b/i.test(content) || detectLexicalSlurMatches(content).length > 0
+    /\b(?:n[\s-]?word|hard[\s-]?r)\b/i.test(content) ||
+    detectLexicalSlurMatches(content, 'input').length > 0
   );
 }
 
@@ -782,7 +615,12 @@ function evaluateDeterministicPromptSafety(
   }
 
   const signals = collectIntentSignals(trimmed);
-  const lexicalMatches = detectLexicalSlurMatches(trimmed);
+  const slurStage: SlurDetectionStage =
+    options.profile === 'assistant_output' || options.profile === 'chat_output'
+      ? 'assistant_output'
+      : 'input';
+  const slurDetection = detectSlurSafety(trimmed, slurStage);
+  const lexicalMatches = detectLexicalSlurMatches(trimmed, slurStage);
   const directSlurRequest = detectDirectSlurRequest(trimmed);
   const hateEvasionMatches =
     options.profile === 'chat_output' ? [] : detectHateEvasionMatches(trimmed);
@@ -825,6 +663,14 @@ function evaluateDeterministicPromptSafety(
     reasons.push('hate/slur_obfuscation_request');
   }
 
+  if (slurDetection.evasionMatches.length > 0) {
+    reasons.push('hate/slur_evasion');
+  }
+
+  if (slurDetection.initialismMatches.length > 0) {
+    reasons.push('hate/slur_acronym_evasion');
+  }
+
   reasons.push(
     ...protectedGroupReasons,
     ...sexualMinorsReason,
@@ -841,6 +687,8 @@ function evaluateDeterministicPromptSafety(
 
   const harmfulIntentMatches = unique([
     ...hateEvasionMatches,
+    ...slurDetection.evasionMatches.map(match => `slur_evasion:${match}`),
+    ...slurDetection.initialismMatches.map(match => `slur_initialism:${match}`),
     ...protectedGroupReasons,
     ...strictToolReasons,
     ...assistantOutputReasons,
@@ -882,26 +730,71 @@ export function classifyAssistantOutputSafetyDeterministic(input: string): Promp
   }).result;
 }
 
+export function classifyModerationFailure(error: unknown): ModerationFailure {
+  const candidate = error as {
+    message?: unknown;
+    status?: unknown;
+    code?: unknown;
+    type?: unknown;
+    error?: { code?: unknown; type?: unknown; message?: unknown };
+  };
+  const rawMessage =
+    (typeof candidate?.error?.message === 'string' && candidate.error.message) ||
+    (typeof candidate?.message === 'string' && candidate.message) ||
+    String(error);
+  const normalizedMessage = rawMessage.toLowerCase();
+  const status = typeof candidate?.status === 'number' ? candidate.status : undefined;
+  const code =
+    (typeof candidate?.error?.code === 'string' && candidate.error.code) ||
+    (typeof candidate?.code === 'string' && candidate.code) ||
+    (status === 429 ? 'rate_limit_exceeded' : undefined) ||
+    (/timed?\s*out|timeout/.test(normalizedMessage) ? 'request_timeout' : undefined);
+  const type =
+    (typeof candidate?.error?.type === 'string' && candidate.error.type) ||
+    (typeof candidate?.type === 'string' && candidate.type) ||
+    (status === 429 ? 'rate_limit_error' : undefined) ||
+    (/timed?\s*out|timeout/.test(normalizedMessage) ? 'timeout_error' : undefined);
+
+  return { message: 'moderation_request_failed', status, code, type };
+}
+
 async function runModeration(input: string): Promise<{
   flaggedCategories: string[];
   scores: Record<string, number>;
   evaluated: boolean;
   error?: string;
+  failure?: ModerationFailure;
 }> {
   if (moderationRunnerForTests) {
     try {
       const result = await moderationRunnerForTests(input);
+      if (!result || !Array.isArray(result.flaggedCategories)) {
+        const failure: ModerationFailure = {
+          message: 'malformed_moderation_response',
+          code: 'malformed_moderation_response',
+          type: 'malformed_response'
+        };
+        return {
+          flaggedCategories: [],
+          scores: {},
+          evaluated: true,
+          error: failure.message,
+          failure
+        };
+      }
       return {
         flaggedCategories: result.flaggedCategories,
         scores: result.scores || {},
         evaluated: true
       };
     } catch (error) {
+      const failure = classifyModerationFailure(error);
       return {
         flaggedCategories: [],
         scores: {},
         evaluated: true,
-        error: error instanceof Error ? error.message : String(error)
+        error: failure.message,
+        failure
       };
     }
   }
@@ -915,11 +808,17 @@ async function runModeration(input: string): Promise<{
   }
 
   if (!process.env.OPENAI_API_KEY) {
+    const failure: ModerationFailure = {
+      message: 'missing_openai_api_key',
+      code: 'missing_openai_api_key',
+      type: 'configuration_error'
+    };
     return {
       flaggedCategories: [],
       scores: {},
       evaluated: true,
-      error: 'missing_openai_api_key'
+      error: failure.message,
+      failure
     };
   }
 
@@ -931,11 +830,17 @@ async function runModeration(input: string): Promise<{
 
     const result = response.results[0];
     if (!result) {
+      const failure: ModerationFailure = {
+        message: 'missing_moderation_result',
+        code: 'missing_moderation_result',
+        type: 'malformed_response'
+      };
       return {
         flaggedCategories: [],
         scores: {},
         evaluated: true,
-        error: 'missing_moderation_result'
+        error: failure.message,
+        failure
       };
     }
 
@@ -955,11 +860,13 @@ async function runModeration(input: string): Promise<{
       evaluated: true
     };
   } catch (error) {
+    const failure = classifyModerationFailure(error);
     return {
       flaggedCategories: [],
       scores: {},
       evaluated: true,
-      error: error instanceof Error ? error.message : String(error)
+      error: failure.message,
+      failure
     };
   }
 }
@@ -998,7 +905,10 @@ export async function evaluatePromptSafety(
     moderationCategories,
     moderationScores,
     moderationEvaluated: moderation.evaluated,
-    moderationError: moderation.error
+    moderationError: moderation.error,
+    moderationFailure: moderation.failure
+      ? { ...moderation.failure, stage: options.profile }
+      : undefined
   };
 }
 
@@ -1020,7 +930,9 @@ export function buildPromptSafetyWarningMessage(result: {
 
   if (
     reasons.includes('hate/slur_generation_request') ||
-    reasons.includes('hate/slur_obfuscation_request')
+    reasons.includes('hate/slur_obfuscation_request') ||
+    reasons.includes('hate/slur_evasion') ||
+    reasons.includes('hate/slur_acronym_evasion')
   ) {
     return '⚠️ I can’t help generate, disguise, translate, or repeat slurs or targeted hate.';
   }

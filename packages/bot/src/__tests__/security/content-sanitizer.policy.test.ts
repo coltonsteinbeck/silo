@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import {
+  ContentSanitizer,
   contentSanitizer,
   detectDeterministicIllicitContent,
   detectSafeReplyDirective,
@@ -308,5 +309,46 @@ describe('evaluateModerationDecision profanity policy', () => {
     expect(slurGeneration.flaggedCategories).toContain('hate/slur_generation_request');
     expect(directHarm.allowed).toBe(false);
     expect(directHarm.flaggedCategories).toContain('violence/harm_targeting_request');
+  });
+
+  test('threads failClosedOnError through the profiled chat input path', async () => {
+    process.env.OPENAI_GUARDRAILS_ENABLED = 'false';
+    const isolatedSanitizer = new ContentSanitizer();
+    isolatedSanitizer.init({
+      query: async () => ({ rows: [] })
+    } as any);
+    setPromptSafetyRuntimeForTests({
+      moderationRunner: async () => {
+        throw {
+          status: 429,
+          error: {
+            code: 'credit_balance_exhausted',
+            type: 'insufficient_quota',
+            message: 'no credits'
+          }
+        };
+      }
+    });
+
+    const result = await isolatedSanitizer.processContent(
+      'Tell me a harmless joke.',
+      'guild-1',
+      'user-1',
+      'message',
+      { failClosedOnError: true }
+    );
+
+    expect(result.processedContent).toBe('');
+    expect(result.moderation.allowed).toBe(false);
+    expect(result.moderation.action).toBe('api_error_fail_closed');
+    expect(result.moderation.safetyDecision).toMatchObject({
+      action: 'block',
+      contextEligible: false,
+      failure: {
+        status: 429,
+        code: 'credit_balance_exhausted',
+        type: 'insufficient_quota'
+      }
+    });
   });
 });

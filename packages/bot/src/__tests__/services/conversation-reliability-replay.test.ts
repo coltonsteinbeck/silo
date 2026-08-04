@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import type { ConversationMessage, Message, PromptContextResult, TextProvider } from '@silo/core';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -437,6 +437,30 @@ async function runGraph(params: {
 const rows = materializeRows(fixture);
 
 describe('anonymized contaminated-conversation replay', () => {
+  const originalGuardrailsEnabled = process.env.OPENAI_GUARDRAILS_ENABLED;
+  const originalModerationEnabled = process.env.OPENAI_MODERATION_ENABLED;
+  const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
+
+  beforeEach(() => {
+    process.env.OPENAI_GUARDRAILS_ENABLED = 'false';
+    process.env.OPENAI_MODERATION_ENABLED = 'false';
+    process.env.OPENAI_API_KEY = 'test-key';
+    resetPromptSafetyRuntimeForTests();
+    resetGuardrailsRuntimeForTests();
+    setGuardrailsRuntimeForTests({
+      module: { runGuardrails: mock(async () => []) } as never,
+      guardrailLlmClient: {} as never
+    });
+  });
+
+  afterEach(() => {
+    process.env.OPENAI_GUARDRAILS_ENABLED = originalGuardrailsEnabled;
+    process.env.OPENAI_MODERATION_ENABLED = originalModerationEnabled;
+    process.env.OPENAI_API_KEY = originalOpenAiApiKey;
+    resetPromptSafetyRuntimeForTests();
+    resetGuardrailsRuntimeForTests();
+  });
+
   test('fixture reproduces assistant-before-user legacy ordering and three unrelated authors', () => {
     expect(fixture.legacyRows.map(row => row.role)).toEqual(['assistant', 'user']);
     expect(

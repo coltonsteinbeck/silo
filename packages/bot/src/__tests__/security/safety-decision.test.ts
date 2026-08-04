@@ -596,4 +596,123 @@ describe('unified safety decisions', () => {
     expect(decision.action).toBe('allow');
     expect(decision.contextEligible).toBe(true);
   });
+
+  test.each([
+    [
+      'rate limit',
+      {
+        status: 429,
+        error: { code: 'rate_limit_exceeded', type: 'rate_limit_error', message: 'rate limited' }
+      },
+      429,
+      'rate_limit_exceeded',
+      'rate_limit_error'
+    ],
+    [
+      'insufficient quota',
+      {
+        status: 429,
+        error: {
+          code: 'credit_balance_exhausted',
+          type: 'insufficient_quota',
+          message: 'no credits'
+        }
+      },
+      429,
+      'credit_balance_exhausted',
+      'insufficient_quota'
+    ],
+    [
+      'timeout',
+      {
+        status: 408,
+        code: 'request_timeout',
+        type: 'timeout_error',
+        message: 'request timed out'
+      },
+      408,
+      'request_timeout',
+      'timeout_error'
+    ]
+  ] as const)(
+    'fails closed with structured classification for moderation %s',
+    async (_label, failure, status, code, type) => {
+      process.env.OPENAI_MODERATION_ENABLED = 'true';
+      setPromptSafetyRuntimeForTests({
+        moderationRunner: async () => {
+          throw failure;
+        }
+      });
+
+      const decision = await evaluateSafetyDecision('Tell me a harmless joke.', {
+        stage: 'input',
+        source: 'moderation_failure_fixture',
+        failurePolicy: 'fail_closed'
+      });
+
+      expect(decision.action).toBe('block');
+      expect(decision.failed).toBe(true);
+      expect(decision.contextEligible).toBe(false);
+      expect(decision.categories).toContain('guardrails/api_error_fail_closed');
+      expect(decision.failure).toMatchObject({ stage: 'chat_input', status, code, type });
+    }
+  );
+
+  test('fails closed when the moderation credential is missing', async () => {
+    process.env.OPENAI_MODERATION_ENABLED = 'true';
+    delete process.env.OPENAI_API_KEY;
+    resetPromptSafetyRuntimeForTests();
+
+    const decision = await evaluateSafetyDecision('Tell me a harmless joke.', {
+      stage: 'input',
+      source: 'missing_credential_fixture',
+      failurePolicy: 'fail_closed'
+    });
+
+    expect(decision.action).toBe('block');
+    expect(decision.categories).toContain('guardrails/api_error_fail_closed');
+    expect(decision.failure).toMatchObject({
+      code: 'missing_openai_api_key',
+      type: 'configuration_error'
+    });
+  });
+
+  test('fails closed on a malformed moderation response', async () => {
+    process.env.OPENAI_MODERATION_ENABLED = 'true';
+    setPromptSafetyRuntimeForTests({
+      moderationRunner: (async () => null) as never
+    });
+
+    const decision = await evaluateSafetyDecision('Tell me a harmless joke.', {
+      stage: 'input',
+      source: 'malformed_response_fixture',
+      failurePolicy: 'fail_closed'
+    });
+
+    expect(decision.action).toBe('block');
+    expect(decision.categories).toContain('guardrails/api_error_fail_closed');
+    expect(decision.failure).toMatchObject({
+      code: 'malformed_moderation_response',
+      type: 'malformed_response'
+    });
+  });
+
+  test('keeps fail-open behavior only when explicitly requested for a non-production caller', async () => {
+    process.env.OPENAI_MODERATION_ENABLED = 'true';
+    setPromptSafetyRuntimeForTests({
+      moderationRunner: async () => {
+        throw new Error('moderation unavailable');
+      }
+    });
+
+    const decision = await evaluateSafetyDecision('Tell me a harmless joke.', {
+      stage: 'input',
+      source: 'explicit_fail_open_fixture',
+      failurePolicy: 'fail_open'
+    });
+
+    expect(decision.action).toBe('allow');
+    expect(decision.failed).toBe(true);
+    expect(decision.categories).not.toContain('guardrails/api_error_fail_closed');
+  });
 });

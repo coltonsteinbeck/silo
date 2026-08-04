@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
-import { fetchUrlContextBlock } from '../../services/url-context';
+import { fetchUrlContextBlock, hasUrlContextCandidate } from '../../services/url-context';
 
 describe('url-context', () => {
   let originalFetch: typeof globalThis.fetch;
@@ -10,6 +10,11 @@ describe('url-context', () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
+  });
+
+  test('identifies URL-free messages before strict URL moderation is scheduled', () => {
+    expect(hasUrlContextCandidate('Tell me a harmless joke.')).toBe(false);
+    expect(hasUrlContextCandidate('Check https://example.com/docs please.')).toBe(true);
   });
 
   test('extracts and formats URL context as untrusted reference data', async () => {

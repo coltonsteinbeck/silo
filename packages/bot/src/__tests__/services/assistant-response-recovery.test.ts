@@ -35,7 +35,8 @@ function graphResult(blocked: boolean, content: string): AgentGraphResult {
         recurringPhraseCount: 0
       },
       blocked,
-      repaired: blocked,
+      normalized: false,
+      repaired: false,
       categories: blocked ? ['sexual/explicit_generation'] : [],
       reasons: blocked ? ['sexual/explicit_generation'] : [],
       outputWasReplaced: blocked,
