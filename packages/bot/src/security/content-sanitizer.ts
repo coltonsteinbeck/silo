@@ -18,7 +18,8 @@ import {
   detectSelfHarmAbuseDirective,
   detectSocialGroupTargetingRequest,
   type GuardrailProfile,
-  type ModerationFailure
+  type ModerationFailure,
+  type PromptSafetyModerationMode
 } from './prompt-safety';
 import { evaluateSafetyDecision, type SafetyDecision } from './safety-decision';
 import { detectSlurSafety, hasPlainCanonicalSlur, normalizeSafetyText } from './slur-detection';
@@ -63,6 +64,7 @@ export interface ModerationOptions {
   useDeterministicSentimentReview?: boolean;
   profile?: GuardrailProfile;
   source?: string;
+  moderationMode?: PromptSafetyModerationMode;
 }
 
 export interface ModerationDecision {
@@ -756,7 +758,8 @@ export class ContentSanitizer {
         source: options.source || contentType,
         userId,
         failurePolicy:
-          failClosedOnError || options.profile === 'assistant_output' ? 'fail_closed' : 'fail_open'
+          failClosedOnError || options.profile === 'assistant_output' ? 'fail_closed' : 'fail_open',
+        moderationMode: options.moderationMode
       });
       const flaggedCategories = safetyDecision.categories;
       const scores = safetyDecision.scores;
@@ -1142,8 +1145,9 @@ export class ContentSanitizer {
       failClosedOnError: options.failClosedOnError,
       allowMildProfanityInput: options.allowMildProfanityInput,
       useDeterministicSentimentReview: options.useDeterministicSentimentReview,
-      profile: 'chat_input',
-      source: 'chat_input'
+      profile: options.profile || 'chat_input',
+      source: options.source || 'chat_input',
+      moderationMode: options.moderationMode
     });
 
     const sanitized = moderation.allowed ? this.sanitizePrompt(content) : '';

@@ -7,7 +7,8 @@ import {
   evaluatePromptSafety,
   hasBenignMedicalOrAnatomyContext,
   type GuardrailProfile,
-  type ModerationFailure
+  type ModerationFailure,
+  type PromptSafetyModerationMode
 } from './prompt-safety';
 
 export type SafetyAction = 'allow' | 'redirect' | 'block';
@@ -35,6 +36,7 @@ export interface SafetyDecisionOptions {
   userId?: string;
   inheritedRisk?: boolean;
   failurePolicy?: SafetyFailurePolicy;
+  moderationMode?: PromptSafetyModerationMode;
 }
 
 export function buildContextReuseSafetyDecision(params: {
@@ -471,7 +473,8 @@ export async function evaluateSafetyDecision(
   const safety = await evaluatePromptSafety(content, {
     profile: profileForStage(options.stage),
     source: options.source,
-    userId: options.userId
+    userId: options.userId,
+    moderationMode: options.moderationMode
   });
   const failurePolicy =
     options.failurePolicy ?? (options.stage === 'assistant_output' ? 'fail_closed' : 'fail_open');
