@@ -566,7 +566,7 @@ describe('evaluatePromptSafety', () => {
     expect(result.moderationCategories).not.toContain('sexual');
   });
 
-  test('fails open on moderation outage while preserving lexical slur blocking', async () => {
+  test('reports moderation outage for caller policy while preserving lexical slur blocking', async () => {
     process.env.OPENAI_GUARDRAILS_ENABLED = 'true';
     setPromptSafetyRuntimeForTests({
       moderationRunner: async () => {
@@ -584,7 +584,7 @@ describe('evaluatePromptSafety', () => {
     });
 
     expect(benign.allowed).toBe(true);
-    expect(benign.moderationError).toBe('moderation outage');
+    expect(benign.moderationError).toBe('moderation_request_failed');
     expect(hateful.allowed).toBe(false);
     expect(hateful.lexicalMatches).toContain('faggot');
   });

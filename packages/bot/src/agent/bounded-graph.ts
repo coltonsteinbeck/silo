@@ -538,19 +538,14 @@ async function outputSafetyNode(state: State): Promise<StateUpdate> {
       });
       const safetyBlocked = decision.action === 'block';
       const blocked = safetyBlocked || quality.repetitive;
-      const repaired = sanitizedContent !== response.content || blocked;
+      const normalized = sanitizedContent !== response.content;
+      const repaired = false;
       const safetyState: AgentSafetyState = blocked
         ? safetyBlocked
           ? 'output_blocked'
           : 'quality_blocked'
-        : repaired
-          ? 'output_repaired'
-          : state.safetyState;
-      const outcome: AgentGraphOutcome | undefined = blocked
-        ? 'blocked'
-        : repaired
-          ? 'repaired'
-          : state.outcome;
+        : state.safetyState;
+      const outcome: AgentGraphOutcome | undefined = blocked ? 'blocked' : state.outcome;
       const modelResponse = {
         ...response,
         content: blocked
@@ -563,13 +558,14 @@ async function outputSafetyNode(state: State): Promise<StateUpdate> {
         decision,
         quality,
         blocked,
+        normalized,
         repaired,
         categories: [
           ...decision.categories,
           ...(quality.repetitive ? ['quality/repetition_loop'] : [])
         ],
         reasons: [...decision.reasons, ...(quality.reason ? [`quality/${quality.reason}`] : [])],
-        outputWasReplaced: repaired,
+        outputWasReplaced: normalized || blocked,
         candidateHash: createHash('sha256').update(sanitizedContent).digest('hex'),
         candidatePreview: summarizeTextForTrace(sanitizedContent, 160)
       };

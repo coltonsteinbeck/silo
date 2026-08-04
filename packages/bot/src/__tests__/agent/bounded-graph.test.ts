@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import type { TextProvider } from '@silo/core';
 import { getDefaultAgentGraphLimits } from '../../agent/config';
 import { BOUNDED_FAILURE_CONTENT, runBoundedAgentGraph } from '../../agent/bounded-graph';
@@ -8,6 +8,10 @@ import {
   resetPromptSafetyRuntimeForTests,
   setPromptSafetyRuntimeForTests
 } from '../../security/prompt-safety';
+import {
+  resetGuardrailsRuntimeForTests,
+  setGuardrailsRuntimeForTests
+} from '../../security/openai-guardrails';
 
 function createProvider(content = 'Graph response'): TextProvider {
   return {
@@ -64,6 +68,30 @@ function createInput(
 }
 
 describe('bounded agent graph', () => {
+  const originalGuardrailsEnabled = process.env.OPENAI_GUARDRAILS_ENABLED;
+  const originalModerationEnabled = process.env.OPENAI_MODERATION_ENABLED;
+  const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
+
+  beforeEach(() => {
+    process.env.OPENAI_GUARDRAILS_ENABLED = 'false';
+    process.env.OPENAI_MODERATION_ENABLED = 'false';
+    process.env.OPENAI_API_KEY = 'test-key';
+    resetPromptSafetyRuntimeForTests();
+    resetGuardrailsRuntimeForTests();
+    setGuardrailsRuntimeForTests({
+      module: { runGuardrails: mock(async () => []) } as never,
+      guardrailLlmClient: {} as never
+    });
+  });
+
+  afterEach(() => {
+    process.env.OPENAI_GUARDRAILS_ENABLED = originalGuardrailsEnabled;
+    process.env.OPENAI_MODERATION_ENABLED = originalModerationEnabled;
+    process.env.OPENAI_API_KEY = originalOpenAiApiKey;
+    resetPromptSafetyRuntimeForTests();
+    resetGuardrailsRuntimeForTests();
+  });
+
   test.each(['openai', 'anthropic', 'xai', 'google', 'local'])(
     'runs acyclic graph with mocked %s provider',
     async providerName => {
@@ -87,11 +115,12 @@ describe('bounded agent graph', () => {
     const result = await runBoundedAgentGraph(createInput(provider));
 
     expect(result.response.content).toBe('everyone graph update for here');
-    expect(result.outcome).toBe('repaired');
-    expect(result.safetyState).toBe('output_repaired');
+    expect(result.outcome).toBe('success');
+    expect(result.safetyState).toBe('allowed');
     expect(result.outputSafety).toMatchObject({
       blocked: false,
-      repaired: true,
+      normalized: true,
+      repaired: false,
       decision: { action: 'allow' },
       outputWasReplaced: true
     });

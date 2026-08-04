@@ -29,6 +29,7 @@ export interface AgentOutputSafetyResult {
   decision: SafetyDecision;
   quality: ResponseQualityResult;
   blocked: boolean;
+  normalized: boolean;
   repaired: boolean;
   categories: string[];
   reasons: string[];

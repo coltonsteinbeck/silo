@@ -73,7 +73,7 @@ import {
 import { detectResponseRepetition } from './services/response-quality';
 import { resolveReplyContext } from './services/reply-context';
 import { shouldHandleAssistantMessage } from './services/message-trigger';
-import { fetchUrlContextBlock } from './services/url-context';
+import { fetchUrlContextBlock, hasUrlContextCandidate } from './services/url-context';
 import { decideVisionRouting, enforceVisionRoutingPrecheck } from './services/vision-routing';
 import {
   initializeLangfuseTracing,
@@ -993,6 +993,7 @@ export async function startBot(): Promise<void> {
                 message.author.id,
                 'message',
                 {
+                  failClosedOnError: true,
                   allowMildProfanityInput: managedAllowMildProfanity,
                   profile: 'chat_input',
                   source: 'chat_input'
@@ -1013,6 +1014,14 @@ export async function startBot(): Promise<void> {
                   detectorSources: result.moderation.safetyDecision?.detectorSources || [],
                   contextEligible: result.moderation.safetyDecision?.contextEligible ?? false,
                   failureState: result.moderation.safetyDecision?.failed || false,
+                  moderationFailure: result.moderation.moderationFailure
+                    ? {
+                        stage: result.moderation.moderationFailure.stage || null,
+                        status: result.moderation.moderationFailure.status || null,
+                        code: result.moderation.moderationFailure.code || null,
+                        type: result.moderation.moderationFailure.type || null
+                      }
+                    : null,
                   managedPersonaId: managedPersona?.personaId || null
                 }
               });
@@ -1032,6 +1041,10 @@ export async function startBot(): Promise<void> {
               inputResponseDirective: moderation.responseDirective || 'none',
               inputModerationScores: moderation.scores,
               inputModerationError: moderation.moderationError || null,
+              inputModerationFailureStatus: inputSafetyDecision?.failure?.status || null,
+              inputModerationFailureCode: inputSafetyDecision?.failure?.code || null,
+              inputModerationFailureType: inputSafetyDecision?.failure?.type || null,
+              inputModerationFailureStage: inputSafetyDecision?.failure?.stage || null,
               inputSafetyAction: inputSafetyDecision?.action || null,
               inputSafetyDetectorSources: inputSafetyDecision?.detectorSources || [],
               inputContextEligible: inputSafetyDecision?.contextEligible ?? false,
@@ -1055,7 +1068,9 @@ export async function startBot(): Promise<void> {
                 outcome: 'input_blocked',
                 action: moderation.action,
                 categories: moderation.flaggedCategories,
-                responseDirective: moderation.responseDirective || null
+                responseDirective: moderation.responseDirective || null,
+                finalPersistenceEligible: false,
+                finalSafetyState: 'input_blocked'
               }
             });
 
@@ -1071,7 +1086,7 @@ export async function startBot(): Promise<void> {
               });
               void notifySafetyAlert(
                 guildId,
-                `[SAFETY] Input safety service failed closed for one suspicious turn; no user cooldown strike was recorded. Error=${inputSafetyDecision?.failureReason || moderation.moderationError || 'unknown'}`
+                `[SAFETY] Input safety service failed closed for one turn; no user cooldown strike was recorded. Status=${inputSafetyDecision?.failure?.status || 'unknown'} Code=${inputSafetyDecision?.failure?.code || 'unknown'} Type=${inputSafetyDecision?.failure?.type || 'unknown'}`
               );
             } else {
               const decision = safetyMonitor.recordIncident({
@@ -1439,18 +1454,25 @@ export async function startBot(): Promise<void> {
 
           // Run history fetch and memory retrieval in parallel
           const urlContextPromise = (async () => {
+            if (!hasUrlContextCandidate(conversationContext.mergedUserContent)) {
+              return { items: [], block: '' };
+            }
+
             const urlSafety = await evaluatePromptSafety(conversationContext.mergedUserContent, {
               profile: 'strict_tool_input',
               source: 'url_context',
               userId: message.author.id
             });
 
-            if (!urlSafety.allowed) {
+            if (!urlSafety.allowed || urlSafety.moderationError) {
               logger.warn('Skipped URL context fetch due to strict prompt safety block', {
                 guildId,
                 userId: message.author.id,
                 reasons: urlSafety.reasons,
-                moderationCategories: urlSafety.moderationCategories
+                moderationCategories: urlSafety.moderationCategories,
+                moderationFailureStatus: urlSafety.moderationFailure?.status,
+                moderationFailureCode: urlSafety.moderationFailure?.code,
+                moderationFailureType: urlSafety.moderationFailure?.type
               });
               return { items: [], block: '' };
             }
@@ -1774,7 +1796,7 @@ export async function startBot(): Promise<void> {
 
                   const normalizedSummary = visionResult.content.replace(/\s+/g, ' ').trim();
                   const imageSummarySafety = await evaluateSafetyDecision(normalizedSummary, {
-                    stage: 'context_reuse',
+                    stage: 'assistant_output',
                     source: 'vision_summary',
                     userId: message.author.id
                   });
@@ -2269,7 +2291,7 @@ export async function startBot(): Promise<void> {
                 ? {
                     allowed: !canonicalOutputBlocked,
                     action: canonicalOutputBlocked
-                      ? outputSafetyDecision.failed
+                      ? outputSafetyDecision.categories.includes('guardrails/api_error_fail_closed')
                         ? 'api_error_fail_closed'
                         : 'blocked'
                       : outputSafetyDecision.action === 'redirect'
@@ -2280,6 +2302,7 @@ export async function startBot(): Promise<void> {
                     contentHash: contentSanitizer.hashContent(response.content),
                     reasons: canonicalOutputReasons,
                     moderationError: outputSafetyDecision.failureReason,
+                    moderationFailure: outputSafetyDecision.failure,
                     safetyDecision: outputSafetyDecision
                   }
                 : await contentSanitizer.moderateContent(
@@ -2319,10 +2342,19 @@ export async function startBot(): Promise<void> {
                   scores: assistantModeration.scores,
                   contentHash: assistantModeration.contentHash,
                   moderationError: assistantModeration.moderationError || null,
+                  moderationFailure: assistantModeration.moderationFailure
+                    ? {
+                        stage: assistantModeration.moderationFailure.stage || null,
+                        status: assistantModeration.moderationFailure.status || null,
+                        code: assistantModeration.moderationFailure.code || null,
+                        type: assistantModeration.moderationFailure.type || null
+                      }
+                    : null,
                   outputGuardrailCategory: outputGuardrailsDecision.category || null,
                   outputGuardrailReason: outputGuardrailsDecision.reason || null,
                   outputSafetySource,
                   graphOutputRepaired: graphOutputSafety?.repaired ?? null,
+                  graphOutputNormalized: graphOutputSafety?.normalized ?? null,
                   graphOutputWasReplaced: graphOutputSafety?.outputWasReplaced ?? null,
                   detectorSources:
                     (outputSafetyDecision
@@ -2610,12 +2642,22 @@ export async function startBot(): Promise<void> {
               inputResponseDirective: moderation.responseDirective || 'none',
               outputModerationAction: assistantModeration.action,
               outputModerationCategories: assistantModeration.flaggedCategories,
+              outputModerationError: assistantModeration.moderationError || null,
+              outputModerationFailureStatus:
+                assistantModeration.safetyDecision?.failure?.status || null,
+              outputModerationFailureCode:
+                assistantModeration.safetyDecision?.failure?.code || null,
+              outputModerationFailureType:
+                assistantModeration.safetyDecision?.failure?.type || null,
+              outputModerationFailureStage:
+                assistantModeration.safetyDecision?.failure?.stage || null,
               outputResponseDirective: assistantModeration.responseDirective || 'none',
               outputGuardrailCategory: outputGuardrailsDecision.category || 'none',
               outputContentReplaced: outputWasReplaced,
               outputSafetySource,
               graphOutputSafetyAction: graphOutputSafety?.decision.action || null,
               graphOutputSafetyCategories: graphOutputSafety?.categories || [],
+              graphOutputNormalized: graphOutputSafety?.normalized ?? null,
               outputSafetyDetectorSources:
                 outputSafetyDecision?.detectorSources ||
                 assistantModeration.safetyDecision?.detectorSources ||
