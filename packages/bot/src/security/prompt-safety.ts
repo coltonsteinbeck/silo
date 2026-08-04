@@ -12,7 +12,10 @@ export interface PromptSafetyEvaluationOptions {
   profile: GuardrailProfile;
   source: string;
   userId?: string;
+  moderationMode?: PromptSafetyModerationMode;
 }
+
+export type PromptSafetyModerationMode = 'required' | 'deterministic_only';
 
 export interface PromptSafetyResult {
   allowed: boolean;
@@ -882,7 +885,14 @@ export async function evaluatePromptSafety(
     return deterministic.result;
   }
 
-  const moderation = await runModeration(trimmed);
+  const moderation =
+    options.moderationMode === 'deterministic_only'
+      ? {
+          flaggedCategories: [],
+          scores: {},
+          evaluated: false
+        }
+      : await runModeration(trimmed);
   const moderationCategories = moderation.flaggedCategories.filter(
     category =>
       PROFILE_MODERATION_CATEGORIES[options.profile].includes(category) &&

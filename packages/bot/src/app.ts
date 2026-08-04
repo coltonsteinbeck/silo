@@ -973,6 +973,11 @@ export async function startBot(): Promise<void> {
             att => att.contentType?.startsWith('image/') && att.size <= 20 * 1024 * 1024
           );
           const currentImageUrls = imageAttachments.map(att => att.url);
+          const deterministicRangeRequest =
+            currentImageUrls.length === 0 ? parseIntegerRangeRequest(userContent) : null;
+          const inputModerationMode = deterministicRangeRequest
+            ? ('deterministic_only' as const)
+            : ('required' as const);
           const memberPromise = message.member
             ? Promise.resolve(message.member)
             : message.guild!.members.cache.get(message.author.id)
@@ -1000,6 +1005,10 @@ export async function startBot(): Promise<void> {
               metadata: {
                 ...buildLangfuseTraceMetadata(rootTraceMetadataInput),
                 guardrailStage: 'input',
+                moderationMode: inputModerationMode,
+                moderationSkipReason: deterministicRangeRequest
+                  ? 'trusted_deterministic_range'
+                  : null,
                 managedPersonaId: managedPersona?.personaId || null
               }
             },
@@ -1013,7 +1022,8 @@ export async function startBot(): Promise<void> {
                   failClosedOnError: true,
                   allowMildProfanityInput: managedAllowMildProfanity,
                   profile: 'chat_input',
-                  source: 'chat_input'
+                  source: 'chat_input',
+                  moderationMode: inputModerationMode
                 }
               );
 
@@ -1031,6 +1041,10 @@ export async function startBot(): Promise<void> {
                   detectorSources: result.moderation.safetyDecision?.detectorSources || [],
                   contextEligible: result.moderation.safetyDecision?.contextEligible ?? false,
                   failureState: result.moderation.safetyDecision?.failed || false,
+                  moderationMode: inputModerationMode,
+                  moderationSkipReason: deterministicRangeRequest
+                    ? 'trusted_deterministic_range'
+                    : null,
                   moderationFailure: result.moderation.moderationFailure
                     ? {
                         stage: result.moderation.moderationFailure.stage || null,
@@ -1065,6 +1079,10 @@ export async function startBot(): Promise<void> {
               inputSafetyAction: inputSafetyDecision?.action || null,
               inputSafetyDetectorSources: inputSafetyDecision?.detectorSources || [],
               inputContextEligible: inputSafetyDecision?.contextEligible ?? false,
+              inputModerationMode,
+              inputModerationSkipReason: deterministicRangeRequest
+                ? 'trusted_deterministic_range'
+                : null,
               managedPersonaId: managedPersona?.personaId || null
             }
           });
@@ -1143,8 +1161,6 @@ export async function startBot(): Promise<void> {
             );
           }
 
-          const deterministicRangeRequest =
-            currentImageUrls.length === 0 ? parseIntegerRangeRequest(processedContent) : null;
           const promptSentiment = deterministicRangeRequest
             ? classifyPromptDeterministic(processedContent)
             : await sentimentClassifier.classifyPrompt(processedContent);
@@ -2484,6 +2500,10 @@ export async function startBot(): Promise<void> {
                   model: response.model || requestedTextModel || undefined
                 }),
                 guardrailStage: 'output',
+                moderationMode: deterministicRangeResponse ? 'deterministic_only' : 'required',
+                moderationSkipReason: deterministicRangeResponse
+                  ? 'trusted_deterministic_range'
+                  : null,
                 managedPersonaId: managedPersona?.personaId || null
               }
             },
@@ -2514,7 +2534,8 @@ export async function startBot(): Promise<void> {
                     {
                       profile: 'assistant_output',
                       source: 'chat_output',
-                      allowMildProfanityInput: allowMildAssistantProfanity
+                      allowMildProfanityInput: allowMildAssistantProfanity,
+                      moderationMode: deterministicRangeResponse ? 'deterministic_only' : 'required'
                     }
                   );
               const outputGuardrailsDecision: {
@@ -2582,6 +2603,10 @@ export async function startBot(): Promise<void> {
                     summarizeTextForTrace(response.content),
                   retryCount: outputRetryCount,
                   retrySucceeded: outputRetrySucceeded,
+                  moderationMode: deterministicRangeResponse ? 'deterministic_only' : 'required',
+                  moderationSkipReason: deterministicRangeResponse
+                    ? 'trusted_deterministic_range'
+                    : null,
                   managedPersonaId: managedPersona?.personaId || null
                 }
               });
@@ -2856,8 +2881,16 @@ export async function startBot(): Promise<void> {
               inputModerationAction: moderation.action,
               inputModerationCategories: moderation.flaggedCategories,
               inputResponseDirective: moderation.responseDirective || 'none',
+              inputModerationMode,
+              inputModerationSkipReason: deterministicRangeResponse
+                ? 'trusted_deterministic_range'
+                : null,
               outputModerationAction: assistantModeration.action,
               outputModerationCategories: assistantModeration.flaggedCategories,
+              outputModerationMode: deterministicRangeResponse ? 'deterministic_only' : 'required',
+              outputModerationSkipReason: deterministicRangeResponse
+                ? 'trusted_deterministic_range'
+                : null,
               outputModerationError: assistantModeration.moderationError || null,
               outputModerationFailureStatus:
                 assistantModeration.safetyDecision?.failure?.status || null,
