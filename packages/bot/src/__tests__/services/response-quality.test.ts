@@ -1,7 +1,22 @@
 import { describe, expect, test } from 'bun:test';
-import { detectResponseRepetition } from '../../services/response-quality';
+import {
+  detectResponseRepetition,
+  selectLatestTaskDefiningUserText
+} from '../../services/response-quality';
 
 describe('response quality repetition detection', () => {
+  test('selects the task-defining request behind the exported count follow-ups', () => {
+    expect(
+      selectLatestTaskDefiningUserText([
+        'Count from 1-100',
+        'I want the full thing',
+        'You stopped',
+        'Nope the full thing all at once',
+        'I meant to 100'
+      ])
+    ).toBe('Count from 1-100');
+  });
+
   test('detects a substantially copied recent response', () => {
     const prior =
       'The tiny worm files a complaint, steals your lunch, and declares itself mayor of the compost kingdom.';
@@ -79,7 +94,14 @@ describe('response quality repetition detection', () => {
   test.each([
     'Repeat your last answer verbatim.',
     'Quote your previous response.',
-    'Say that again.'
+    'Say that again.',
+    'I want the full thing.',
+    'You stopped.',
+    'Nope, all at once.',
+    'Please continue.',
+    'Start over from the beginning.',
+    'I meant to 100.',
+    'I need it to 100.'
   ])('allows repetition when the user explicitly requests it: %s', latestUserText => {
     const prior =
       'The tiny worm files a complaint, steals your lunch, and declares itself mayor of the compost kingdom.';

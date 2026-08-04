@@ -178,6 +178,7 @@ describe('GoogleTextProvider', () => {
       return jsonResponse({
         candidates: [
           {
+            finishReason: 'MAX_TOKENS',
             content: {
               parts: [{ text: 'assistant reply' }]
             }
@@ -200,6 +201,8 @@ describe('GoogleTextProvider', () => {
     ]);
 
     expect(result.content).toBe('assistant reply');
+    expect(result.finishReason).toBe('length');
+    expect(result.providerFinishReason).toBe('MAX_TOKENS');
     expect(capturedRequestBody).toBeDefined();
     expect(capturedRequestBody?.system_instruction?.parts?.[0]?.text).toBe(systemInstruction);
     expect(capturedRequestBody?.contents?.[0]?.role).toBe('user');

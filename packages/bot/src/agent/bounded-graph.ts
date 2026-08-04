@@ -485,6 +485,8 @@ async function modelGenerationNode(state: State): Promise<StateUpdate> {
         output: {
           outputCharacters: response.content.length,
           hasContent: Boolean(response.content.trim()),
+          finishReason: response.finishReason || null,
+          providerFinishReason: response.providerFinishReason || null,
           toolResultCount: state.toolResults.length,
           citationCount: state.citations.length,
           mediaKind: state.mediaResult?.kind || null

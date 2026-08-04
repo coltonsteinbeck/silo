@@ -8,6 +8,7 @@ import type {
   TextGenerationOptions,
   TextGenerationResponse
 } from '@silo/core';
+import { normalizeTextGenerationFinishReason } from './finish-reason';
 
 export class LocalOpenAIProvider implements TextProvider {
   name = 'local';
@@ -56,7 +57,9 @@ export class LocalOpenAIProvider implements TextProvider {
             totalTokens: response.usage.total_tokens
           }
         : undefined,
-      model: response.model
+      model: response.model,
+      finishReason: normalizeTextGenerationFinishReason(choice.finish_reason),
+      providerFinishReason: choice.finish_reason || undefined
     };
   }
 }

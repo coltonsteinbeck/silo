@@ -87,23 +87,35 @@ function adapterWithPool(pool: object): PostgresAdapter {
 }
 
 describe('PostgresAdapter prompt context', () => {
-  test('selects only complete eligible turns for the same guild, requester, and prompt', async () => {
-    const rows = [
-      conversationRow(),
-      conversationRow({
-        id: '00000000-0000-4000-8000-000000000002',
-        user_id: 'assistant-1',
-        discord_message_id: 'discord-assistant-1',
-        role: 'assistant',
-        content: 'Hi there',
-        turn_sequence: 1
-      })
-    ];
+  test('selects five complete eligible turns for the same guild, requester, and prompt', async () => {
+    const rows = Array.from({ length: 5 }, (_, index) => {
+      const suffix = String(index + 1).padStart(12, '0');
+      const turnId = `00000000-0000-4000-8000-${suffix}`;
+      return [
+        conversationRow({
+          id: `10000000-0000-4000-8000-${suffix}`,
+          turn_id: turnId,
+          discord_message_id: `discord-user-${index + 1}`,
+          content: `User ${index + 1}`,
+          created_at: `2026-07-09T12:0${index}:00.000Z`
+        }),
+        conversationRow({
+          id: `20000000-0000-4000-8000-${suffix}`,
+          turn_id: turnId,
+          user_id: 'assistant-1',
+          discord_message_id: `discord-assistant-${index + 1}`,
+          role: 'assistant',
+          content: `Assistant ${index + 1}`,
+          turn_sequence: 1,
+          created_at: `2026-07-09T12:0${index}:01.000Z`
+        })
+      ];
+    }).flat();
     const query = mock(async () => ({
       rows: [
         {
           messages: rows,
-          selected_turn_count: 1,
+          selected_turn_count: 5,
           excluded_turn_count: 0,
           exclusion_reasons: {}
         }
@@ -127,10 +139,13 @@ describe('PostgresAdapter prompt context', () => {
     expect(sql).toContain("COUNT(*) FILTER (WHERE turn_sequence = 0 AND role = 'user')");
     expect(sql).toContain("COUNT(*) FILTER (WHERE turn_sequence = 1 AND role = 'assistant')");
     expect(sql).toContain('WHEN row_count <> 2');
-    expect(params).toEqual(['guild-1', 'channel-1', 'prompt-hash-1', 'requester-1', 60_000, 3]);
+    expect(params).toEqual(['guild-1', 'channel-1', 'prompt-hash-1', 'requester-1', 60_000, 5]);
     expect(result.scope).toBe('same_user');
-    expect(result.selectedTurnCount).toBe(1);
-    expect(result.messages.map(message => message.role)).toEqual(['user', 'assistant']);
+    expect(result.selectedTurnCount).toBe(5);
+    expect(result.messages).toHaveLength(10);
+    expect(result.messages.map(message => message.role)).toEqual(
+      Array.from({ length: 5 }).flatMap(() => ['user' as const, 'assistant' as const])
+    );
   });
 
   test('reports legacy, unsafe, incomplete, and over-limit same-user candidates', async () => {

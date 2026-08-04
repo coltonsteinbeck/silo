@@ -986,8 +986,8 @@ export class PostgresAdapter implements DatabaseAdapter {
     const requestedMaxTurns =
       typeof query.maxTurns === 'number' && Number.isFinite(query.maxTurns)
         ? Math.trunc(query.maxTurns)
-        : 3;
-    const maxTurns = Math.min(Math.max(requestedMaxTurns, 1), 3);
+        : 5;
+    const maxTurns = Math.min(Math.max(requestedMaxTurns, 1), 5);
 
     if (query.replyToMessageId) {
       const replyResult = await this.pool.query<ReplyPromptContextRow>(
