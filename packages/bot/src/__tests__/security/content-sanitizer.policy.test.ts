@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, mock, test } from 'bun:test';
 import {
   ContentSanitizer,
   contentSanitizer,
@@ -348,6 +348,44 @@ describe('evaluateModerationDecision profanity policy', () => {
         status: 429,
         code: 'credit_balance_exhausted',
         type: 'insufficient_quota'
+      }
+    });
+  });
+
+  test('threads deterministic-only moderation through a trusted local response path', async () => {
+    process.env.OPENAI_GUARDRAILS_ENABLED = 'false';
+    const isolatedSanitizer = new ContentSanitizer();
+    isolatedSanitizer.init({
+      query: async () => ({ rows: [] })
+    } as any);
+    const runModeration = mock(async () => {
+      throw new Error('moderation must not run');
+    });
+    setPromptSafetyRuntimeForTests({ moderationRunner: runModeration });
+
+    const result = await isolatedSanitizer.processContent(
+      'count 1 to 100',
+      'guild-1',
+      'user-1',
+      'message',
+      {
+        failClosedOnError: true,
+        profile: 'chat_input',
+        source: 'trusted_deterministic_range_input',
+        moderationMode: 'deterministic_only'
+      }
+    );
+
+    expect(runModeration).not.toHaveBeenCalled();
+    expect(result.processedContent).toBe('count 1 to 100');
+    expect(result.moderation).toMatchObject({
+      allowed: true,
+      action: 'allowed',
+      flaggedCategories: [],
+      safetyDecision: {
+        action: 'allow',
+        contextEligible: true,
+        failed: false
       }
     });
   });

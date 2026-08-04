@@ -715,4 +715,46 @@ describe('unified safety decisions', () => {
     expect(decision.failed).toBe(true);
     expect(decision.categories).not.toContain('guardrails/api_error_fail_closed');
   });
+
+  test('keeps trusted deterministic input and output independent of moderation outages', async () => {
+    process.env.OPENAI_MODERATION_ENABLED = 'true';
+    const runModeration = mock(async () => {
+      throw {
+        status: 429,
+        error: {
+          code: 'rate_limit_exceeded',
+          type: 'rate_limit_error',
+          message: 'rate limited'
+        }
+      };
+    });
+    setPromptSafetyRuntimeForTests({ moderationRunner: runModeration });
+
+    const inputDecision = await evaluateSafetyDecision('count 1 to 100', {
+      stage: 'input',
+      source: 'trusted_deterministic_range_input',
+      failurePolicy: 'fail_closed',
+      moderationMode: 'deterministic_only'
+    });
+    const outputDecision = await evaluateSafetyDecision('1, 2, 3, 4, 5', {
+      stage: 'assistant_output',
+      source: 'trusted_deterministic_range_output',
+      failurePolicy: 'fail_closed',
+      moderationMode: 'deterministic_only'
+    });
+
+    expect(runModeration).not.toHaveBeenCalled();
+    expect(inputDecision).toMatchObject({
+      action: 'allow',
+      contextEligible: true,
+      failed: false,
+      detectorSources: ['deterministic']
+    });
+    expect(outputDecision).toMatchObject({
+      action: 'allow',
+      contextEligible: true,
+      failed: false,
+      detectorSources: ['deterministic']
+    });
+  });
 });
