@@ -5,6 +5,7 @@ import type {
   TextGenerationOptions,
   TextGenerationResponse
 } from '@silo/core';
+import { normalizeTextGenerationFinishReason } from './finish-reason';
 
 export class AnthropicProvider implements TextProvider {
   name = 'anthropic';
@@ -67,7 +68,9 @@ export class AnthropicProvider implements TextProvider {
         completionTokens: response.usage.output_tokens,
         totalTokens: response.usage.input_tokens + response.usage.output_tokens
       },
-      model: response.model
+      model: response.model,
+      finishReason: normalizeTextGenerationFinishReason(response.stop_reason),
+      providerFinishReason: response.stop_reason || undefined
     };
   }
 }

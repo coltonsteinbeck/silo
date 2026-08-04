@@ -16,6 +16,7 @@ import type {
   WebSearchProvider,
   WebSearchResponse
 } from '@silo/core';
+import { normalizeTextGenerationFinishReason } from './finish-reason';
 
 interface XAIErrorResponse {
   error?: string | { message?: string };
@@ -183,7 +184,9 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider, 
             totalTokens: response.usage.total_tokens
           }
         : undefined,
-      model: response.model
+      model: response.model,
+      finishReason: normalizeTextGenerationFinishReason(choice.finish_reason),
+      providerFinishReason: choice.finish_reason || undefined
     };
   }
 

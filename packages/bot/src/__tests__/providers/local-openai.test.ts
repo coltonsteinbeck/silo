@@ -17,7 +17,8 @@ describe('LocalOpenAIProvider', () => {
     const mockCreate = mock(async () => ({
       choices: [
         {
-          message: { content: 'hello world' }
+          message: { content: 'hello world' },
+          finish_reason: 'length'
         }
       ],
       usage: {
@@ -43,5 +44,7 @@ describe('LocalOpenAIProvider', () => {
     expect(result.usage?.promptTokens).toBe(5);
     expect(result.usage?.completionTokens).toBe(7);
     expect(result.model).toBe('llama3.1');
+    expect(result.finishReason).toBe('length');
+    expect(result.providerFinishReason).toBe('length');
   });
 });

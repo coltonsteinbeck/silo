@@ -187,7 +187,7 @@ describe('OpenAIProvider.generateText reasoning parameters', () => {
   test('maps budgeted reasoning to effort and max_completion_tokens cap', async () => {
     const provider = new OpenAIProvider('sk-test');
     const createSpy = mock(async (_request: Record<string, unknown>) => ({
-      choices: [{ message: { content: 'hello' } }],
+      choices: [{ message: { content: 'hello' }, finish_reason: 'length' }],
       usage: {
         prompt_tokens: 10,
         completion_tokens: 5,
@@ -204,7 +204,7 @@ describe('OpenAIProvider.generateText reasoning parameters', () => {
       }
     };
 
-    await provider.generateText([{ role: 'user', content: 'test' }], {
+    const result = await provider.generateText([{ role: 'user', content: 'test' }], {
       reasoning: { type: 'budgeted', budget: 5000 },
       maxTokens: 12000
     });
@@ -214,6 +214,8 @@ describe('OpenAIProvider.generateText reasoning parameters', () => {
     expect(reasoning).toEqual({ effort: 'medium' });
     expect(request.max_completion_tokens).toBe(5000);
     expect(reasoning?.budget_tokens).toBeUndefined();
+    expect(result.finishReason).toBe('length');
+    expect(result.providerFinishReason).toBe('length');
   });
 
   test('caps max_completion_tokens at model limit for large reasoning budgets', async () => {

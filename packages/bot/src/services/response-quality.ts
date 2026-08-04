@@ -36,7 +36,25 @@ const STOP_WORDS = new Set([
 ]);
 
 const EXPLICIT_REPEAT_REQUEST_PATTERN =
-  /\b(?:repeat\s+(?:that|your\s+(?:last|previous)\s+(?:answer|response)|the\s+(?:last|previous)\s+(?:answer|response))|quote\s+(?:that|your\s+(?:last|previous)\s+(?:answer|response))|say\s+that\s+again|same\s+answer\s+(?:again|verbatim)|(?:repeat|quote)\s+it\s+(?:exactly|verbatim))\b/i;
+  /\b(?:repeat\s+(?:that|your\s+(?:last|previous)\s+(?:answer|response)|the\s+(?:last|previous)\s+(?:answer|response))|quote\s+(?:that|your\s+(?:last|previous)\s+(?:answer|response))|say\s+that\s+again|same\s+answer\s+(?:again|verbatim)|(?:repeat|quote)\s+it\s+(?:exactly|verbatim)|(?:the\s+)?(?:full|whole)\s+(?:thing|answer|response|list)|all\s+at\s+once|you\s+stopped|(?:please\s+)?(?:continue|go\s+on|finish(?:\s+it|\s+the\s+(?:list|answer))?)|start\s+over|from\s+the\s+beginning|i\s+meant(?:\s+it)?\s+to\b|i\s+need\s+it\s+to\b)\b/i;
+const LOW_INFORMATION_TASK_FOLLOW_UP =
+  /^(?:why|what|how|do\s+it|can\s+you|try\s+again|no|nope|not\s+that|fix\s+it)[.!?]*$/i;
+
+export function isExplicitResponseContinuationRequest(text: string): boolean {
+  return EXPLICIT_REPEAT_REQUEST_PATTERN.test(text);
+}
+
+export function selectLatestTaskDefiningUserText(userTexts: string[]): string | null {
+  const normalized = userTexts.map(text => text.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const taskDefining = [...normalized]
+    .reverse()
+    .find(
+      text =>
+        !isExplicitResponseContinuationRequest(text) && !LOW_INFORMATION_TASK_FOLLOW_UP.test(text)
+    );
+
+  return taskDefining || normalized.at(-1) || null;
+}
 
 function normalizeTokens(value: string): string[] {
   return value
@@ -86,7 +104,7 @@ export function detectResponseRepetition(params: {
   const candidateTokens = normalizeTokens(params.candidate);
   if (
     params.recentAssistantMessages.length === 0 ||
-    EXPLICIT_REPEAT_REQUEST_PATTERN.test(params.latestUserText)
+    isExplicitResponseContinuationRequest(params.latestUserText)
   ) {
     return {
       repetitive: false,

@@ -55,6 +55,9 @@ describe('Langfuse metadata', () => {
       promptHash: 'prompt-hash',
       contextScope: 'same_user',
       contextSelectedTurnCount: 2,
+      contextSelectedMessageCount: 4,
+      contextTurnBudget: 5,
+      contextMessageBudget: 10,
       contextExcludedTurnCount: 3,
       contextExclusionReasons: ['legacy', 'unsafe', 'unpaired'],
       inputContextEligible: false,
@@ -63,8 +66,17 @@ describe('Langfuse metadata', () => {
       modelCircuitContextDisabled: true,
       modelCircuitContextDisabledUntil: '2026-07-09T18:00:00.000Z',
       temperature: 0.2,
+      generationSource: 'provider',
+      configuredMaxOutputTokens: 400,
+      effectiveMaxOutputTokens: 275,
+      completionTokens: 240,
+      finishReason: 'length',
+      providerFinishReason: 'max_tokens',
       recoveryAttempt: 1,
-      recoveryContextFree: true
+      recoveryContextFree: false,
+      recoveryReason: 'quality',
+      recoveryContextRetained: true,
+      deliveryTruncated: false
     });
 
     expect(metadata).toMatchObject({
@@ -72,6 +84,9 @@ describe('Langfuse metadata', () => {
       promptHash: 'prompt-hash',
       contextScope: 'same_user',
       contextSelectedTurnCount: 2,
+      contextSelectedMessageCount: 4,
+      contextTurnBudget: 5,
+      contextMessageBudget: 10,
       contextExcludedTurnCount: 3,
       contextExclusionReasons: ['legacy', 'unsafe', 'unpaired'],
       inputContextEligible: false,
@@ -80,8 +95,17 @@ describe('Langfuse metadata', () => {
       modelCircuitContextDisabled: true,
       modelCircuitContextDisabledUntil: '2026-07-09T18:00:00.000Z',
       temperature: 0.2,
+      generationSource: 'provider',
+      configuredMaxOutputTokens: 400,
+      effectiveMaxOutputTokens: 275,
+      completionTokens: 240,
+      finishReason: 'length',
+      providerFinishReason: 'max_tokens',
       recoveryAttempt: 1,
-      recoveryContextFree: true
+      recoveryContextFree: false,
+      recoveryReason: 'quality',
+      recoveryContextRetained: true,
+      deliveryTruncated: false
     });
   });
 

@@ -29,12 +29,15 @@ export interface AssistantResponseRecoveryResult {
   originalCandidateHash: string | null;
   originalCandidatePreview: string | null;
   originalCandidateCategories: string[];
+  recoveryReason: 'safety' | 'quality' | null;
+  recoveryContextRetained: boolean;
 }
 
 export async function recoverUnsafeAgentResponse(params: {
   primaryResult: AgentGraphResult;
   inputSafetyAction: SafetyAction;
   runContextFreeRetry: () => Promise<AgentGraphResult>;
+  runContextRetainedRetry?: () => Promise<AgentGraphResult>;
 }): Promise<AssistantResponseRecoveryResult> {
   const originalSafety = params.primaryResult.outputSafety;
   if (!originalSafety?.blocked || params.inputSafetyAction !== 'allow') {
@@ -44,11 +47,19 @@ export async function recoverUnsafeAgentResponse(params: {
       retrySucceeded: false,
       originalCandidateHash: null,
       originalCandidatePreview: null,
-      originalCandidateCategories: []
+      originalCandidateCategories: [],
+      recoveryReason: null,
+      recoveryContextRetained: false
     };
   }
 
-  const recovered = await params.runContextFreeRetry();
+  const recoveryReason =
+    originalSafety.decision.action === 'block' ? 'safety' : ('quality' as const);
+  const recoveryContextRetained =
+    recoveryReason === 'quality' && Boolean(params.runContextRetainedRetry);
+  const recovered = await (recoveryContextRetained
+    ? params.runContextRetainedRetry!()
+    : params.runContextFreeRetry());
   const result = {
     ...recovered,
     response: {
@@ -65,7 +76,9 @@ export async function recoverUnsafeAgentResponse(params: {
     retrySucceeded,
     originalCandidateHash: originalSafety.candidateHash,
     originalCandidatePreview: originalSafety.candidatePreview,
-    originalCandidateCategories: [...originalSafety.categories]
+    originalCandidateCategories: [...originalSafety.categories],
+    recoveryReason,
+    recoveryContextRetained
   };
 }
 
@@ -81,6 +94,8 @@ export interface DirectResponseRecoveryResult {
   originalContent: string | null;
   retryCount: 0 | 1;
   retrySucceeded: boolean;
+  recoveryReason: 'safety' | 'quality' | null;
+  recoveryContextRetained: boolean;
 }
 
 function isDirectCandidateRejected(assessment: DirectCandidateAssessment): boolean {
@@ -92,6 +107,7 @@ export async function recoverUnsafeDirectResponse(params: {
   inputSafetyAction: SafetyAction;
   assess: (content: string) => Promise<DirectCandidateAssessment>;
   runContextFreeRetry: () => Promise<TextGenerationResponse>;
+  runContextRetainedRetry?: () => Promise<TextGenerationResponse>;
   buildFallback: (assessment: DirectCandidateAssessment) => string;
 }): Promise<DirectResponseRecoveryResult> {
   const primaryAssessment = await params.assess(params.primaryResponse.content);
@@ -102,11 +118,19 @@ export async function recoverUnsafeDirectResponse(params: {
       originalAssessment: null,
       originalContent: null,
       retryCount: 0,
-      retrySucceeded: false
+      retrySucceeded: false,
+      recoveryReason: null,
+      recoveryContextRetained: false
     };
   }
 
-  const retryResponse = await params.runContextFreeRetry();
+  const recoveryReason =
+    primaryAssessment.decision.action === 'block' ? 'safety' : ('quality' as const);
+  const recoveryContextRetained =
+    recoveryReason === 'quality' && Boolean(params.runContextRetainedRetry);
+  const retryResponse = await (recoveryContextRetained
+    ? params.runContextRetainedRetry!()
+    : params.runContextFreeRetry());
   const retryAssessment = await params.assess(retryResponse.content);
   const retrySucceeded = !isDirectCandidateRejected(retryAssessment);
   return {
@@ -119,6 +143,8 @@ export async function recoverUnsafeDirectResponse(params: {
     originalAssessment: primaryAssessment,
     originalContent: params.primaryResponse.content,
     retryCount: 1,
-    retrySucceeded
+    retrySucceeded,
+    recoveryReason,
+    recoveryContextRetained
   };
 }

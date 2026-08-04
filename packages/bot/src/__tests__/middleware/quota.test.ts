@@ -274,9 +274,9 @@ describe('QuotaMiddleware', () => {
 
     test('caps estimate to the configured response token ceiling', async () => {
       const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
-      const estimate = await middleware.estimateResponseTokensWithCap(5000, 180);
+      const estimate = await middleware.estimateResponseTokensWithCap(5000, 400);
 
-      expect(estimate).toBe(180);
+      expect(estimate).toBe(400);
     });
 
     test('respects a very small remaining token budget', async () => {
