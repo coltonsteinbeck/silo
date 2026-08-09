@@ -8,6 +8,7 @@ import {
 import type { VoiceBasedChannel } from 'discord.js';
 import { logger } from '@silo/core';
 import { RealtimeSession } from './realtime-session';
+import { guildVoiceCoordinator, type GuildVoiceLeaseToken } from './guild-voice-coordinator';
 
 interface SessionInfo {
   connection: VoiceConnection;
@@ -15,7 +16,22 @@ interface SessionInfo {
   guildId: string;
   channelId: string;
   createdAt: Date;
+  leaseToken: GuildVoiceLeaseToken;
 }
+
+export interface VoiceSessionRuntimeDependencies {
+  joinVoice: typeof joinVoiceChannel;
+  waitForState: (
+    connection: VoiceConnection,
+    status: VoiceConnectionStatus,
+    timeoutMs: number
+  ) => Promise<VoiceConnection>;
+}
+
+const defaultRuntime: VoiceSessionRuntimeDependencies = {
+  joinVoice: joinVoiceChannel,
+  waitForState: (connection, status, timeoutMs) => entersState(connection, status, timeoutMs)
+};
 
 /**
  * Manages voice connections and realtime sessions across guilds.
@@ -23,6 +39,8 @@ interface SessionInfo {
  */
 export class VoiceSessionManager {
   private sessions: Map<string, SessionInfo> = new Map(); // guildId -> SessionInfo
+
+  constructor(private readonly runtime: VoiceSessionRuntimeDependencies = defaultRuntime) {}
 
   /**
    * Check if a guild has an active voice session
@@ -64,14 +82,30 @@ export class VoiceSessionManager {
       await this.leaveGuild(guildId);
     }
 
-    const connection = joinVoiceChannel({
-      channelId: channel.id,
-      guildId: channel.guild.id,
-      // Type cast needed due to discord.js/voice version mismatch
-      adapterCreator: channel.guild.voiceAdapterCreator as unknown as DiscordGatewayAdapterCreator,
-      selfDeaf: false,
-      selfMute: false
-    });
+    const reservation = guildVoiceCoordinator.reserveExclusive(guildId, 'speech', channel.id);
+    if (!reservation.acquired) {
+      const activityName =
+        reservation.conflictType === 'radio' ? 'radio playback' : 'another voice session';
+      throw new Error(
+        `Cannot start voice chat because ${activityName} is active in <#${reservation.channelId}>.`
+      );
+    }
+
+    let connection: VoiceConnection;
+    try {
+      connection = this.runtime.joinVoice({
+        channelId: channel.id,
+        guildId: channel.guild.id,
+        // Type cast needed due to discord.js/voice version mismatch
+        adapterCreator: channel.guild
+          .voiceAdapterCreator as unknown as DiscordGatewayAdapterCreator,
+        selfDeaf: false,
+        selfMute: false
+      });
+    } catch (error) {
+      guildVoiceCoordinator.release(guildId, reservation.token);
+      throw error;
+    }
 
     logger.info(
       `[VoiceSessionManager] Attempting to join channel ${channel.id} (${channel.name}), current state: ${connection.state.status}`
@@ -90,7 +124,7 @@ export class VoiceSessionManager {
 
     // Wait for connection to be ready
     try {
-      await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
+      await this.runtime.waitForState(connection, VoiceConnectionStatus.Ready, 30_000);
       logger.info(
         `[VoiceSessionManager] Successfully connected to channel ${channel.id} (${channel.name})`
       );
@@ -100,6 +134,7 @@ export class VoiceSessionManager {
         error
       );
       connection.destroy();
+      guildVoiceCoordinator.release(guildId, reservation.token);
       throw new Error(
         `Failed to connect to voice channel within 30 seconds. Bot may need "Connect" and "Speak" permissions in ${channel.name}.`
       );
@@ -109,8 +144,8 @@ export class VoiceSessionManager {
     connection.on(VoiceConnectionStatus.Disconnected, async () => {
       try {
         await Promise.race([
-          entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
-          entersState(connection, VoiceConnectionStatus.Connecting, 5_000)
+          this.runtime.waitForState(connection, VoiceConnectionStatus.Signalling, 5_000),
+          this.runtime.waitForState(connection, VoiceConnectionStatus.Connecting, 5_000)
         ]);
         // Connection is reconnecting
       } catch {
@@ -123,13 +158,20 @@ export class VoiceSessionManager {
       this.cleanup(guildId);
     });
 
-    this.sessions.set(guildId, {
+    const sessionInfo: SessionInfo = {
       connection,
       activeSpeakers: new Map(),
       guildId,
       channelId: channel.id,
-      createdAt: new Date()
-    });
+      createdAt: new Date(),
+      leaseToken: reservation.token
+    };
+    if (!guildVoiceCoordinator.commit(guildId, reservation.token, sessionInfo)) {
+      connection.destroy();
+      guildVoiceCoordinator.release(guildId, reservation.token);
+      throw new Error('Voice session ownership changed before the connection became ready.');
+    }
+    this.sessions.set(guildId, sessionInfo);
 
     return connection;
   }
@@ -230,9 +272,13 @@ export class VoiceSessionManager {
       }
     }
 
-    // Destroy the connection
-    sessionInfo.connection.destroy();
+    // Remove ownership before destroying because Destroyed can emit
+    // synchronously and re-enter cleanup.
     this.sessions.delete(guildId);
+    if (!guildVoiceCoordinator.release(guildId, sessionInfo.leaseToken)) {
+      guildVoiceCoordinator.stop(guildId, 'speech', sessionInfo);
+    }
+    sessionInfo.connection.destroy();
   }
 
   /**
@@ -248,6 +294,9 @@ export class VoiceSessionManager {
     }
 
     this.sessions.delete(guildId);
+    if (!guildVoiceCoordinator.release(guildId, sessionInfo.leaseToken)) {
+      guildVoiceCoordinator.stop(guildId, 'speech', sessionInfo);
+    }
   }
 
   /**
