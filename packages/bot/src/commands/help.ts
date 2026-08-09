@@ -17,6 +17,7 @@ const HELP_LINES = [
   '**Media Commands**',
   '/draw - Generate an image.',
   '/video - Generate or transform a video.',
+  '/radio - Play YouTube audio or a Spotify track in a voice channel.',
   '/speak - Start voice mode in a voice channel.',
   '/stopspeaking - Stop voice mode.',
   '',

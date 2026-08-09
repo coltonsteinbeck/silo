@@ -8,6 +8,9 @@
   ],
   "scripts": {
     "setup": "bash scripts/setup.sh",
+    "runtime:prepare": "bash scripts/prepare-radio-runtime.sh",
+    "radio:verify-runtime": "bun scripts/verify-ytdlp-artifact.ts",
+    "radio:validate": "bun scripts/validate-radio-playback.ts",
     "dev": "bun run --filter '*' dev",
     "dev:bot": "bun --watch packages/bot/src/index.ts",
     "predev:bot": "bun test",
@@ -65,6 +68,11 @@
     "prettier": "3.8.1",
     "typescript": "^5.6.0"
   },
+  "trustedDependencies": [
+    "@discordjs/opus",
+    "ffmpeg-static",
+    "youtube-dl-exec"
+  ],
   "lint-staged": {
     "*.ts": [
       "eslint --fix",

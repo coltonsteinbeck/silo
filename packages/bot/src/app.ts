@@ -25,6 +25,7 @@ import { AdminAdapter } from './database/admin-adapter';
 import { PermissionManager } from './permissions/manager';
 import { createCommands } from './commands';
 import { DrawCommand } from './commands/draw';
+import { RadioCommand } from './commands/radio';
 import { HealthServer } from './health/server';
 import {
   guildManager,
@@ -492,6 +493,7 @@ export async function startBot(): Promise<void> {
   // Create commands
   const commands = createCommands(db, providers, config, adminDb, permissions, quotaMiddleware);
   const drawCommand = commands.get('draw');
+  const radioCommand = commands.get('radio');
   logger.info(`Loaded ${commands.size} commands`);
 
   // Initialize security modules and log deployment mode
@@ -523,6 +525,8 @@ export async function startBot(): Promise<void> {
       healthServer,
       releaseProcessLock,
       shutdownTracing: shutdownLangfuseTracing,
+      stopRadio:
+        radioCommand instanceof RadioCommand ? () => radioCommand.stopAll('shutdown') : undefined,
       log: logger
     });
   });
@@ -534,6 +538,8 @@ export async function startBot(): Promise<void> {
       healthServer,
       releaseProcessLock,
       shutdownTracing: shutdownLangfuseTracing,
+      stopRadio:
+        radioCommand instanceof RadioCommand ? () => radioCommand.stopAll('shutdown') : undefined,
       log: logger
     });
   });
@@ -715,7 +721,8 @@ export async function startBot(): Promise<void> {
     ): Promise<void> => {
       const reply: InteractionReplyOptions = {
         content: message,
-        flags: MessageFlags.Ephemeral
+        flags: MessageFlags.Ephemeral,
+        allowedMentions: { parse: [] }
       };
       if (target.replied || target.deferred) {
         await target.followUp(reply);
@@ -784,6 +791,19 @@ export async function startBot(): Promise<void> {
             }
           }
 
+          if (radioCommand instanceof RadioCommand && interaction.customId.startsWith('radio:')) {
+            try {
+              await radioCommand.handleButtonInteraction(interaction as ButtonInteraction);
+            } catch (error) {
+              logger.error('Error handling radio button interaction:', error);
+              await sendInteractionErrorReply(
+                interaction,
+                'An error occurred while handling this radio interaction.'
+              );
+            }
+            return;
+          }
+
           await handleButtonInteraction(interaction as ButtonInteraction);
         }
       );
@@ -819,7 +839,8 @@ export async function startBot(): Promise<void> {
           logger.error(`Error executing ${interaction.commandName}:`, error);
           const reply: InteractionReplyOptions = {
             content: 'An error occurred while executing this command.',
-            flags: MessageFlags.Ephemeral
+            flags: MessageFlags.Ephemeral,
+            allowedMentions: { parse: [] }
           };
 
           if (interaction.replied || interaction.deferred) {
@@ -827,6 +848,35 @@ export async function startBot(): Promise<void> {
           } else {
             await interaction.reply(reply);
           }
+        }
+      }
+    );
+  });
+
+  client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
+    if (!(radioCommand instanceof RadioCommand)) return;
+    const guildId = newState.guild.id || oldState.guild.id;
+    const metadataInput = {
+      guildId,
+      channelId: newState.channelId || oldState.channelId,
+      messageType: 'system-event' as const,
+      commandName: 'radio-voice-state'
+    };
+    await withLangfuseRootTrace(
+      {
+        name: 'discord.radio.voice-state',
+        traceName: 'discord.radio.voice-state',
+        sessionId: `system:guild:${guildId}`,
+        metadata: buildLangfuseTraceMetadata(metadataInput),
+        tags: buildLangfuseTags(metadataInput)
+      },
+      async observation => {
+        try {
+          const active = radioCommand.handleVoiceStateUpdate(oldState, newState);
+          observation?.update({ output: { status: active ? 'active' : 'inactive' } });
+        } catch (error) {
+          observation?.update({ output: { status: 'failed' }, level: 'ERROR' });
+          logger.error('Failed to reconcile radio voice state:', error);
         }
       }
     );
