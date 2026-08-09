@@ -65,6 +65,21 @@ export {
   hasSemanticJailbreakRisk,
   hasSemanticNsfwInputRisk
 } from './safety-decision';
+export {
+  buildManagedTurnInstruction,
+  containsDrCockTitle,
+  isManagedEdgyPersonaEnabled,
+  resolveManagedPersonaState,
+  resolveResponseIntent,
+  stripAllowedDrCockTitle
+} from './managed-persona-state';
+export type {
+  AssistantSafetyPolicy,
+  ManagedPersonaStateResolution,
+  PersonaActivationSource,
+  PersonaState,
+  ResponseIntent
+} from './managed-persona-state';
 export type {
   SafetyAction,
   SafetyDecision,
@@ -77,6 +92,9 @@ export { composeSystemPromptWithSafety, IMMUTABLE_SAFETY_POLICY } from './safety
 export { resolvePromptPolicy } from './prompt-policy';
 export {
   MANAGED_PERSONA_ID,
+  MANAGED_PERSONA_PROMPT_VERSION,
+  MANAGED_PRODUCTIONS_GUILD_ID,
+  MANAGED_ROLLBACK_PROMPT_VERSION,
   resolveManagedGuildPersonaPolicy,
   isManagedGuildCustomPromptDisabled
 } from './guild-persona-policy';
