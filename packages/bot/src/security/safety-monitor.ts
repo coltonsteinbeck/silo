@@ -243,7 +243,7 @@ export class SafetyMonitor {
 
     const contextDisabled = Boolean(state.contextDisabledUntil && state.contextDisabledUntil > now);
     const shouldAlert =
-      (!record.qualityRepair || !record.resolvedByRetry) &&
+      !record.resolvedByRetry &&
       (!state.lastAlertAt || now - state.lastAlertAt >= this.config.alertCooldownMs);
     if (shouldAlert) {
       state.lastAlertAt = now;

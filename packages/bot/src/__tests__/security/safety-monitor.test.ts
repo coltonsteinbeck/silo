@@ -245,7 +245,7 @@ describe('safety-monitor', () => {
     expect(monitor.isKillSwitchActive('guild-any', 'user-any', 2_001)).toBe(false);
   });
 
-  test('retry-resolved safety repairs and repetition repairs do not count toward the circuit', () => {
+  test('retry-resolved repairs neither alert nor count toward the circuit', () => {
     const monitor = createMonitor({ blockThreshold: 1 });
     const resolved = monitor.recordAssistantIncident(
       {
@@ -268,10 +268,25 @@ describe('safety-monitor', () => {
       },
       2_000
     );
+    const unresolved = monitor.recordAssistantIncident(
+      {
+        provider: 'mock-provider',
+        model: 'mock-model',
+        promptHash: 'prompt-v2',
+        categories: ['sexual/explicit_generation'],
+        resolvedByRetry: false
+      },
+      3_000
+    );
 
     expect(resolved.failureCountInWindow).toBe(0);
     expect(resolved.contextDisabled).toBe(false);
+    expect(resolved.shouldAlert).toBe(false);
     expect(quality.failureCountInWindow).toBe(0);
     expect(quality.contextDisabled).toBe(false);
+    expect(quality.shouldAlert).toBe(false);
+    expect(unresolved.failureCountInWindow).toBe(1);
+    expect(unresolved.contextDisabled).toBe(true);
+    expect(unresolved.shouldAlert).toBe(true);
   });
 });
