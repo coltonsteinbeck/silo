@@ -120,6 +120,8 @@ export class SpeakCommand implements Command {
 
     await interaction.deferReply();
 
+    const hadExistingGuildSession = voiceSessionManager.hasSession(guildId);
+
     try {
       // Get OpenAI API key from environment
       const apiKey = process.env.OPENAI_API_KEY;
@@ -173,6 +175,19 @@ export class SpeakCommand implements Command {
       });
     } catch (error) {
       logger.error('[SpeakCommand] Error:', error);
+
+      if (
+        !hadExistingGuildSession &&
+        voiceSessionManager.hasSession(guildId) &&
+        voiceSessionManager.getActiveSpeakerCount(guildId) === 0
+      ) {
+        await voiceSessionManager.leaveGuild(guildId).catch(cleanupError => {
+          logger.warn(
+            '[SpeakCommand] Failed to roll back an unused voice connection',
+            cleanupError
+          );
+        });
+      }
 
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       await interaction.editReply({

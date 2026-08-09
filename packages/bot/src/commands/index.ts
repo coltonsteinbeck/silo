@@ -14,6 +14,7 @@ import { ModCommand } from './mod';
 import { AnalyticsCommand } from './analytics';
 import { SpeakCommand } from './speak';
 import { StopSpeakingCommand } from './stopspeaking';
+import { RadioCommand } from './radio';
 import { FeedbackCommand } from './feedback';
 import { HelpCommand } from './help';
 import { DatabaseAdapter, Config } from '@silo/core';
@@ -80,6 +81,8 @@ export function createCommands(
   commands.set(speak.data.name, speak);
   const stopSpeaking = new StopSpeakingCommand(quotaMiddleware);
   commands.set(stopSpeaking.data.name, stopSpeaking);
+  const radio = new RadioCommand();
+  commands.set(radio.data.name, radio);
 
   // Feedback command
   const feedback = new FeedbackCommand(adminDb);

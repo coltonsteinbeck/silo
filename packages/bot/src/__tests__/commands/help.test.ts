@@ -18,6 +18,7 @@ describe('HelpCommand', () => {
     const reply = interaction._getReplies()[0] as { content: string; ephemeral: boolean };
     expect(reply.content).toContain('/admin');
     expect(reply.content).toContain('/help');
+    expect(reply.content).toContain('/radio');
     expect(reply.ephemeral).toBe(true);
   });
 });

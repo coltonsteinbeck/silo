@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: ["main"]
+    branches: ['main']
   pull_request:
-    branches: ["main"]
+    branches: ['main']
 
 jobs:
   safety-regression:
@@ -20,6 +20,8 @@ jobs:
 
       - name: Install dependencies
         run: bun install
+        env:
+          YOUTUBE_DL_HOST: https://github.com/yt-dlp/yt-dlp/releases/download/2026.07.04/yt-dlp
 
       - name: Safety Regression Gate
         run: bun test packages/bot/src/__tests__/security/safety-regression.integration.test.ts
@@ -38,6 +40,11 @@ jobs:
 
       - name: Install dependencies
         run: bun install
+        env:
+          YOUTUBE_DL_HOST: https://github.com/yt-dlp/yt-dlp/releases/download/2026.07.04/yt-dlp
+
+      - name: Verify radio runtime
+        run: bun run radio:verify-runtime
 
       - name: Repo Hygiene
         run: bun run hygiene:check
@@ -56,3 +63,6 @@ jobs:
 
       - name: Test
         run: bun test
+
+      - name: Validate radio transport
+        run: bun run radio:validate
