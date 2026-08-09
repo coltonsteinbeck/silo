@@ -14,6 +14,7 @@ import type {
 } from './types';
 import { executeBoundedToolPlan, resolveAllowedAgentTools } from './tool-registry';
 import { evaluateSafetyDecision } from '../security/safety-decision';
+import { repairAssistantOutputSlurs } from '../security/assistant-output-repair';
 import { sanitizeAssistantOutput, sanitizeDiscordMassMentions } from '../security/output-sanitizer';
 import { detectResponseRepetition } from '../services/response-quality';
 import {
@@ -48,6 +49,9 @@ const AgentGraphAnnotation = Annotation.Root({
   falsePositiveGuard: Annotation<string | undefined>,
   outputBlockedMessage: Annotation<string | undefined>,
   allowMildAssistantProfanity: Annotation<boolean | undefined>,
+  assistantSafetyPolicy: Annotation<AgentGraphInput['assistantSafetyPolicy']>,
+  personaState: Annotation<AgentGraphInput['personaState']>,
+  responseIntent: Annotation<AgentGraphInput['responseIntent']>,
   inheritedSafetyRisk: Annotation<boolean | undefined>,
   recentAssistantMessages: Annotation<string[] | undefined>,
   latestUserText: Annotation<string | undefined>,
@@ -528,33 +532,51 @@ async function outputSafetyNode(state: State): Promise<StateUpdate> {
         stripInternalMetadata: true,
         stripXmlLikeTags: true
       });
-      const decision = await evaluateSafetyDecision(sanitizedContent, {
-        stage: 'assistant_output',
-        source: 'agent_output_safety',
-        inheritedRisk: state.inheritedSafetyRisk
+      const evaluateCandidate = (content: string) =>
+        evaluateSafetyDecision(content, {
+          stage: 'assistant_output',
+          source: 'agent_output_safety',
+          inheritedRisk: state.inheritedSafetyRisk,
+          assistantSafetyPolicy: state.assistantSafetyPolicy,
+          personaState: state.personaState,
+          responseIntent: state.responseIntent
+        });
+      const candidateDecision = await evaluateCandidate(sanitizedContent);
+      const repair = await repairAssistantOutputSlurs({
+        content: sanitizedContent,
+        decision: candidateDecision,
+        evaluate: evaluateCandidate
       });
+      const deliveredContent = repair.content;
+      const decision = repair.decision;
       const quality = detectResponseRepetition({
-        candidate: sanitizedContent,
+        candidate: deliveredContent,
         recentAssistantMessages: state.recentAssistantMessages || [],
         latestUserText: state.latestUserText || ''
       });
       const safetyBlocked = decision.action === 'block';
       const blocked = safetyBlocked || quality.repetitive;
-      const normalized = sanitizedContent !== response.content;
-      const repaired = false;
+      const normalized = deliveredContent !== response.content;
+      const repaired = repair.repaired;
       const safetyState: AgentSafetyState = blocked
         ? safetyBlocked
           ? 'output_blocked'
           : 'quality_blocked'
-        : state.safetyState;
-      const outcome: AgentGraphOutcome | undefined = blocked ? 'blocked' : state.outcome;
+        : repaired
+          ? 'output_repaired'
+          : state.safetyState;
+      const outcome: AgentGraphOutcome | undefined = blocked
+        ? 'blocked'
+        : repaired
+          ? 'repaired'
+          : state.outcome;
       const modelResponse = {
         ...response,
         content: blocked
           ? sanitizeDiscordMassMentions(
               state.outputBlockedMessage?.trim() || OUTPUT_BLOCKED_CONTENT
             )
-          : sanitizedContent
+          : deliveredContent
       };
       const outputSafety: AgentOutputSafetyResult = {
         decision,
@@ -569,7 +591,10 @@ async function outputSafetyNode(state: State): Promise<StateUpdate> {
         reasons: [...decision.reasons, ...(quality.reason ? [`quality/${quality.reason}`] : [])],
         outputWasReplaced: normalized || blocked,
         candidateHash: createHash('sha256').update(sanitizedContent).digest('hex'),
-        candidatePreview: summarizeTextForTrace(sanitizedContent, 160)
+        candidatePreview: summarizeTextForTrace(sanitizedContent, 160),
+        candidateCategories: candidateDecision.categories,
+        deliveredCategories: decision.categories,
+        repairStrategy: repair.strategy
       };
 
       observation?.update({

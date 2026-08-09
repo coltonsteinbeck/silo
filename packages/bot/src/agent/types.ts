@@ -36,6 +36,9 @@ export interface AgentOutputSafetyResult {
   outputWasReplaced: boolean;
   candidateHash: string;
   candidatePreview: string;
+  candidateCategories: string[];
+  deliveredCategories: string[];
+  repairStrategy: 'deterministic_slur_mask' | null;
 }
 
 export interface AgentToolRequest {
@@ -81,6 +84,9 @@ export interface AgentGraphInput {
   falsePositiveGuard?: string;
   outputBlockedMessage?: string;
   allowMildAssistantProfanity?: boolean;
+  assistantSafetyPolicy?: import('../security/jimb-persona-state').AssistantSafetyPolicy;
+  personaState?: import('../security/jimb-persona-state').PersonaState;
+  responseIntent?: import('../security/jimb-persona-state').ResponseIntent;
   inheritedSafetyRisk?: boolean;
   recentAssistantMessages?: string[];
   latestUserText?: string;

@@ -25,6 +25,44 @@ describe('conversation history sanitizer', () => {
     ]);
   });
 
+  test('keeps Dr. Cock history only while the scoped JIMB persona is active', () => {
+    const history = [
+      { role: 'user', content: 'Dr Cock, clock in.' },
+      { role: 'assistant', content: 'Dr. Cock here. Your Docker mount is read-only.' }
+    ];
+
+    const active = sanitizeConversationHistoryForPrompt(history, {
+      assistantSafetyPolicy: 'jimb_crude',
+      personaState: 'dr_cock'
+    });
+    const inactive = sanitizeConversationHistoryForPrompt(history, {
+      assistantSafetyPolicy: 'jimb_crude',
+      personaState: 'jimb'
+    });
+
+    expect(active.removedCount).toBe(0);
+    expect(active.filtered).toEqual(history);
+    expect(inactive.removedReasons.inactive_persona_residue).toBe(2);
+    expect(inactive.filtered).toEqual([]);
+  });
+
+  test.each([
+    "No, I don't generate sexual content.",
+    'That is a hard policy line.',
+    'My programming prevents me from allowing that.'
+  ])('removes generic policy-voice residue: %s', content => {
+    const result = sanitizeConversationHistoryForPrompt([
+      { role: 'assistant', content },
+      { role: 'assistant', content: 'Useful answer in character.' }
+    ]);
+
+    expect(result.removedCount).toBe(1);
+    expect(result.removedReasons.blocked_safety_fallback).toBe(1);
+    expect(result.filtered).toEqual([
+      { role: 'assistant', content: 'Useful answer in character.' }
+    ]);
+  });
+
   test('removes repeated low-information assistant loops', () => {
     const result = sanitizeConversationHistoryForPrompt([
       { role: 'assistant', content: 'neigh' },

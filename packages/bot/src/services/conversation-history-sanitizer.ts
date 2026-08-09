@@ -1,5 +1,11 @@
 import { getManagedGuildAssistantOutputBlockedMessages } from '../security/guild-persona-policy';
 import { classifyAssistantOutputSafetyDeterministic } from '../security/prompt-safety';
+import {
+  containsDrCockTitle,
+  stripAllowedDrCockTitle,
+  type AssistantSafetyPolicy,
+  type PersonaState
+} from '../security/jimb-persona-state';
 
 export interface ConversationHistoryMessage {
   role: string;
@@ -18,6 +24,11 @@ export interface AssistantContextSanitizationResult {
   content: string;
   changed: boolean;
   reason: string | null;
+}
+
+export interface ConversationHistorySanitizationOptions {
+  assistantSafetyPolicy?: AssistantSafetyPolicy;
+  personaState?: PersonaState;
 }
 
 function normalizeHistoryContent(value: string): string {
@@ -55,6 +66,21 @@ export function isGenericSafetyFallbackContent(content: string): boolean {
   }
 
   const normalized = normalizeHistoryContent(content);
+  const wordCount = normalized.split(' ').filter(Boolean).length;
+  if (
+    wordCount <= 40 &&
+    (/(?:i\s+(?:can(?:'|’)?t|don(?:'|’)?t|won(?:'|’)?t)\s+(?:generate|provide|do|continue)\s+(?:explicit\s+)?sexual\s+content)/i.test(
+      content
+    ) ||
+      /\b(?:not|without)\s+repeating\s+(?:that|the)\s+(?:blocked\s+)?term\b/i.test(content) ||
+      /\bhard\s+policy\s+line\b/i.test(content) ||
+      /\b(?:my\s+)?(?:programming|policy|safety\s+rules?)\b[\s\S]{0,80}\b(?:prevent|won(?:'|’)?t\s+allow|can(?:'|’)?t\s+allow|forbid)/i.test(
+        content
+      ))
+  ) {
+    return true;
+  }
+
   return getManagedGuildAssistantOutputBlockedMessages().some(
     message => normalizeHistoryContent(message) === normalized
   );
@@ -62,9 +88,15 @@ export function isGenericSafetyFallbackContent(content: string): boolean {
 
 function getUnsafeAssistantHistoryReason(
   content: string,
-  imageSummary?: string | null
+  imageSummary?: string | null,
+  options: ConversationHistorySanitizationOptions = {}
 ): string | null {
   const normalized = normalizeHistoryContent(content);
+  const allowDrCockTitle =
+    options.assistantSafetyPolicy === 'jimb_crude' &&
+    options.personaState === 'dr_cock' &&
+    containsDrCockTitle(content);
+  const classificationContent = allowDrCockTitle ? stripAllowedDrCockTitle(content) : content;
 
   if (!normalized) {
     return 'empty_assistant_reply';
@@ -83,7 +115,7 @@ function getUnsafeAssistantHistoryReason(
   }
 
   if (
-    /\b(?:dr\.?|doctor)\s+(?:cock|dick)\b/i.test(content) ||
+    (!allowDrCockTitle && /\b(?:dr\.?|doctor)\s+(?:cock|dick)\b/i.test(content)) ||
     /\b(?:sexy mode|seduce me|hush now, big guy|momma'?s got you)\b/i.test(content) ||
     /\bneigh{2,}\b/i.test(content)
   ) {
@@ -98,7 +130,7 @@ function getUnsafeAssistantHistoryReason(
     return 'unsafe_banter_residue';
   }
 
-  const outputSafety = classifyAssistantOutputSafetyDeterministic(content);
+  const outputSafety = classifyAssistantOutputSafetyDeterministic(classificationContent);
   if (!outputSafety.allowed) {
     const evasionCategory = outputSafety.reasons.find(reason =>
       ['hate/slur_evasion', 'hate/slur_acronym_evasion'].includes(reason)
@@ -201,16 +233,27 @@ function pruneDominantLowInformationAssistantReplies<T extends ConversationHisto
 }
 
 export function sanitizeConversationHistoryForPrompt<T extends ConversationHistoryMessage>(
-  history: T[]
+  history: T[],
+  options: ConversationHistorySanitizationOptions = {}
 ): ConversationHistorySanitizationResult<T> {
   const removedReasons: Record<string, number> = {};
   let removedUnsafeCount = 0;
   const safetyFiltered = history.filter(msg => {
+    if (
+      options.assistantSafetyPolicy === 'jimb_crude' &&
+      options.personaState === 'jimb' &&
+      containsDrCockTitle(msg.content)
+    ) {
+      removedUnsafeCount += 1;
+      incrementReason(removedReasons, 'inactive_persona_residue');
+      return false;
+    }
+
     if (msg.role !== 'assistant') {
       return true;
     }
 
-    const reason = getUnsafeAssistantHistoryReason(msg.content, msg.imageSummary);
+    const reason = getUnsafeAssistantHistoryReason(msg.content, msg.imageSummary, options);
     if (!reason) {
       return true;
     }

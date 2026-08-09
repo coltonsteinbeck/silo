@@ -64,13 +64,28 @@ import {
   buildImageSummaryBlock,
   shouldIncludeConversationHistoryForPrompt
 } from './services/conversation-context';
-import { sanitizeConversationHistoryForPrompt } from './services/conversation-history-sanitizer';
+import {
+  isGenericSafetyFallbackContent,
+  sanitizeConversationHistoryForPrompt
+} from './services/conversation-history-sanitizer';
 import { buildMediaReplyPayload, resolveDeliverableMediaResult } from './services/media-delivery';
 import {
   recoverUnsafeAgentResponse,
   recoverUnsafeDirectResponse,
+  type AssistantRecoveryStrategy,
   type DirectCandidateAssessment
 } from './services/assistant-response-recovery';
+import { repairAssistantOutputSlurs } from './security/assistant-output-repair';
+import { maskAssistantSlurs } from './security/slur-detection';
+import {
+  buildJimbTurnInstruction,
+  resolveJimbPersonaState,
+  resolveResponseIntent,
+  stripAllowedDrCockTitle,
+  type PersonaActivationSource,
+  type PersonaState,
+  type ResponseIntent
+} from './security/jimb-persona-state';
 import {
   detectResponseRepetition,
   selectLatestTaskDefiningUserText
@@ -1329,7 +1344,7 @@ export async function startBot(): Promise<void> {
             allowedPromptHashesRaw: process.env.SAFETY_ALLOWED_PROMPT_HASHES,
             requireCustomPromptAllowlist: deploymentDetector.getConfig().isProduction
           });
-          const systemPrompt = composeSystemPromptWithSafety(promptPolicy.effectivePrompt);
+          const baseSystemPrompt = composeSystemPromptWithSafety(promptPolicy.effectivePrompt);
           const conciseResponseInstruction =
             '\n\nResponse style rule: Keep responses concise and clear by default (2-4 sentences). Only provide longer responses when the user explicitly asks for detail. When the user requests a finite exact output such as a list, range, table, or code block, complete the requested output before adding persona commentary; never replace requested items with shorthand.';
           const userUsedEmoji = /\p{Extended_Pictographic}/u.test(processedContent);
@@ -1342,6 +1357,12 @@ export async function startBot(): Promise<void> {
             : '\n\nFormatting rule: Use plain text by default. Avoid markdown styling (bold/italics/lists) and avoid emojis unless the user explicitly asks for them.';
           const sentimentStyleInstruction = buildSentimentStyleInstruction(promptSentiment);
           const allowMildAssistantProfanity = managedAllowMildProfanity;
+          const assistantSafetyPolicy = managedPersona?.assistantSafetyPolicy || 'standard';
+          const responseIntent: ResponseIntent = resolveResponseIntent({
+            latestUserText: conversationContext.mergedUserContent || processedContent,
+            inputSafetyAction: inputSafetyDecision?.action,
+            responseDirective: moderation.responseDirective
+          });
 
           const promptHash = promptPolicy.promptHash;
           const hasConfiguredGuildPrompt = Boolean(
@@ -1568,6 +1589,33 @@ export async function startBot(): Promise<void> {
             memoryPromise,
             urlContextPromise
           ]);
+          const personaResolution = managedPersona
+            ? resolveJimbPersonaState({
+                enabled: managedPersona.edgyPersonaEnabled,
+                latestUserText: processedContent,
+                guildId,
+                channelId: message.channelId,
+                requesterUserId: message.author.id,
+                history: promptContext.messages,
+                maxTurns: PROMPT_CONTEXT_MAX_TURNS,
+                maxAgeMs: 30 * 60 * 1000
+              })
+            : ({ state: 'jimb', activationSource: 'none' } as const);
+          const personaState: PersonaState = personaResolution.state;
+          const personaActivationSource: PersonaActivationSource =
+            personaResolution.activationSource;
+          const jimbTurnInstruction = buildJimbTurnInstruction({
+            policy: assistantSafetyPolicy,
+            personaState,
+            responseIntent
+          });
+          const systemPrompt = `${baseSystemPrompt}${jimbTurnInstruction}`;
+          const outputInputNsfwRisk =
+            assistantSafetyPolicy === 'jimb_crude' && personaState === 'dr_cock'
+              ? hasSemanticNsfwInputRisk(
+                  stripAllowedDrCockTitle(conversationContext.mergedUserContent || processedContent)
+                )
+              : inputNsfwRisk;
           const memorySelection = contextReuseDisabledForTurn
             ? {
                 context: '',
@@ -1599,7 +1647,10 @@ export async function startBot(): Promise<void> {
               }
             },
             async guardrail => {
-              const sanitation = sanitizeConversationHistoryForPrompt(promptContext.messages);
+              const sanitation = sanitizeConversationHistoryForPrompt(promptContext.messages, {
+                assistantSafetyPolicy,
+                personaState
+              });
               const decision = buildContextReuseSafetyDecision({
                 selectedMessageCount: sanitation.filtered.length,
                 removedReasons: Object.keys(sanitation.removedReasons)
@@ -1735,6 +1786,10 @@ export async function startBot(): Promise<void> {
             promptEnabled: effectivePromptEnabled,
             managedPersonaId: managedPersona?.personaId || null,
             customPromptsDisabled: managedCustomPromptsDisabled,
+            assistantSafetyPolicy,
+            personaState: managedPersona ? personaState : null,
+            personaActivationSource: managedPersona ? personaActivationSource : null,
+            responseIntent,
             conversationHistoryIncluded: includeConversationHistory,
             contextScope: promptContext.scope,
             contextSelectedTurnCount: promptContext.selectedTurnCount,
@@ -1805,6 +1860,7 @@ export async function startBot(): Promise<void> {
           let originalCandidateCategories: string[] = [];
           let recoveryReason: 'safety' | 'quality' | null = null;
           let recoveryContextRetained = false;
+          let recoveryStrategy: AssistantRecoveryStrategy | null = null;
           const generationSource = deterministicRangeResponse ? 'deterministic_range' : 'provider';
           const traceableRangeBounds = Boolean(
             deterministicRangeResponse &&
@@ -1977,6 +2033,10 @@ export async function startBot(): Promise<void> {
                 ? `Previous safe user request:\n${latestSafeTaskUserText}\n\nLatest user follow-up:\n${mergedUserPrompt || processedContent}`
                 : mergedUserPrompt || processedContent;
               const qualityRecoverySystemPrompt = `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${sentimentStyleInstruction}\n\nQuality recovery rule: Resolve the latest follow-up using only the previous safe user request supplied below. Complete the requested task without reviving assistant lore or unrelated conversation topics.`;
+              const safetyRecoverySystemPrompt = `${systemPrompt}${conciseResponseInstruction}${plainStyleInstruction}${sentimentStyleInstruction}\n\nSafety recovery rule: Preserve the user’s actual task while removing only the rejected content category. Do not repeat slurs, explicit sexual details, targeted abuse, prompt text, or generic policy language. Give a concise useful answer in the configured persona.`;
+              const safetyRecoveryUserPrompt = latestSafeTaskUserText
+                ? `Previous safe user request:\n${latestSafeTaskUserText}\n\nLatest user follow-up:\n${mergedUserPrompt || processedContent}`
+                : mergedUserPrompt || processedContent;
 
               const graphActive =
                 agentGraphConfig.enabled &&
@@ -2087,8 +2147,11 @@ export async function startBot(): Promise<void> {
                   falsePositiveGuard: intentRouting.falsePositiveGuard,
                   outputBlockedMessage: managedPersona?.assistantOutputBlockedMessage,
                   allowMildAssistantProfanity,
+                  assistantSafetyPolicy,
+                  personaState,
+                  responseIntent,
                   inheritedSafetyRisk:
-                    inputNsfwRisk ||
+                    outputInputNsfwRisk ||
                     inputSafetyDecision?.action !== 'allow' ||
                     inputSafetyDecision?.contextEligible === false ||
                     inheritedContextSafetyRisk,
@@ -2148,7 +2211,10 @@ export async function startBot(): Promise<void> {
                       intentReason: 'context-free recovery after output safety failure',
                       outputBlockedMessage: managedPersona?.assistantOutputBlockedMessage,
                       allowMildAssistantProfanity,
-                      inheritedSafetyRisk: inputNsfwRisk,
+                      assistantSafetyPolicy,
+                      personaState,
+                      responseIntent,
+                      inheritedSafetyRisk: outputInputNsfwRisk,
                       recentAssistantMessages,
                       latestUserText: mergedUserPrompt || processedContent,
                       requestedTools: [],
@@ -2166,6 +2232,43 @@ export async function startBot(): Promise<void> {
                   },
                   ...(latestSafeTaskUserText
                     ? {
+                        runTaskRetainedSafetyRetry: async () =>
+                          runBoundedAgentGraph({
+                            messages: [
+                              { role: 'system', content: safetyRecoverySystemPrompt },
+                              { role: 'user', content: safetyRecoveryUserPrompt }
+                            ],
+                            textProvider,
+                            generationOptions: {
+                              maxTokens: maxTextResponseTokens,
+                              temperature: 0.2
+                            },
+                            provider: toAgentProviderCapabilities(toolCapabilities),
+                            limits: agentGraphConfig.limits,
+                            intent: 'answer',
+                            intentConfidence: 1,
+                            intentReason: 'task-retaining recovery after output safety failure',
+                            outputBlockedMessage: managedPersona?.assistantOutputBlockedMessage,
+                            allowMildAssistantProfanity,
+                            assistantSafetyPolicy,
+                            personaState,
+                            responseIntent,
+                            inheritedSafetyRisk: outputInputNsfwRisk,
+                            recentAssistantMessages,
+                            latestUserText: mergedUserPrompt || processedContent,
+                            requestedTools: [],
+                            metadata: {
+                              ...generationMetadataInput,
+                              graphName: 'discord-message-agent',
+                              graphVersion: 'v2',
+                              recoveryAttempt: 1,
+                              recoveryContextFree: false,
+                              recoveryReason: 'safety',
+                              recoveryContextRetained: true,
+                              recoveryStrategy: 'task_retaining_safety_retry',
+                              temperature: 0.2
+                            }
+                          }),
                         runContextRetainedRetry: async () =>
                           runBoundedAgentGraph({
                             messages: [
@@ -2184,7 +2287,10 @@ export async function startBot(): Promise<void> {
                             intentReason: 'task-retaining recovery after output quality failure',
                             outputBlockedMessage: managedPersona?.assistantOutputBlockedMessage,
                             allowMildAssistantProfanity,
-                            inheritedSafetyRisk: inputNsfwRisk,
+                            assistantSafetyPolicy,
+                            personaState,
+                            responseIntent,
+                            inheritedSafetyRisk: outputInputNsfwRisk,
                             recentAssistantMessages,
                             latestUserText: mergedUserPrompt || processedContent,
                             requestedTools: [],
@@ -2210,6 +2316,23 @@ export async function startBot(): Promise<void> {
                 originalCandidateCategories = recovery.originalCandidateCategories;
                 recoveryReason = recovery.recoveryReason;
                 recoveryContextRetained = recovery.recoveryContextRetained;
+                recoveryStrategy =
+                  recovery.recoveryStrategy ||
+                  activeGraphResult.current.outputSafety?.repairStrategy ||
+                  null;
+                if (
+                  activeGraphResult.current.outputSafety?.repaired &&
+                  activeGraphResult.current.outputSafety.repairStrategy
+                ) {
+                  outputRetrySucceeded = true;
+                  originalCandidateHash = activeGraphResult.current.outputSafety.candidateHash;
+                  originalCandidatePreview =
+                    activeGraphResult.current.outputSafety.candidatePreview;
+                  originalCandidateCategories = [
+                    ...activeGraphResult.current.outputSafety.candidateCategories
+                  ];
+                  recoveryReason = 'safety';
+                }
                 providerResponse = activeGraphResult.current.response;
               } else {
                 const latestUserText = mergedUserPrompt || processedContent;
@@ -2229,7 +2352,7 @@ export async function startBot(): Promise<void> {
                       ...buildLangfuseTraceMetadata(generationMetadataInput),
                       recoveryAttempt: 0,
                       recoveryContextFree: false,
-                      inputNsfwRisk
+                      inputNsfwRisk: outputInputNsfwRisk
                     },
                     tags: buildLangfuseTags(generationMetadataInput)
                   },
@@ -2251,26 +2374,48 @@ export async function startBot(): Promise<void> {
                     return candidate;
                   }
                 );
+                const assessDirectCandidate = async (
+                  content: string
+                ): Promise<DirectCandidateAssessment> => ({
+                  decision: await evaluateSafetyDecision(content, {
+                    stage: 'assistant_output',
+                    source: 'direct_output_safety',
+                    userId: message.author.id,
+                    inheritedRisk:
+                      outputInputNsfwRisk ||
+                      inputSafetyDecision?.action !== 'allow' ||
+                      inputSafetyDecision?.contextEligible === false ||
+                      inheritedContextSafetyRisk,
+                    assistantSafetyPolicy,
+                    personaState,
+                    responseIntent
+                  }),
+                  quality: detectResponseRepetition({
+                    candidate: content,
+                    recentAssistantMessages,
+                    latestUserText
+                  })
+                });
                 const directRecovery = await recoverUnsafeDirectResponse({
                   primaryResponse,
                   inputSafetyAction: inputSafetyDecision?.action || 'block',
-                  assess: async content => ({
-                    decision: await evaluateSafetyDecision(content, {
-                      stage: 'assistant_output',
-                      source: 'direct_output_safety',
-                      userId: message.author.id,
-                      inheritedRisk:
-                        inputNsfwRisk ||
-                        inputSafetyDecision?.action !== 'allow' ||
-                        inputSafetyDecision?.contextEligible === false ||
-                        inheritedContextSafetyRisk
-                    }),
-                    quality: detectResponseRepetition({
-                      candidate: content,
-                      recentAssistantMessages,
-                      latestUserText
-                    })
-                  }),
+                  assess: assessDirectCandidate,
+                  repairBlockedCandidate: async ({ response, assessment }) => {
+                    const repair = await repairAssistantOutputSlurs({
+                      content: response.content,
+                      decision: assessment.decision,
+                      evaluate: async content => (await assessDirectCandidate(content)).decision
+                    });
+                    if (!repair.repaired || !repair.strategy) {
+                      return null;
+                    }
+
+                    return {
+                      response: { ...response, content: repair.content },
+                      assessment: await assessDirectCandidate(repair.content),
+                      strategy: repair.strategy
+                    };
+                  },
                   runContextFreeRetry: () => {
                     const recoveryMessages = [
                       {
@@ -2297,7 +2442,8 @@ export async function startBot(): Promise<void> {
                           recoveryContextFree: true,
                           recoveryReason: 'safety',
                           recoveryContextRetained: false,
-                          inputNsfwRisk
+                          inputNsfwRisk: outputInputNsfwRisk,
+                          recoveryStrategy: 'latest_turn_safety_retry'
                         },
                         tags: buildLangfuseTags(generationMetadataInput)
                       },
@@ -2322,6 +2468,56 @@ export async function startBot(): Promise<void> {
                   },
                   ...(latestSafeTaskUserText
                     ? {
+                        runTaskRetainedSafetyRetry: () => {
+                          const recoveryMessages = [
+                            {
+                              role: 'system' as const,
+                              content: safetyRecoverySystemPrompt
+                            },
+                            { role: 'user' as const, content: safetyRecoveryUserPrompt }
+                          ];
+                          return withLangfuseGeneration(
+                            {
+                              name: 'direct.model-safety-recovery-generation',
+                              input: {
+                                messageCount: recoveryMessages.length,
+                                lastUserMessagePreview: summarizeTextForTrace(latestUserText, 240)
+                              },
+                              model: requestedTextModel || textProvider.name,
+                              modelParameters: {
+                                maxTokens: maxTextResponseTokens,
+                                temperature: 0.2
+                              },
+                              metadata: {
+                                ...buildLangfuseTraceMetadata(generationMetadataInput),
+                                recoveryAttempt: 1,
+                                recoveryContextFree: false,
+                                recoveryReason: 'safety',
+                                recoveryContextRetained: true,
+                                recoveryStrategy: 'task_retaining_safety_retry',
+                                inputNsfwRisk: outputInputNsfwRisk
+                              },
+                              tags: buildLangfuseTags(generationMetadataInput)
+                            },
+                            async retryGeneration => {
+                              const candidate = await textProvider.generateText(recoveryMessages, {
+                                maxTokens: maxTextResponseTokens,
+                                temperature: 0.2
+                              });
+                              retryGeneration?.update({
+                                model: candidate.model || requestedTextModel || textProvider.name,
+                                usageDetails: candidate.usage,
+                                output: {
+                                  outputCharacters: candidate.content.length,
+                                  hasContent: Boolean(candidate.content.trim()),
+                                  finishReason: candidate.finishReason || null,
+                                  providerFinishReason: candidate.providerFinishReason || null
+                                }
+                              });
+                              return candidate;
+                            }
+                          );
+                        },
                         runContextRetainedRetry: () => {
                           const recoveryMessages = [
                             {
@@ -2348,7 +2544,8 @@ export async function startBot(): Promise<void> {
                                 recoveryContextFree: false,
                                 recoveryReason: 'quality',
                                 recoveryContextRetained: true,
-                                inputNsfwRisk
+                                inputNsfwRisk: outputInputNsfwRisk,
+                                recoveryStrategy: 'task_retaining_quality_retry'
                               },
                               tags: buildLangfuseTags(generationMetadataInput)
                             },
@@ -2384,6 +2581,7 @@ export async function startBot(): Promise<void> {
                 outputRetrySucceeded = directRecovery.retrySucceeded;
                 recoveryReason = directRecovery.recoveryReason;
                 recoveryContextRetained = directRecovery.recoveryContextRetained;
+                recoveryStrategy = directRecovery.recoveryStrategy;
                 if (directRecovery.originalContent) {
                   originalCandidateHash = contentSanitizer.hashContent(
                     directRecovery.originalContent
@@ -2438,10 +2636,12 @@ export async function startBot(): Promise<void> {
                   graphMediaKind: activeGraphResult.current?.mediaResult?.kind || null,
                   originalCandidateHash,
                   originalCandidatePreview,
+                  originalCandidateCategories,
                   outputRetryCount,
                   outputRetrySucceeded,
                   recoveryReason,
                   recoveryContextRetained,
+                  recoveryStrategy,
                   completionTokens: providerResponse.usage?.completionTokens ?? null
                 }
               });
@@ -2456,6 +2656,7 @@ export async function startBot(): Promise<void> {
 
           // === Phase 5: Moderate output, reply, then fire-and-forget post-LLM writes ===
           let responseContent = response.content;
+          let finalDeliverySafetyCategories: string[] | null = null;
           const graphOutputSafety = activeGraphResult.current?.outputSafety;
           const outputSafetyDecision =
             graphOutputSafety?.decision || directOutputAssessment.current?.decision || null;
@@ -2578,6 +2779,18 @@ export async function startBot(): Promise<void> {
                   graphOutputRepaired: graphOutputSafety?.repaired ?? null,
                   graphOutputNormalized: graphOutputSafety?.normalized ?? null,
                   graphOutputWasReplaced: graphOutputSafety?.outputWasReplaced ?? null,
+                  assistantSafetyPolicy,
+                  personaState: managedPersona ? personaState : null,
+                  personaActivationSource: managedPersona ? personaActivationSource : null,
+                  responseIntent,
+                  allowanceReasons: outputSafetyDecision?.allowanceReasons || [],
+                  candidateCategories:
+                    originalCandidateCategories.length > 0
+                      ? originalCandidateCategories
+                      : graphOutputSafety?.candidateCategories || canonicalOutputCategories,
+                  deliveredCategories:
+                    graphOutputSafety?.deliveredCategories || canonicalOutputCategories,
+                  recoveryStrategy,
                   detectorSources:
                     (outputSafetyDecision
                       ? [
@@ -2759,6 +2972,42 @@ export async function startBot(): Promise<void> {
             );
           }
 
+          const finalSlurRepair = maskAssistantSlurs(responseContent);
+          if (finalSlurRepair.changed) {
+            const unsafeDeliveryCandidate = responseContent;
+            const repairedDeliveryDecision = await evaluateSafetyDecision(finalSlurRepair.content, {
+              stage: 'assistant_output',
+              source: 'final_delivery_slur_recheck',
+              userId: message.author.id,
+              inheritedRisk:
+                outputInputNsfwRisk ||
+                inputSafetyDecision?.action !== 'allow' ||
+                inputSafetyDecision?.contextEligible === false ||
+                inheritedContextSafetyRisk,
+              assistantSafetyPolicy,
+              personaState,
+              responseIntent
+            });
+            finalDeliverySafetyCategories = repairedDeliveryDecision.categories;
+            originalCandidateHash ||= contentSanitizer.hashContent(unsafeDeliveryCandidate);
+            originalCandidatePreview ||= summarizeTextForTrace(unsafeDeliveryCandidate, 160);
+            originalCandidateCategories = Array.from(
+              new Set([...originalCandidateCategories, ...finalSlurRepair.categories])
+            );
+            recoveryReason = 'safety';
+            recoveryStrategy = 'deterministic_slur_mask';
+
+            if (repairedDeliveryDecision.action === 'allow') {
+              responseContent = finalSlurRepair.content;
+              outputRetrySucceeded = true;
+            } else {
+              responseContent =
+                'Nope. I can explain the context without repeating the blocked term.';
+              outputRetrySucceeded = false;
+              outputBlockedBySafety = true;
+            }
+          }
+
           const actualTokens =
             generationSource === 'deterministic_range'
               ? 0
@@ -2788,10 +3037,10 @@ export async function startBot(): Promise<void> {
           const finalSafetyCategories = Array.from(
             new Set([
               ...(inputSafetyDecision?.categories || moderation.flaggedCategories),
-              ...assistantModeration.flaggedCategories,
-              ...originalCandidateCategories
+              ...(finalDeliverySafetyCategories ?? assistantModeration.flaggedCategories)
             ])
           );
+          const genericSafetyFallback = isGenericSafetyFallbackContent(responseContent);
           const finalPersistenceEligible = Boolean(
             inputSafetyDecision?.action === 'allow' &&
             inputSafetyDecision.contextEligible &&
@@ -2800,15 +3049,19 @@ export async function startBot(): Promise<void> {
               ? outputSafetyDecision.contextEligible && !outputQuality?.repetitive
               : (assistantModeration.safetyDecision?.contextEligible ?? true)) &&
             !fallbackOnly &&
+            !genericSafetyFallback &&
+            !outputBlockedBySafety &&
+            responseIntent !== 'boundary_redirect' &&
             replyFiles.length === 0 &&
             activeGraphResult.current?.outcome !== 'bounded_failure' &&
             (outputRetryCount === 0 || outputRetrySucceeded)
           );
           const finalSafetyState = outputRejectedForQuality
             ? 'quality_failed'
-            : !assistantModeration.allowed
+            : !assistantModeration.allowed || outputBlockedBySafety
               ? 'output_blocked'
-              : outputRetryCount > 0 && outputRetrySucceeded
+              : outputRetrySucceeded &&
+                  (outputRetryCount > 0 || recoveryStrategy === 'deterministic_slur_mask')
                 ? assistantIncidentWasQualityOnly
                   ? 'quality_repaired'
                   : 'output_repaired'
@@ -2840,9 +3093,11 @@ export async function startBot(): Promise<void> {
                     ? 'quality_repaired'
                     : 'output_repaired'
                   : 'output_retry_failed'
-                : activeGraphResult.current?.safetyState === 'output_blocked'
-                  ? 'graph_output_blocked'
-                  : 'success';
+                : recoveryStrategy === 'deterministic_slur_mask'
+                  ? 'output_repaired'
+                  : activeGraphResult.current?.safetyState === 'output_blocked'
+                    ? 'graph_output_blocked'
+                    : 'success';
 
           messageTrace?.update({
             output: {
@@ -2866,6 +3121,7 @@ export async function startBot(): Promise<void> {
                 providerFinishReason: response.providerFinishReason,
                 recoveryReason,
                 recoveryContextRetained,
+                recoveryStrategy,
                 deliveryTruncated,
                 modelCircuitFailureCount: assistantCircuitDecision?.failureCountInWindow || 0,
                 modelCircuitActivated: assistantCircuitDecision?.circuitActivated || false,
@@ -2878,6 +3134,10 @@ export async function startBot(): Promise<void> {
               memoryItemCount,
               managedPersonaId: managedPersona?.personaId || null,
               customPromptsDisabled: managedCustomPromptsDisabled,
+              assistantSafetyPolicy,
+              personaState: managedPersona ? personaState : null,
+              personaActivationSource: managedPersona ? personaActivationSource : null,
+              responseIntent,
               inputModerationAction: moderation.action,
               inputModerationCategories: moderation.flaggedCategories,
               inputResponseDirective: moderation.responseDirective || 'none',
@@ -2906,6 +3166,15 @@ export async function startBot(): Promise<void> {
               outputSafetySource,
               graphOutputSafetyAction: graphOutputSafety?.decision.action || null,
               graphOutputSafetyCategories: graphOutputSafety?.categories || [],
+              candidateOutputCategories:
+                originalCandidateCategories.length > 0
+                  ? originalCandidateCategories
+                  : graphOutputSafety?.candidateCategories || [],
+              deliveredOutputCategories:
+                finalDeliverySafetyCategories ??
+                graphOutputSafety?.deliveredCategories ??
+                assistantModeration.flaggedCategories,
+              safetyAllowanceReasons: outputSafetyDecision?.allowanceReasons || [],
               graphOutputNormalized: graphOutputSafety?.normalized ?? null,
               outputSafetyDetectorSources:
                 outputSafetyDecision?.detectorSources ||
@@ -2932,6 +3201,7 @@ export async function startBot(): Promise<void> {
               outputRetrySucceeded,
               recoveryReason,
               recoveryContextRetained,
+              recoveryStrategy,
               generationSource,
               configuredMaxOutputTokens: DEFAULT_MAX_TEXT_RESPONSE_TOKENS,
               effectiveMaxOutputTokens:
@@ -2951,6 +3221,7 @@ export async function startBot(): Promise<void> {
               rangeRenderStatus: deterministicRangeResponse?.status ?? null,
               rangeBoundsRedacted: Boolean(deterministicRangeResponse) && !traceableRangeBounds,
               finalPersistenceEligible,
+              genericSafetyFallback,
               finalSafetyState,
               langfuseTraceId: langfuseTraceId || undefined
             }

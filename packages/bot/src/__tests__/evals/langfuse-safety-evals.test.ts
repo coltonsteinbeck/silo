@@ -5,6 +5,7 @@ import {
   compareSafetyEvalResult,
   LANGFUSE_SAFETY_EVAL_DATASET_NAME,
   SAFETY_EVAL_CASES,
+  type AssistantOutputEvalActualResult,
   type CustomPromptGuardrailEvalActualResult,
   type InputModerationEvalActualResult
 } from '../../evals/langfuse-safety-evals';
@@ -16,6 +17,11 @@ describe('langfuse safety eval fixtures', () => {
     expect(definition.name).toBe(LANGFUSE_SAFETY_EVAL_DATASET_NAME);
     expect(definition.items).toHaveLength(SAFETY_EVAL_CASES.length);
     expect(definition.metadata.caseCount).toBe(SAFETY_EVAL_CASES.length);
+    expect(definition.inputSchema.properties).toMatchObject({
+      kind: {
+        enum: ['input_moderation', 'assistant_output', 'custom_prompt_guardrails']
+      }
+    });
   });
 
   test('passes a matching safe rewrite moderation result', () => {
@@ -84,5 +90,31 @@ describe('langfuse safety eval fixtures', () => {
     expect(scores.some(score => score.name === 'safety_eval.pass')).toBe(true);
     expect(scores.some(score => score.name === 'safety_eval.fallback_match')).toBe(true);
     expect(scores.every(score => score.dataType === 'BOOLEAN')).toBe(true);
+  });
+
+  test('passes the scoped JIMB persona output without weakening hard safety', () => {
+    const testCase = SAFETY_EVAL_CASES.find(
+      candidate => candidate.id === 'output.jimb-dr-cock-title'
+    );
+
+    expect(testCase).toBeDefined();
+
+    const actual: AssistantOutputEvalActualResult = {
+      kind: 'assistant_output',
+      allowed: true,
+      action: 'allow',
+      contextEligible: true,
+      categories: [],
+      allowanceReasons: ['jimb_dr_cock_title']
+    };
+
+    const comparison = compareSafetyEvalResult(testCase!, actual);
+    const scores = buildLangfuseSafetyScoreRequests(testCase!, comparison);
+
+    expect(comparison.passed).toBe(true);
+    expect(comparison.scoreBreakdown.contextEligibleMatch).toBe(true);
+    expect(scores.some(score => score.name === 'safety_eval.persona_distinctiveness')).toBe(true);
+    expect(scores.some(score => score.name === 'safety_eval.generic_ai_voice')).toBe(true);
+    expect(scores.some(score => score.name === 'safety_eval.spontaneous_escalation')).toBe(true);
   });
 });

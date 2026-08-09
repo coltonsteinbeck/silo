@@ -41,7 +41,10 @@ function graphResult(blocked: boolean, content: string): AgentGraphResult {
       reasons: blocked ? ['sexual/explicit_generation'] : [],
       outputWasReplaced: blocked,
       candidateHash: blocked ? 'blocked-candidate-hash' : 'safe-candidate-hash',
-      candidatePreview: content
+      candidatePreview: content,
+      candidateCategories: blocked ? ['sexual/explicit_generation'] : [],
+      deliveredCategories: blocked ? ['sexual/explicit_generation'] : [],
+      repairStrategy: null
     }
   };
 }
@@ -117,6 +120,7 @@ describe('assistant response recovery', () => {
     expect(result.originalCandidateHash).toBe('blocked-candidate-hash');
     expect(result.recoveryReason).toBe('safety');
     expect(result.recoveryContextRetained).toBe(false);
+    expect(result.recoveryStrategy).toBe('latest_turn_safety_retry');
   });
 
   test('uses the task-retaining retry for a quality rejection', async () => {
@@ -152,6 +156,30 @@ describe('assistant response recovery', () => {
     expect(result.result.response.content).toBe('task-aware retry');
     expect(result.recoveryReason).toBe('quality');
     expect(result.recoveryContextRetained).toBe(true);
+    expect(result.recoveryStrategy).toBe('task_retaining_quality_retry');
+  });
+
+  test('uses task-retaining recovery for a safety rejection when safe context exists', async () => {
+    let contextFreeCalls = 0;
+    let retainedCalls = 0;
+    const result = await recoverUnsafeAgentResponse({
+      primaryResult: graphResult(true, 'unsafe candidate'),
+      inputSafetyAction: 'allow',
+      runContextFreeRetry: async () => {
+        contextFreeCalls += 1;
+        return graphResult(false, 'wrong retry');
+      },
+      runTaskRetainedSafetyRetry: async () => {
+        retainedCalls += 1;
+        return graphResult(false, 'task-aware safe retry');
+      }
+    });
+
+    expect(contextFreeCalls).toBe(0);
+    expect(retainedCalls).toBe(1);
+    expect(result.result.response.content).toBe('task-aware safe retry');
+    expect(result.recoveryContextRetained).toBe(true);
+    expect(result.recoveryStrategy).toBe('task_retaining_safety_retry');
   });
 
   test('never loops when the single retry is also unsafe', async () => {
@@ -285,6 +313,36 @@ describe('direct assistant response recovery', () => {
     expect(result.originalAssessment?.quality.repetitive).toBe(true);
     expect(result.recoveryReason).toBe('quality');
     expect(result.recoveryContextRetained).toBe(true);
+    expect(result.recoveryStrategy).toBe('task_retaining_quality_retry');
+  });
+
+  test('accepts a deterministic slur repair before calling the model retry', async () => {
+    let retryCalls = 0;
+    const blocked = directAssessment('block');
+    blocked.decision.categories = ['hate/slur_usage'];
+    const allowed = directAssessment('allow');
+    const result = await recoverUnsafeDirectResponse({
+      primaryResponse: { content: 'unsafe lexical candidate', model: 'mock-model' },
+      inputSafetyAction: 'allow',
+      assess: async content => (content === '[slur removed]' ? allowed : blocked),
+      repairBlockedCandidate: async () => ({
+        response: { content: '[slur removed]', model: 'mock-model' },
+        assessment: allowed,
+        strategy: 'deterministic_slur_mask'
+      }),
+      runContextFreeRetry: async () => {
+        retryCalls += 1;
+        return { content: 'unused', model: 'mock-model' };
+      },
+      buildFallback: () => 'unused fallback'
+    });
+
+    expect(retryCalls).toBe(0);
+    expect(result.response.content).toBe('[slur removed]');
+    expect(result.retryCount).toBe(0);
+    expect(result.retrySucceeded).toBe(true);
+    expect(result.recoveryStrategy).toBe('deterministic_slur_mask');
+    expect(result.originalContent).toBe('unsafe lexical candidate');
   });
 
   test('uses one stable fallback when the single retry is also unsafe', async () => {

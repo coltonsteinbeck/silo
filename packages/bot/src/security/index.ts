@@ -65,6 +65,21 @@ export {
   hasSemanticJailbreakRisk,
   hasSemanticNsfwInputRisk
 } from './safety-decision';
+export {
+  buildJimbTurnInstruction,
+  containsDrCockTitle,
+  isJimbEdgyPersonaEnabled,
+  resolveJimbPersonaState,
+  resolveResponseIntent,
+  stripAllowedDrCockTitle
+} from './jimb-persona-state';
+export type {
+  AssistantSafetyPolicy,
+  JimbPersonaStateResolution,
+  PersonaActivationSource,
+  PersonaState,
+  ResponseIntent
+} from './jimb-persona-state';
 export type {
   SafetyAction,
   SafetyDecision,
@@ -77,6 +92,9 @@ export { composeSystemPromptWithSafety, IMMUTABLE_SAFETY_POLICY } from './safety
 export { resolvePromptPolicy } from './prompt-policy';
 export {
   JIMB_PERSONA_ID,
+  JIMB_PERSONA_PROMPT_VERSION,
+  JIMB_PRODUCTIONS_GUILD_ID,
+  JIMB_ROLLBACK_PROMPT_VERSION,
   resolveManagedGuildPersonaPolicy,
   isManagedGuildCustomPromptDisabled
 } from './guild-persona-policy';
