@@ -117,9 +117,41 @@ function summarizeCandidate(candidate: CandidateScore): string {
   return `${summarizeMemory(candidate.memory)}(arb=${candidate.arbitratedScore.toFixed(2)},total=${candidate.totalScore.toFixed(2)},trust=${candidate.trustScore.toFixed(2)},src=${candidate.sourcePriority},kw=${candidate.keywordScore.toFixed(2)},sem=${candidate.semanticScore.toFixed(2)},ent=${candidate.entityScore.toFixed(2)},sent=${candidate.sentimentScore.toFixed(2)})`;
 }
 
-function isLoreOrPersona(memory: MemoryType): boolean {
+function isLoreOrPersona(memory: Pick<MemoryType, 'contextType'>): boolean {
   const memoryType = memory.contextType.toLowerCase();
   return memoryType === 'lore' || memoryType === 'persona';
+}
+
+export function isLoreMemoryExplicitlyReferenced(
+  content: string,
+  memory: Pick<MemoryType, 'memoryContent' | 'contextType' | 'metadata'> & {
+    title?: string;
+  }
+): boolean {
+  if (!isLoreOrPersona(memory)) {
+    return true;
+  }
+
+  if (/\b(?:who|what)\s+are\s+you\b|\byour\s+(?:role|identity|backstory)\b/i.test(content)) {
+    return true;
+  }
+
+  const contentLower = content.toLowerCase();
+  const memoryTokens = unique(normalizeTokens(memory.memoryContent));
+  const queryTokens = new Set(normalizeTokens(content));
+  const overlapCount = memoryTokens.filter(token => queryTokens.has(token)).length;
+  if (overlapCount >= 2) {
+    return true;
+  }
+
+  const metadataEntities = Array.isArray(memory.metadata?.entities)
+    ? memory.metadata.entities.filter((value): value is string => typeof value === 'string')
+    : [];
+  const title = memory.title?.trim();
+  return [...metadataEntities, ...(title ? [title] : [])].some(entity => {
+    const normalized = entity.toLowerCase().trim();
+    return normalized.length >= 3 && contentLower.includes(normalized);
+  });
 }
 
 function extractEntities(memory: MemoryType): string[] {
@@ -518,6 +550,10 @@ export async function selectMemoryContext(params: {
       }
     }
 
+    if (isLoreOrPersona(memory) && !isLoreMemoryExplicitlyReferenced(content, memory)) {
+      continue;
+    }
+
     const memoryTokens = unique(normalizeTokens(memory.memoryContent));
     const overlapCount = memoryTokens.reduce(
       (count, token) => (queryTokenSet.has(token) ? count + 1 : count),
@@ -650,13 +686,18 @@ export async function selectMemoryContext(params: {
 
   const latestFallback = isIdentityQuery
     ? [
-        ...(await db.getServerMemories(serverId, 'lore', memoryConfig.fallbackLimit)),
-        ...(await db.getServerMemories(serverId, 'persona', memoryConfig.fallbackLimit))
+        ...(await db.getServerMemories(serverId, 'persona', memoryConfig.fallbackLimit)),
+        ...(await db.getServerMemories(serverId, 'lore', memoryConfig.fallbackLimit))
       ]
-        .filter(isSafeForPromptContext)
+        .filter(
+          memory =>
+            isSafeForPromptContext(memory) && isLoreMemoryExplicitlyReferenced(content, memory)
+        )
         .slice(0, memoryConfig.fallbackLimit)
     : (await db.getServerMemories(serverId, undefined, memoryConfig.fallbackLimit)).filter(
-        isSafeForPromptContext
+        memory =>
+          isSafeForPromptContext(memory) &&
+          (!isLoreOrPersona(memory) || isLoreMemoryExplicitlyReferenced(content, memory))
       );
   const latestFallbackHasLore = latestFallback.some(memory => isLoreOrPersona(memory));
   if (latestFallback.length > 0) {

@@ -49,7 +49,11 @@ describe('openai-guardrails adapter', () => {
   });
 
   test('fails open for benign prompts when moderation is unavailable', async () => {
-    cleanup = withEnv({ OPENAI_GUARDRAILS_ENABLED: 'true', OPENAI_API_KEY: undefined });
+    cleanup = withEnv({
+      OPENAI_GUARDRAILS_ENABLED: 'true',
+      OPENAI_MODERATION_ENABLED: 'true',
+      OPENAI_API_KEY: undefined
+    });
 
     const result = await evaluateUserPromptGuardrails('hello world');
 

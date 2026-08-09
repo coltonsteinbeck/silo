@@ -328,6 +328,10 @@ Memory scope rules:
   - Voice options: alloy, ash, ballad, coral, echo, sage, shimmer, verse
   - Channel: optionally specify which voice channel to join
 - `/stopspeaking` - End your voice session
+- `/radio <link> <channel>` - Play a YouTube video, playlist, Short, embed, livestream, or an individual Spotify track
+  - Radio and realtime voice chat are mutually exclusive within a server
+  - Spotify albums and playlists are rejected; use an individual track or YouTube playlist
+  - Player controls include Pause/Resume, Skip, Stop, Queue, Repeat, and Previous
 
 #### Collaboration
 
@@ -410,6 +414,9 @@ All configuration in `.env`:
 
 - `bun run dev` - Start in development mode
 - `bun run build` - Build for production
+- `bun run runtime:prepare` - Install and verify the pinned yt-dlp radio runtime
+- `bun run radio:verify-runtime` - Verify the packaged yt-dlp version and checksum
+- `bun run radio:validate` - Prove the pinned public fixture produces a Discord audio packet
 - `bun run migrate` - Apply pending migrations to default target (local)
 - `bun run migrate:status` - Show applied/pending migrations without changes
 - `bun run migrate:dry-run` - Preview pending migrations without applying

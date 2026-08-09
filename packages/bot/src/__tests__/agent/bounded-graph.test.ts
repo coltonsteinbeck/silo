@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import type { TextProvider } from '@silo/core';
 import { getDefaultAgentGraphLimits } from '../../agent/config';
 import { BOUNDED_FAILURE_CONTENT, runBoundedAgentGraph } from '../../agent/bounded-graph';
@@ -8,6 +8,10 @@ import {
   resetPromptSafetyRuntimeForTests,
   setPromptSafetyRuntimeForTests
 } from '../../security/prompt-safety';
+import {
+  resetGuardrailsRuntimeForTests,
+  setGuardrailsRuntimeForTests
+} from '../../security/openai-guardrails';
 
 function createProvider(content = 'Graph response'): TextProvider {
   return {
@@ -64,6 +68,30 @@ function createInput(
 }
 
 describe('bounded agent graph', () => {
+  const originalGuardrailsEnabled = process.env.OPENAI_GUARDRAILS_ENABLED;
+  const originalModerationEnabled = process.env.OPENAI_MODERATION_ENABLED;
+  const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
+
+  beforeEach(() => {
+    process.env.OPENAI_GUARDRAILS_ENABLED = 'false';
+    process.env.OPENAI_MODERATION_ENABLED = 'false';
+    process.env.OPENAI_API_KEY = 'test-key';
+    resetPromptSafetyRuntimeForTests();
+    resetGuardrailsRuntimeForTests();
+    setGuardrailsRuntimeForTests({
+      module: { runGuardrails: mock(async () => []) } as never,
+      guardrailLlmClient: {} as never
+    });
+  });
+
+  afterEach(() => {
+    process.env.OPENAI_GUARDRAILS_ENABLED = originalGuardrailsEnabled;
+    process.env.OPENAI_MODERATION_ENABLED = originalModerationEnabled;
+    process.env.OPENAI_API_KEY = originalOpenAiApiKey;
+    resetPromptSafetyRuntimeForTests();
+    resetGuardrailsRuntimeForTests();
+  });
+
   test.each(['openai', 'anthropic', 'xai', 'google', 'local'])(
     'runs acyclic graph with mocked %s provider',
     async providerName => {
@@ -87,8 +115,35 @@ describe('bounded agent graph', () => {
     const result = await runBoundedAgentGraph(createInput(provider));
 
     expect(result.response.content).toBe('everyone graph update for here');
-    expect(result.outcome).toBe('repaired');
-    expect(result.safetyState).toBe('output_repaired');
+    expect(result.outcome).toBe('success');
+    expect(result.safetyState).toBe('allowed');
+    expect(result.outputSafety).toMatchObject({
+      blocked: false,
+      normalized: true,
+      repaired: false,
+      decision: { action: 'allow' },
+      outputWasReplaced: true
+    });
+  });
+
+  test('reports repetition as a quality block without changing the safety decision', async () => {
+    const repeated = 'The third egg belongs to the screaming worm council forever.';
+    const provider = createProvider(repeated);
+
+    const result = await runBoundedAgentGraph(
+      createInput(provider, {
+        recentAssistantMessages: [
+          'The third egg belongs to the screaming worm council forever.',
+          'The screaming worm council still guards the third egg forever.'
+        ],
+        latestUserText: 'What should I have for lunch?'
+      })
+    );
+
+    expect(result.safetyState).toBe('quality_blocked');
+    expect(result.outputSafety?.decision.action).toBe('allow');
+    expect(result.outputSafety?.quality.repetitive).toBe(true);
+    expect(result.outputSafety?.categories).toContain('quality/repetition_loop');
   });
 
   test('blocks unsafe assistant output inside graph output safety', async () => {
@@ -101,7 +156,69 @@ describe('bounded agent graph', () => {
     expect(result.response.content).toBe(
       'I can’t help with that request. Please rephrase and I can provide a safer alternative.'
     );
+    expect(result.outputSafety).toMatchObject({
+      blocked: true,
+      decision: { action: 'block' },
+      outputWasReplaced: true
+    });
+    expect(result.outputSafety?.categories).toContain('sexual/unsafe_persona');
   });
+
+  test('allows the nonsexual Dr. Cock title only in active JIMB scope', async () => {
+    const content = 'Dr. Cock reporting for duty. Your Docker mount is read-only.';
+    const provider = createProvider(content);
+
+    const result = await runBoundedAgentGraph(
+      createInput(provider, {
+        assistantSafetyPolicy: 'jimb_crude',
+        personaState: 'dr_cock',
+        responseIntent: 'ordinary'
+      })
+    );
+
+    expect(result.outcome).toBe('success');
+    expect(result.safetyState).toBe('allowed');
+    expect(result.response.content).toBe(content);
+    expect(result.outputSafety?.decision.allowanceReasons).toContain('jimb/dr_cock_title');
+  });
+
+  test('repairs a shortened slur before graph output can be delivered', async () => {
+    const shortenedSlur = ['f', 'a', 'g'].join('');
+    const provider = createProvider(`The historical British term is ${shortenedSlur}.`);
+
+    const result = await runBoundedAgentGraph(
+      createInput(provider, {
+        assistantSafetyPolicy: 'jimb_crude',
+        personaState: 'dr_cock',
+        responseIntent: 'contextual_explanation'
+      })
+    );
+
+    expect(result.outcome).toBe('repaired');
+    expect(result.safetyState).toBe('output_repaired');
+    expect(result.response.content).toContain('[slur removed]');
+    expect(result.response.content.toLowerCase()).not.toContain(shortenedSlur);
+    expect(result.outputSafety?.blocked).toBe(false);
+    expect(result.outputSafety?.candidateCategories).toContain('hate/slur_usage');
+    expect(result.outputSafety?.deliveredCategories).toEqual([]);
+    expect(result.outputSafety?.repairStrategy).toBe('deterministic_slur_mask');
+  });
+
+  test.each(['openai', 'anthropic', 'xai', 'google', 'local'])(
+    'applies the same output decision to equivalent unsafe %s output',
+    async providerName => {
+      const provider = {
+        ...createProvider("I'm Doctor Cock. Let's examine your Cock."),
+        name: providerName
+      };
+
+      const result = await runBoundedAgentGraph(createInput(provider));
+
+      expect(result.outputSafety?.blocked).toBe(true);
+      expect(result.outputSafety?.categories).toContain('sexual/unsafe_persona');
+      expect(result.safetyState).toBe('output_blocked');
+    }
+  );
 
   test('uses managed output-blocked message while preserving graph block state', async () => {
     const provider = createProvider("I'm Doctor Cock. Let's examine your Cock.");
@@ -118,6 +235,11 @@ describe('bounded agent graph', () => {
     expect(result.response.content).toBe(
       'Nope. That one trips the wires. Rephrase it less cursed and I can help.'
     );
+    expect(result.outputSafety).toMatchObject({
+      blocked: true,
+      decision: { action: 'block' },
+      outputWasReplaced: true
+    });
   });
 
   test('allows benign anatomy help output despite broad sexual moderation flag', async () => {

@@ -86,7 +86,11 @@ const LOW_INFORMATION_FOLLOW_UP =
   /^(?:thanks?|thank you|ty|ok|okay|k|cool|nice|yep|yeah|yes|nah|no|nope|lol|lmao|haha|huh|please|pls|maybe|maybe you can|\?+|!+)$/i;
 const STANDALONE_STYLE_REQUEST =
   /^(?:(?:please|now)\s+)?(?:talk|speak|respond|write|act)\s+like\b|^be\s+(?:nice|nicer|mean|meaner)(?:\s+to\s+me)?$/i;
+const STANDALONE_CONVERSATION_REQUEST =
+  /^(?:(?:please|now)\s+)?(?:talk|chat|speak)\s+(?:to|with)\s+me$|^(?:please\s+)?(?:say|tell\s+me)\s+something$/i;
 const HARMLESS_REFUSAL_FOLLOW_UP = /\bi\s+can(?:'|’)?t\s+do\s+that\b/i;
+const REFUSAL_LOOP_RESET =
+  /\b(?:all\s+you\s+(?:ever\s+)?say\s+is\s+no|you\s+(?:only|just)\s+say\s+no|why\s+do\s+you\s+keep\s+(?:refusing|saying\s+no)|stop\s+(?:refusing|saying\s+no)|you\s+(?:keep|kept)\s+(?:refusing|saying\s+no)|can(?:'|’)?t\s+answer\s+anything|won(?:'|’)?t\s+answer\s+anything|guardrails?\s+(?:keep|keeps|kept)\s+(?:triggering|tripping)|trips?\s+the\s+wires?)\b/i;
 
 export function isStandaloneCasualCheckIn(text: string): boolean {
   const normalized = text.replace(/\s+/g, ' ').trim();
@@ -121,10 +125,24 @@ export function isLowContextStandaloneTurn(text: string): boolean {
     return true;
   }
 
+  if (isRefusalLoopResetTurn(plainWithoutTrailingPunctuation)) {
+    return true;
+  }
+
   return (
-    STANDALONE_STYLE_REQUEST.test(plainWithoutTrailingPunctuation) &&
+    (STANDALONE_STYLE_REQUEST.test(plainWithoutTrailingPunctuation) ||
+      STANDALONE_CONVERSATION_REQUEST.test(plainWithoutTrailingPunctuation)) &&
     !NON_STANDALONE_CONTEXT.test(plainWithoutTrailingPunctuation)
   );
+}
+
+export function isRefusalLoopResetTurn(text: string): boolean {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (!normalized || normalized.length > 180 || /https?:\/\//i.test(normalized)) {
+    return false;
+  }
+
+  return REFUSAL_LOOP_RESET.test(normalized);
 }
 
 export function shouldIncludeConversationHistoryForPrompt(params: {
@@ -153,5 +171,5 @@ export function buildConversationHistoryInstruction(historyIncluded: boolean): s
     return '\n\nConversation history rule: Treat this as a standalone low-context turn. Do not mention or revive prior channel topics unless the user brings them up in the latest message.';
   }
 
-  return '\n\nConversation history rule: Use prior channel history quietly for continuity, reference resolution, and direct follow-ups. Do not proactively bring up older topics during greetings or small talk unless the latest user message clearly asks about them.';
+  return '\n\nConversation history rule: Use only the selected reply-chain or same-user turns below for continuity and reference resolution. Do not treat assistant inventions as established lore, and do not bring up older topics unless the latest user message clearly asks about them.';
 }

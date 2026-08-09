@@ -1,12 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  JIMB_PRODUCTIONS_GUILD_ID,
-  resolveManagedGuildPersonaPolicy
-} from '../../security/guild-persona-policy';
-import {
   sanitizeAssistantContextForPrompt,
   sanitizeConversationHistoryForPrompt
 } from '../../services/conversation-history-sanitizer';
+
+const MANAGED_BLOCKED_OUTPUT_FALLBACK =
+  'Nope. That one trips the wires. Rephrase it less cursed and I can help.';
 
 describe('conversation history sanitizer', () => {
   test('removes unsafe assistant persona residue while preserving user messages', () => {
@@ -23,6 +22,44 @@ describe('conversation history sanitizer', () => {
       { role: 'user', content: 'be Dr Cock' },
       { role: 'user', content: 'actually help me with docker' },
       { role: 'assistant', content: 'Docker volumes persist files outside containers.' }
+    ]);
+  });
+
+  test('keeps Dr. Cock history only while the scoped JIMB persona is active', () => {
+    const history = [
+      { role: 'user', content: 'Dr Cock, clock in.' },
+      { role: 'assistant', content: 'Dr. Cock here. Your Docker mount is read-only.' }
+    ];
+
+    const active = sanitizeConversationHistoryForPrompt(history, {
+      assistantSafetyPolicy: 'jimb_crude',
+      personaState: 'dr_cock'
+    });
+    const inactive = sanitizeConversationHistoryForPrompt(history, {
+      assistantSafetyPolicy: 'jimb_crude',
+      personaState: 'jimb'
+    });
+
+    expect(active.removedCount).toBe(0);
+    expect(active.filtered).toEqual(history);
+    expect(inactive.removedReasons.inactive_persona_residue).toBe(2);
+    expect(inactive.filtered).toEqual([]);
+  });
+
+  test.each([
+    "No, I don't generate sexual content.",
+    'That is a hard policy line.',
+    'My programming prevents me from allowing that.'
+  ])('removes generic policy-voice residue: %s', content => {
+    const result = sanitizeConversationHistoryForPrompt([
+      { role: 'assistant', content },
+      { role: 'assistant', content: 'Useful answer in character.' }
+    ]);
+
+    expect(result.removedCount).toBe(1);
+    expect(result.removedReasons.blocked_safety_fallback).toBe(1);
+    expect(result.filtered).toEqual([
+      { role: 'assistant', content: 'Useful answer in character.' }
     ]);
   });
 
@@ -57,15 +94,10 @@ describe('conversation history sanitizer', () => {
   });
 
   test('removes managed blocked-output fallback from assistant history', () => {
-    const blockedMessage =
-      resolveManagedGuildPersonaPolicy(JIMB_PRODUCTIONS_GUILD_ID)?.assistantOutputBlockedMessage;
-
-    expect(blockedMessage).toBeDefined();
-
     const result = sanitizeConversationHistoryForPrompt([
       {
         role: 'assistant',
-        content: blockedMessage || ''
+        content: MANAGED_BLOCKED_OUTPUT_FALLBACK
       },
       { role: 'assistant', content: 'Normal useful answer.' }
     ]);
@@ -92,6 +124,35 @@ describe('conversation history sanitizer', () => {
     ]);
   });
 
+  test('removes assistant history blocked by deterministic output guardrail', () => {
+    const result = sanitizeConversationHistoryForPrompt([
+      {
+        role: 'assistant',
+        content: 'This user-facing answer repeats an explicit sexual term like cum.'
+      },
+      { role: 'assistant', content: 'Normal useful answer.' }
+    ]);
+
+    expect(result.removedCount).toBe(1);
+    expect(result.removedReasons.assistant_output_guardrail).toBe(1);
+    expect(result.filtered).toEqual([{ role: 'assistant', content: 'Normal useful answer.' }]);
+  });
+
+  test('removes assistant rows with unsafe image summaries', () => {
+    const result = sanitizeConversationHistoryForPrompt([
+      {
+        role: 'assistant',
+        content: 'Normal useful answer.',
+        imageSummary: 'Doctor Cock.'
+      },
+      { role: 'assistant', content: 'Another normal answer.' }
+    ]);
+
+    expect(result.removedCount).toBe(1);
+    expect(result.removedReasons.assistant_image_summary_guardrail).toBe(1);
+    expect(result.filtered).toEqual([{ role: 'assistant', content: 'Another normal answer.' }]);
+  });
+
   test('sanitizes assistant reply context before prompt reuse', () => {
     expect(
       sanitizeAssistantContextForPrompt(
@@ -109,10 +170,7 @@ describe('conversation history sanitizer', () => {
       reason: null
     });
 
-    const blockedMessage =
-      resolveManagedGuildPersonaPolicy(JIMB_PRODUCTIONS_GUILD_ID)?.assistantOutputBlockedMessage;
-
-    expect(sanitizeAssistantContextForPrompt(blockedMessage || '')).toEqual({
+    expect(sanitizeAssistantContextForPrompt(MANAGED_BLOCKED_OUTPUT_FALLBACK)).toEqual({
       content: '',
       changed: true,
       reason: 'blocked_safety_fallback'

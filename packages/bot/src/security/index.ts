@@ -21,6 +21,7 @@ export type { GuildInfo, WaitlistEntry, JoinResult } from './guild-manager';
 
 export {
   contentSanitizer,
+  ContentSanitizer,
   buildSafetyResponseInstruction,
   buildUserMessageForBlockedInput
 } from './content-sanitizer';
@@ -41,6 +42,8 @@ export {
   evaluateUserPromptGuardrails,
   evaluateCustomSystemPromptGuardrails,
   evaluateAssistantOutputGuardrails,
+  evaluateSemanticUserPromptGuardrails,
+  evaluateSemanticAssistantOutputGuardrails,
   prewarmGuardrailsRuntime,
   isGuardrailsEnabled
 } from './openai-guardrails';
@@ -48,15 +51,50 @@ export type { GuardrailsPromptDecision } from './openai-guardrails';
 export {
   evaluatePromptSafety,
   buildPromptSafetyWarningMessage,
+  hasBenignMedicalOrAnatomyContext,
   resetPromptSafetyRuntimeForTests,
   setPromptSafetyRuntimeForTests
 } from './prompt-safety';
-export type { GuardrailProfile, PromptSafetyResult } from './prompt-safety';
+export type { GuardrailProfile, ModerationFailure, PromptSafetyResult } from './prompt-safety';
+export {
+  evaluateSafetyDecision,
+  buildSafetyDecisionMessage,
+  buildContextReuseSafetyDecision,
+  hasExplicitAdultSexualIntent,
+  hasSemanticAssistantRisk,
+  hasSemanticJailbreakRisk,
+  hasSemanticNsfwInputRisk
+} from './safety-decision';
+export {
+  buildJimbTurnInstruction,
+  containsDrCockTitle,
+  isJimbEdgyPersonaEnabled,
+  resolveJimbPersonaState,
+  resolveResponseIntent,
+  stripAllowedDrCockTitle
+} from './jimb-persona-state';
+export type {
+  AssistantSafetyPolicy,
+  JimbPersonaStateResolution,
+  PersonaActivationSource,
+  PersonaState,
+  ResponseIntent
+} from './jimb-persona-state';
+export type {
+  SafetyAction,
+  SafetyDecision,
+  SafetyDetectorSource,
+  SafetyFailurePolicy,
+  SafetyStage
+} from './safety-decision';
 
 export { composeSystemPromptWithSafety, IMMUTABLE_SAFETY_POLICY } from './safety-policy';
 export { resolvePromptPolicy } from './prompt-policy';
 export {
   JIMB_PERSONA_ID,
+  JIMB_PERSONA_PROMPT_VERSION,
+  JIMB_PRODUCTIONS_GUILD_ID,
+  JIMB_ROLLBACK_PROMPT_VERSION,
   resolveManagedGuildPersonaPolicy,
   isManagedGuildCustomPromptDisabled
 } from './guild-persona-policy';

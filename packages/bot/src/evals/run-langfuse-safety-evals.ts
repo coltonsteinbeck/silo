@@ -1,6 +1,10 @@
 import { LangfuseAPIClient, NotFoundError } from '@langfuse/core';
 import { ConfigLoader, logger, type Config } from '@silo/core';
-import { contentSanitizer, evaluateCustomSystemPromptGuardrails } from '../security';
+import {
+  contentSanitizer,
+  evaluateCustomSystemPromptGuardrails,
+  evaluateSafetyDecision
+} from '../security';
 import {
   initializeLangfuseTracing,
   shutdownLangfuseTracing,
@@ -198,6 +202,27 @@ async function executeCase(testCase: SafetyEvalCase): Promise<SafetyEvalActualRe
       action: result.moderation.action,
       responseDirective: result.moderation.responseDirective || null,
       flaggedCategories: result.moderation.flaggedCategories
+    };
+  }
+
+  if (testCase.kind === 'assistant_output') {
+    const decision = await evaluateSafetyDecision(testCase.input.content, {
+      stage: 'assistant_output',
+      source: `langfuse_eval:${testCase.id}`,
+      failurePolicy: 'fail_closed',
+      assistantSafetyPolicy: testCase.input.assistantSafetyPolicy,
+      personaState: testCase.input.personaState,
+      responseIntent: testCase.input.responseIntent,
+      inheritedRisk: testCase.input.inheritedRisk ?? false
+    });
+
+    return {
+      kind: 'assistant_output',
+      allowed: decision.action === 'allow',
+      action: decision.action,
+      contextEligible: decision.contextEligible,
+      categories: decision.categories,
+      allowanceReasons: decision.allowanceReasons || []
     };
   }
 

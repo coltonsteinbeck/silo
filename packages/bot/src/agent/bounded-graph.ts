@@ -1,22 +1,22 @@
 import { Annotation, END, GraphRecursionError, START, StateGraph } from '@langchain/langgraph';
 import type { TextGenerationResponse } from '@silo/core';
+import { createHash } from 'node:crypto';
 import { AGENT_GRAPH_NAME, AGENT_GRAPH_VERSION, type AgentGraphLimits } from './config';
 import type {
   AgentGraphInput,
   AgentGraphOutcome,
   AgentGraphResult,
   AgentGraphState,
+  AgentOutputSafetyResult,
   AgentSafetyState,
   AgentToolName,
   AgentToolRequest
 } from './types';
 import { executeBoundedToolPlan, resolveAllowedAgentTools } from './tool-registry';
-import {
-  buildSafetyCategoryScores,
-  evaluateModerationDecision
-} from '../security/content-sanitizer';
-import { evaluatePromptSafety } from '../security/prompt-safety';
+import { evaluateSafetyDecision } from '../security/safety-decision';
+import { repairAssistantOutputSlurs } from '../security/assistant-output-repair';
 import { sanitizeAssistantOutput, sanitizeDiscordMassMentions } from '../security/output-sanitizer';
+import { detectResponseRepetition } from '../services/response-quality';
 import {
   summarizeTextForTrace,
   withLangfuseGeneration,
@@ -49,6 +49,12 @@ const AgentGraphAnnotation = Annotation.Root({
   falsePositiveGuard: Annotation<string | undefined>,
   outputBlockedMessage: Annotation<string | undefined>,
   allowMildAssistantProfanity: Annotation<boolean | undefined>,
+  assistantSafetyPolicy: Annotation<AgentGraphInput['assistantSafetyPolicy']>,
+  personaState: Annotation<AgentGraphInput['personaState']>,
+  responseIntent: Annotation<AgentGraphInput['responseIntent']>,
+  inheritedSafetyRisk: Annotation<boolean | undefined>,
+  recentAssistantMessages: Annotation<string[] | undefined>,
+  latestUserText: Annotation<string | undefined>,
   metadata: Annotation<LangfuseMetadataInput>,
   graphStep: Annotation<number>({
     reducer: (_current, update) => update,
@@ -75,6 +81,7 @@ const AgentGraphAnnotation = Annotation.Root({
     default: () => []
   }),
   mediaResult: Annotation<AgentGraphState['mediaResult'] | undefined>,
+  outputSafety: Annotation<AgentOutputSafetyResult | undefined>,
   modelResponse: Annotation<TextGenerationResponse | undefined>,
   outcome: Annotation<AgentGraphOutcome | undefined>
 });
@@ -84,10 +91,6 @@ type StateUpdate = Partial<State>;
 
 function nextStep(state: Pick<State, 'graphStep'>): number {
   return state.graphStep + 1;
-}
-
-function unique<T>(values: T[]): T[] {
-  return Array.from(new Set(values));
 }
 
 function buildToolBudget(limits: AgentGraphLimits): Record<string, number> {
@@ -185,6 +188,7 @@ function buildResult(state: State): AgentGraphResult {
     toolResults: state.toolResults,
     citations: state.citations,
     mediaResult: state.mediaResult,
+    outputSafety: state.outputSafety,
     stepCount: state.graphStep
   };
 }
@@ -485,6 +489,8 @@ async function modelGenerationNode(state: State): Promise<StateUpdate> {
         output: {
           outputCharacters: response.content.length,
           hasContent: Boolean(response.content.trim()),
+          finishReason: response.finishReason || null,
+          providerFinishReason: response.providerFinishReason || null,
           toolResultCount: state.toolResults.length,
           citationCount: state.citations.length,
           mediaKind: state.mediaResult?.kind || null
@@ -526,26 +532,36 @@ async function outputSafetyNode(state: State): Promise<StateUpdate> {
         stripInternalMetadata: true,
         stripXmlLikeTags: true
       });
-      const safetyResult = await evaluatePromptSafety(sanitizedContent, {
-        profile: 'assistant_output',
-        source: 'agent_output_safety'
+      const evaluateCandidate = (content: string) =>
+        evaluateSafetyDecision(content, {
+          stage: 'assistant_output',
+          source: 'agent_output_safety',
+          inheritedRisk: state.inheritedSafetyRisk,
+          assistantSafetyPolicy: state.assistantSafetyPolicy,
+          personaState: state.personaState,
+          responseIntent: state.responseIntent
+        });
+      const candidateDecision = await evaluateCandidate(sanitizedContent);
+      const repair = await repairAssistantOutputSlurs({
+        content: sanitizedContent,
+        decision: candidateDecision,
+        evaluate: evaluateCandidate
       });
-      const safetyCategories = unique([
-        ...safetyResult.reasons,
-        ...safetyResult.moderationCategories
-      ]);
-      const safetyScores = buildSafetyCategoryScores(
-        safetyResult.reasons,
-        safetyResult.moderationScores
-      );
-      const decision = evaluateModerationDecision(safetyCategories, safetyScores, {
-        allowMildProfanityInput: state.allowMildAssistantProfanity,
-        content: sanitizedContent
+      const deliveredContent = repair.content;
+      const decision = repair.decision;
+      const quality = detectResponseRepetition({
+        candidate: deliveredContent,
+        recentAssistantMessages: state.recentAssistantMessages || [],
+        latestUserText: state.latestUserText || ''
       });
-      const blocked = decision.action === 'blocked';
-      const repaired = sanitizedContent !== response.content || blocked;
+      const safetyBlocked = decision.action === 'block';
+      const blocked = safetyBlocked || quality.repetitive;
+      const normalized = deliveredContent !== response.content;
+      const repaired = repair.repaired;
       const safetyState: AgentSafetyState = blocked
-        ? 'output_blocked'
+        ? safetyBlocked
+          ? 'output_blocked'
+          : 'quality_blocked'
         : repaired
           ? 'output_repaired'
           : state.safetyState;
@@ -560,17 +576,31 @@ async function outputSafetyNode(state: State): Promise<StateUpdate> {
           ? sanitizeDiscordMassMentions(
               state.outputBlockedMessage?.trim() || OUTPUT_BLOCKED_CONTENT
             )
-          : sanitizedContent
+          : deliveredContent
+      };
+      const outputSafety: AgentOutputSafetyResult = {
+        decision,
+        quality,
+        blocked,
+        normalized,
+        repaired,
+        categories: [
+          ...decision.categories,
+          ...(quality.repetitive ? ['quality/repetition_loop'] : [])
+        ],
+        reasons: [...decision.reasons, ...(quality.reason ? [`quality/${quality.reason}`] : [])],
+        outputWasReplaced: normalized || blocked,
+        candidateHash: createHash('sha256').update(sanitizedContent).digest('hex'),
+        candidatePreview: summarizeTextForTrace(sanitizedContent, 160),
+        candidateCategories: candidateDecision.categories,
+        deliveredCategories: decision.categories,
+        repairStrategy: repair.strategy
       };
 
       observation?.update({
         output: {
-          repaired,
-          blocked,
-          action: decision.action,
-          guardrailsAllowed: safetyResult.allowed,
-          safetyState,
-          categories: safetyCategories
+          ...outputSafety,
+          safetyState
         },
         metadata: buildNodeMetadata(state, 'output_safety', { safetyState, outcome })
       });
@@ -578,6 +608,7 @@ async function outputSafetyNode(state: State): Promise<StateUpdate> {
       return {
         graphStep: nextStep(state),
         modelResponse,
+        outputSafety,
         safetyState,
         outcome
       };
@@ -657,6 +688,7 @@ export async function runBoundedAgentGraph(input: AgentGraphInput): Promise<Agen
       toolResults: [],
       citations: [],
       mediaResult: undefined,
+      outputSafety: undefined,
       stepCount: input.limits.recursionLimit
     };
 

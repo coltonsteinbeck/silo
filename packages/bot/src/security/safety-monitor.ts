@@ -6,6 +6,7 @@ export type SafetyIncidentType =
 
 export interface SafetyIncidentRecord {
   guildId: string;
+  userId?: string;
   incidentType: SafetyIncidentType;
   categories: string[];
 }
@@ -28,9 +29,32 @@ export interface SafetyMonitorDecision {
   shouldAlert: boolean;
 }
 
-type GuildSafetyState = {
+export interface AssistantSafetyIncidentRecord {
+  provider: string;
+  model: string;
+  promptHash: string;
+  categories: string[];
+  resolvedByRetry: boolean;
+  qualityRepair?: boolean;
+}
+
+export interface ModelCircuitDecision {
+  failureCountInWindow: number;
+  contextDisabled: boolean;
+  contextDisabledUntil: Date | null;
+  circuitActivated: boolean;
+  shouldAlert: boolean;
+}
+
+type UserSafetyState = {
   blockedTimestamps: number[];
   killSwitchUntil: number | null;
+  lastAlertAt: number | null;
+};
+
+type ModelSafetyState = {
+  failureTimestamps: number[];
+  contextDisabledUntil: number | null;
   lastAlertAt: number | null;
 };
 
@@ -81,7 +105,8 @@ function getRuntimeEnv(): Record<string, string | undefined> {
 }
 
 export class SafetyMonitor {
-  private readonly state = new Map<string, GuildSafetyState>();
+  private readonly state = new Map<string, UserSafetyState>();
+  private readonly modelState = new Map<string, ModelSafetyState>();
 
   constructor(private readonly config: SafetyMonitorConfig = DEFAULT_CONFIG) {}
 
@@ -89,19 +114,19 @@ export class SafetyMonitor {
     return { ...this.config };
   }
 
-  isKillSwitchActive(guildId: string, now = Date.now()): boolean {
+  isKillSwitchActive(guildId: string, userId?: string, now = Date.now()): boolean {
     if (!this.config.enabled || !this.config.killSwitchEnabled) {
       return false;
     }
 
-    this.pruneStaleGuildStates(now);
+    this.pruneStaleUserStates(now);
 
-    const guildState = this.state.get(guildId);
-    if (!guildState?.killSwitchUntil) {
+    if (!userId) {
       return false;
     }
 
-    return guildState.killSwitchUntil > now;
+    const userState = this.state.get(this.stateKey(guildId, userId));
+    return Boolean(userState?.killSwitchUntil && userState.killSwitchUntil > now);
   }
 
   recordIncident(record: SafetyIncidentRecord, now = Date.now()): SafetyMonitorDecision {
@@ -116,100 +141,215 @@ export class SafetyMonitor {
       };
     }
 
-    this.pruneStaleGuildStates(now);
+    this.pruneStaleUserStates(now);
 
-    const guildState = this.getOrCreateGuildState(record.guildId);
-    this.pruneWindow(record.guildId, guildState, now, false);
+    const stateKey = this.stateKey(record.guildId, record.userId);
+    const userState = this.getOrCreateUserState(stateKey);
+    this.pruneWindow(stateKey, userState, now, false);
 
-    if (this.isBlockedIncident(record.incidentType)) {
-      guildState.blockedTimestamps.push(now);
-      this.pruneWindow(record.guildId, guildState, now, false);
+    const countsTowardUserCooldown =
+      Boolean(record.userId) && this.isBlockedIncident(record.incidentType);
+
+    if (countsTowardUserCooldown) {
+      userState.blockedTimestamps.push(now);
+      this.pruneWindow(stateKey, userState, now, false);
     }
 
-    const blockedCountInWindow = guildState.blockedTimestamps.length;
+    const blockedCountInWindow = userState.blockedTimestamps.length;
     const thresholdExceeded = blockedCountInWindow >= this.config.blockThreshold;
 
     let killSwitchActivated = false;
     if (
+      countsTowardUserCooldown &&
       thresholdExceeded &&
       this.config.killSwitchEnabled &&
-      (!guildState.killSwitchUntil || guildState.killSwitchUntil <= now)
+      (!userState.killSwitchUntil || userState.killSwitchUntil <= now)
     ) {
-      guildState.killSwitchUntil = now + this.config.killSwitchDurationMs;
+      userState.killSwitchUntil = now + this.config.killSwitchDurationMs;
       killSwitchActivated = true;
     }
 
     const killSwitchActive =
       this.config.killSwitchEnabled &&
-      !!guildState.killSwitchUntil &&
-      guildState.killSwitchUntil > now;
+      !!userState.killSwitchUntil &&
+      userState.killSwitchUntil > now;
 
     const shouldAlert =
       (thresholdExceeded || killSwitchActivated) &&
-      (!guildState.lastAlertAt || now - guildState.lastAlertAt >= this.config.alertCooldownMs);
+      (!userState.lastAlertAt || now - userState.lastAlertAt >= this.config.alertCooldownMs);
 
     if (shouldAlert) {
-      guildState.lastAlertAt = now;
+      userState.lastAlertAt = now;
     }
 
-    this.pruneWindow(record.guildId, guildState, now);
+    this.pruneWindow(stateKey, userState, now);
 
     return {
       blockedCountInWindow,
       thresholdExceeded,
       killSwitchActivated,
       killSwitchActive,
-      killSwitchUntil: guildState.killSwitchUntil ? new Date(guildState.killSwitchUntil) : null,
+      killSwitchUntil: userState.killSwitchUntil ? new Date(userState.killSwitchUntil) : null,
       shouldAlert
     };
   }
 
-  private getOrCreateGuildState(guildId: string): GuildSafetyState {
-    const existing = this.state.get(guildId);
+  isInheritedContextDisabled(
+    provider: string,
+    model: string,
+    promptHash: string,
+    now = Date.now()
+  ): boolean {
+    if (!this.config.enabled) {
+      return false;
+    }
+
+    this.pruneStaleModelStates(now);
+    const state = this.modelState.get(this.modelStateKey(provider, model, promptHash));
+    return Boolean(state?.contextDisabledUntil && state.contextDisabledUntil > now);
+  }
+
+  recordAssistantIncident(
+    record: AssistantSafetyIncidentRecord,
+    now = Date.now()
+  ): ModelCircuitDecision {
+    if (!this.config.enabled) {
+      return {
+        failureCountInWindow: 0,
+        contextDisabled: false,
+        contextDisabledUntil: null,
+        circuitActivated: false,
+        shouldAlert: false
+      };
+    }
+
+    this.pruneStaleModelStates(now);
+    const key = this.modelStateKey(record.provider, record.model, record.promptHash);
+    const state = this.getOrCreateModelState(key);
+    this.pruneModelWindow(key, state, now, false);
+
+    if (!record.resolvedByRetry) {
+      state.failureTimestamps.push(now);
+      this.pruneModelWindow(key, state, now, false);
+    }
+
+    const failureCountInWindow = state.failureTimestamps.length;
+    const thresholdExceeded = failureCountInWindow >= this.config.blockThreshold;
+    let circuitActivated = false;
+    if (thresholdExceeded && (!state.contextDisabledUntil || state.contextDisabledUntil <= now)) {
+      state.contextDisabledUntil = now + this.config.killSwitchDurationMs;
+      circuitActivated = true;
+    }
+
+    const contextDisabled = Boolean(state.contextDisabledUntil && state.contextDisabledUntil > now);
+    const shouldAlert =
+      !record.resolvedByRetry &&
+      (!state.lastAlertAt || now - state.lastAlertAt >= this.config.alertCooldownMs);
+    if (shouldAlert) {
+      state.lastAlertAt = now;
+    }
+
+    this.pruneModelWindow(key, state, now);
+    return {
+      failureCountInWindow,
+      contextDisabled,
+      contextDisabledUntil: state.contextDisabledUntil
+        ? new Date(state.contextDisabledUntil)
+        : null,
+      circuitActivated,
+      shouldAlert
+    };
+  }
+
+  private stateKey(guildId: string, userId?: string): string {
+    return `${guildId}:${userId || 'unknown-user'}`;
+  }
+
+  private modelStateKey(provider: string, model: string, promptHash: string): string {
+    return `${provider}:${model}:${promptHash}`;
+  }
+
+  private getOrCreateUserState(stateKey: string): UserSafetyState {
+    const existing = this.state.get(stateKey);
     if (existing) {
       return existing;
     }
 
-    const created: GuildSafetyState = {
+    const created: UserSafetyState = {
       blockedTimestamps: [],
       killSwitchUntil: null,
       lastAlertAt: null
     };
-    this.state.set(guildId, created);
+    this.state.set(stateKey, created);
+    return created;
+  }
+
+  private getOrCreateModelState(stateKey: string): ModelSafetyState {
+    const existing = this.modelState.get(stateKey);
+    if (existing) {
+      return existing;
+    }
+
+    const created: ModelSafetyState = {
+      failureTimestamps: [],
+      contextDisabledUntil: null,
+      lastAlertAt: null
+    };
+    this.modelState.set(stateKey, created);
     return created;
   }
 
   private pruneWindow(
-    guildId: string,
-    guildState: GuildSafetyState,
+    stateKey: string,
+    userState: UserSafetyState,
     now: number,
     allowEviction = true
   ): void {
     const windowStart = now - this.config.windowMs;
-    guildState.blockedTimestamps = guildState.blockedTimestamps.filter(ts => ts >= windowStart);
+    userState.blockedTimestamps = userState.blockedTimestamps.filter(ts => ts >= windowStart);
 
     if (
       allowEviction &&
-      guildState.blockedTimestamps.length === 0 &&
-      (!guildState.killSwitchUntil || guildState.killSwitchUntil <= now) &&
-      (!guildState.lastAlertAt || now - guildState.lastAlertAt >= this.config.alertCooldownMs)
+      userState.blockedTimestamps.length === 0 &&
+      (!userState.killSwitchUntil || userState.killSwitchUntil <= now) &&
+      (!userState.lastAlertAt || now - userState.lastAlertAt >= this.config.alertCooldownMs)
     ) {
-      this.state.delete(guildId);
+      this.state.delete(stateKey);
     }
   }
 
-  private pruneStaleGuildStates(now: number): void {
-    for (const [guildId, guildState] of this.state.entries()) {
-      this.pruneWindow(guildId, guildState, now);
+  private pruneStaleUserStates(now: number): void {
+    for (const [stateKey, userState] of this.state.entries()) {
+      this.pruneWindow(stateKey, userState, now);
+    }
+  }
+
+  private pruneModelWindow(
+    stateKey: string,
+    state: ModelSafetyState,
+    now: number,
+    allowEviction = true
+  ): void {
+    const windowStart = now - this.config.windowMs;
+    state.failureTimestamps = state.failureTimestamps.filter(ts => ts >= windowStart);
+    if (
+      allowEviction &&
+      state.failureTimestamps.length === 0 &&
+      (!state.contextDisabledUntil || state.contextDisabledUntil <= now) &&
+      (!state.lastAlertAt || now - state.lastAlertAt >= this.config.alertCooldownMs)
+    ) {
+      this.modelState.delete(stateKey);
+    }
+  }
+
+  private pruneStaleModelStates(now: number): void {
+    for (const [stateKey, state] of this.modelState.entries()) {
+      this.pruneModelWindow(stateKey, state, now);
     }
   }
 
   private isBlockedIncident(incidentType: SafetyIncidentType): boolean {
-    return (
-      incidentType === 'input_blocked' ||
-      incidentType === 'output_blocked' ||
-      incidentType === 'moderation_api_fail_closed'
-    );
+    return incidentType === 'input_blocked';
   }
 }
 
