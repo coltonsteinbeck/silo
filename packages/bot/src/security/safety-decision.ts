@@ -10,6 +10,13 @@ import {
   type ModerationFailure,
   type PromptSafetyModerationMode
 } from './prompt-safety';
+import {
+  containsDrCockTitle,
+  stripAllowedDrCockTitle,
+  type AssistantSafetyPolicy,
+  type PersonaState,
+  type ResponseIntent
+} from './jimb-persona-state';
 
 export type SafetyAction = 'allow' | 'redirect' | 'block';
 export type SafetyStage = 'input' | 'context_reuse' | 'assistant_output';
@@ -28,6 +35,7 @@ export interface SafetyDecision {
   failureReason?: string;
   failure?: ModerationFailure;
   semanticRisk: boolean;
+  allowanceReasons?: string[];
 }
 
 export interface SafetyDecisionOptions {
@@ -37,6 +45,9 @@ export interface SafetyDecisionOptions {
   inheritedRisk?: boolean;
   failurePolicy?: SafetyFailurePolicy;
   moderationMode?: PromptSafetyModerationMode;
+  assistantSafetyPolicy?: AssistantSafetyPolicy;
+  personaState?: PersonaState;
+  responseIntent?: ResponseIntent;
 }
 
 export function buildContextReuseSafetyDecision(params: {
@@ -54,7 +65,8 @@ export function buildContextReuseSafetyDecision(params: {
     detectorSources: ['deterministic', 'policy'],
     contextEligible: !blocked && params.selectedMessageCount > 0,
     failed: false,
-    semanticRisk: false
+    semanticRisk: false,
+    allowanceReasons: []
   };
 }
 
@@ -469,8 +481,13 @@ export async function evaluateSafetyDecision(
   content: string,
   options: SafetyDecisionOptions
 ): Promise<SafetyDecision> {
-  const riskContent = normalizeConfusableRiskText(content);
-  const safety = await evaluatePromptSafety(content, {
+  const jimbScopedOutput =
+    options.stage === 'assistant_output' && options.assistantSafetyPolicy === 'jimb_crude';
+  const allowedPersonaTitle =
+    jimbScopedOutput && options.personaState === 'dr_cock' && containsDrCockTitle(content);
+  const evaluationContent = allowedPersonaTitle ? stripAllowedDrCockTitle(content) : content;
+  const riskContent = normalizeConfusableRiskText(evaluationContent);
+  const safety = await evaluatePromptSafety(evaluationContent, {
     profile: profileForStage(options.stage),
     source: options.source,
     userId: options.userId,
@@ -479,13 +496,13 @@ export async function evaluateSafetyDecision(
   const failurePolicy =
     options.failurePolicy ?? (options.stage === 'assistant_output' ? 'fail_closed' : 'fail_open');
   const moderationFailedClosed = Boolean(safety.moderationError) && failurePolicy === 'fail_closed';
-  const contextualContent = isContextualSafetyDiscussion(content);
+  const contextualContent = isContextualSafetyDiscussion(evaluationContent);
   const contextualHarmResidue =
     contextualContent &&
-    (!classifyAssistantOutputSafetyDeterministic(content).allowed ||
-      hasDirectPolicyOverride(content) ||
-      hasEncodingEvasionRisk(content) ||
-      hasProtectedGroupAttack(content) ||
+    (!classifyAssistantOutputSafetyDeterministic(evaluationContent).allowed ||
+      hasDirectPolicyOverride(evaluationContent) ||
+      hasEncodingEvasionRisk(evaluationContent) ||
+      hasProtectedGroupAttack(evaluationContent) ||
       TARGETED_HARASSMENT_PATTERN.test(riskContent) ||
       NONCONSENSUAL_SEXUAL_VIOLENCE_PATTERN.test(riskContent));
   const safetyReasons = safety.reasons.filter(
@@ -495,9 +512,57 @@ export async function evaluateSafetyDecision(
         ['prompt_injection/policy_bypass', 'harassment/self_harm_abuse'].includes(reason)
       )
   );
-  const moderationCategories = safety.moderationCategories.filter(
+  const rawModerationCategories = safety.moderationCategories.filter(
     category => !(contextualContent && CONTEXTUAL_INPUT_MODERATION_CATEGORIES.has(category))
   );
+  const allowanceReasons: string[] = allowedPersonaTitle ? ['jimb/dr_cock_title'] : [];
+  const explicitAdult = hasExplicitAdultSexualIntent(evaluationContent);
+  const hasDeterministicHardReason = safetyReasons.some(
+    reason =>
+      reason.startsWith('hate/') ||
+      reason.startsWith('prompt_injection/') ||
+      reason === 'sexual/minors' ||
+      reason === 'sexual/violent_output' ||
+      reason === 'sexual/explicit_generation' ||
+      reason.startsWith('harassment/') ||
+      reason.startsWith('violence/') ||
+      reason.startsWith('illicit/')
+  );
+  const moderationCategories = rawModerationCategories.filter(category => {
+    if (!jimbScopedOutput || explicitAdult || hasDeterministicHardReason) {
+      return true;
+    }
+
+    if (category === 'sexual') {
+      allowanceReasons.push(
+        options.responseIntent === 'contextual_explanation'
+          ? 'jimb/contextual_explanation'
+          : 'jimb/non_explicit_crude'
+      );
+      return false;
+    }
+
+    if (
+      category === 'harassment' &&
+      !TARGETED_HARASSMENT_PATTERN.test(riskContent) &&
+      !TARGETED_HARASSMENT_GENERATION_PATTERN.test(riskContent) &&
+      !hasProtectedGroupAttack(riskContent)
+    ) {
+      allowanceReasons.push('jimb/non_targeted_roast');
+      return false;
+    }
+
+    if (
+      category === 'violence' &&
+      options.responseIntent === 'contextual_explanation' &&
+      !NONCONSENSUAL_SEXUAL_VIOLENCE_PATTERN.test(riskContent)
+    ) {
+      allowanceReasons.push('jimb/contextual_explanation');
+      return false;
+    }
+
+    return true;
+  });
   const categories = unique([...safetyReasons, ...moderationCategories]);
   const detectorSources: SafetyDetectorSource[] = ['deterministic'];
   if (safety.moderationEvaluated) {
@@ -519,7 +584,6 @@ export async function evaluateSafetyDecision(
     detectorSources.push('policy');
   }
 
-  const explicitAdult = hasExplicitAdultSexualIntent(content);
   if (explicitAdult) {
     categories.push('sexual/explicit_generation');
     scores['sexual/explicit_generation'] = 1;
@@ -532,7 +596,7 @@ export async function evaluateSafetyDecision(
     detectorSources.push('policy');
   }
 
-  if (hasEncodingEvasionRisk(content) && !contextualContent) {
+  if (hasEncodingEvasionRisk(evaluationContent) && !contextualContent) {
     categories.push('prompt_injection/policy_bypass');
     scores['prompt_injection/policy_bypass'] = 1;
     detectorSources.push('policy');
@@ -568,8 +632,8 @@ export async function evaluateSafetyDecision(
 
   const semanticRisk =
     options.stage === 'assistant_output'
-      ? Boolean(options.inheritedRisk) || hasSemanticAssistantRisk(content)
-      : hasSemanticJailbreakRisk(content);
+      ? Boolean(options.inheritedRisk) || hasSemanticAssistantRisk(evaluationContent)
+      : hasSemanticJailbreakRisk(evaluationContent);
   let semanticFailure: string | undefined;
   let semanticBlocked = false;
   const semanticReasons: string[] = [];
@@ -577,12 +641,12 @@ export async function evaluateSafetyDecision(
   if (semanticRisk) {
     const semantic =
       options.stage === 'assistant_output'
-        ? await evaluateSemanticAssistantOutputGuardrails(content, {
+        ? await evaluateSemanticAssistantOutputGuardrails(evaluationContent, {
             source: options.source,
             userId: options.userId,
             failClosedOnError: true
           })
-        : await evaluateSemanticUserPromptGuardrails(content, {
+        : await evaluateSemanticUserPromptGuardrails(evaluationContent, {
             source: options.source,
             userId: options.userId,
             failClosedOnError: true
@@ -642,6 +706,7 @@ export async function evaluateSafetyDecision(
     action === 'allow' &&
     !explicitAdult &&
     !contextualHarmResidue &&
+    options.responseIntent !== 'boundary_redirect' &&
     (options.stage === 'assistant_output' || !semanticRisk);
   return {
     action,
@@ -660,6 +725,7 @@ export async function evaluateSafetyDecision(
     failed: Boolean(safety.moderationError || semanticFailure),
     failureReason: semanticFailure || safety.moderationError,
     failure: safety.moderationFailure,
-    semanticRisk
+    semanticRisk,
+    allowanceReasons: unique(allowanceReasons)
   };
 }

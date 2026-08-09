@@ -164,6 +164,46 @@ describe('bounded agent graph', () => {
     expect(result.outputSafety?.categories).toContain('sexual/unsafe_persona');
   });
 
+  test('allows the nonsexual Dr. Cock title only in active JIMB scope', async () => {
+    const content = 'Dr. Cock reporting for duty. Your Docker mount is read-only.';
+    const provider = createProvider(content);
+
+    const result = await runBoundedAgentGraph(
+      createInput(provider, {
+        assistantSafetyPolicy: 'jimb_crude',
+        personaState: 'dr_cock',
+        responseIntent: 'ordinary'
+      })
+    );
+
+    expect(result.outcome).toBe('success');
+    expect(result.safetyState).toBe('allowed');
+    expect(result.response.content).toBe(content);
+    expect(result.outputSafety?.decision.allowanceReasons).toContain('jimb/dr_cock_title');
+  });
+
+  test('repairs a shortened slur before graph output can be delivered', async () => {
+    const shortenedSlur = ['f', 'a', 'g'].join('');
+    const provider = createProvider(`The historical British term is ${shortenedSlur}.`);
+
+    const result = await runBoundedAgentGraph(
+      createInput(provider, {
+        assistantSafetyPolicy: 'jimb_crude',
+        personaState: 'dr_cock',
+        responseIntent: 'contextual_explanation'
+      })
+    );
+
+    expect(result.outcome).toBe('repaired');
+    expect(result.safetyState).toBe('output_repaired');
+    expect(result.response.content).toContain('[slur removed]');
+    expect(result.response.content.toLowerCase()).not.toContain(shortenedSlur);
+    expect(result.outputSafety?.blocked).toBe(false);
+    expect(result.outputSafety?.candidateCategories).toContain('hate/slur_usage');
+    expect(result.outputSafety?.deliveredCategories).toEqual([]);
+    expect(result.outputSafety?.repairStrategy).toBe('deterministic_slur_mask');
+  });
+
   test.each(['openai', 'anthropic', 'xai', 'google', 'local'])(
     'applies the same output decision to equivalent unsafe %s output',
     async providerName => {

@@ -61,6 +61,13 @@ describe('Langfuse metadata', () => {
       contextExcludedTurnCount: 3,
       contextExclusionReasons: ['legacy', 'unsafe', 'unpaired'],
       inputContextEligible: false,
+      assistantSafetyPolicy: 'jimb_crude',
+      personaState: 'dr_cock',
+      personaActivationSource: 'current_turn_activation',
+      responseIntent: 'ordinary',
+      safetyAllowanceReasons: ['jimb_dr_cock_title', 'jimb_mild_profanity'],
+      candidateOutputCategories: ['sexual/unsafe_persona'],
+      deliveredOutputCategories: [],
       modelCircuitFailureCount: 3,
       modelCircuitActivated: true,
       modelCircuitContextDisabled: true,
@@ -76,6 +83,7 @@ describe('Langfuse metadata', () => {
       recoveryContextFree: false,
       recoveryReason: 'quality',
       recoveryContextRetained: true,
+      recoveryStrategy: 'task_retaining_regeneration',
       deliveryTruncated: false
     });
 
@@ -90,6 +98,13 @@ describe('Langfuse metadata', () => {
       contextExcludedTurnCount: 3,
       contextExclusionReasons: ['legacy', 'unsafe', 'unpaired'],
       inputContextEligible: false,
+      assistantSafetyPolicy: 'jimb_crude',
+      personaState: 'dr_cock',
+      personaActivationSource: 'current_turn_activation',
+      responseIntent: 'ordinary',
+      safetyAllowanceReasons: ['jimb_dr_cock_title', 'jimb_mild_profanity'],
+      candidateOutputCategories: ['sexual/unsafe_persona'],
+      deliveredOutputCategories: [],
       modelCircuitFailureCount: 3,
       modelCircuitActivated: true,
       modelCircuitContextDisabled: true,
@@ -105,6 +120,7 @@ describe('Langfuse metadata', () => {
       recoveryContextFree: false,
       recoveryReason: 'quality',
       recoveryContextRetained: true,
+      recoveryStrategy: 'task_retaining_regeneration',
       deliveryTruncated: false
     });
   });
@@ -112,6 +128,7 @@ describe('Langfuse metadata', () => {
   test('resolves the release commit from explicit metadata and CI environment fallbacks', () => {
     const originalReleaseCommit = process.env.RELEASE_COMMIT;
     const originalGithubSha = process.env.GITHUB_SHA;
+    const originalGitSha = process.env.GIT_SHA;
 
     try {
       process.env.RELEASE_COMMIT = 'release-commit-sha';
@@ -124,6 +141,10 @@ describe('Langfuse metadata', () => {
 
       delete process.env.RELEASE_COMMIT;
       expect(buildLangfuseTraceMetadata({}).releaseCommit).toBe('github-fallback-sha');
+
+      delete process.env.GITHUB_SHA;
+      process.env.GIT_SHA = 'deployment-git-sha';
+      expect(buildLangfuseTraceMetadata({}).releaseCommit).toBe('deployment-git-sha');
     } finally {
       if (originalReleaseCommit === undefined) {
         delete process.env.RELEASE_COMMIT;
@@ -134,6 +155,11 @@ describe('Langfuse metadata', () => {
         delete process.env.GITHUB_SHA;
       } else {
         process.env.GITHUB_SHA = originalGithubSha;
+      }
+      if (originalGitSha === undefined) {
+        delete process.env.GIT_SHA;
+      } else {
+        process.env.GIT_SHA = originalGitSha;
       }
     }
   });
@@ -154,6 +180,32 @@ describe('Langfuse metadata', () => {
         delete process.env.RELEASE_COMMIT;
       } else {
         process.env.RELEASE_COMMIT = originalReleaseCommit;
+      }
+    }
+  });
+
+  test('does not report placeholder text as a deployed release commit', () => {
+    const originalReleaseCommit = process.env.RELEASE_COMMIT;
+    const originalGithubSha = process.env.GITHUB_SHA;
+
+    try {
+      process.env.RELEASE_COMMIT = '<git-sha>';
+      delete process.env.GITHUB_SHA;
+      configureLangfuseMetadataDefaults({ releaseCommit: 'unset' });
+
+      expect(buildLangfuseTraceMetadata({ releaseCommit: 'git-sha' }).releaseCommit).toBe(
+        undefined
+      );
+    } finally {
+      if (originalReleaseCommit === undefined) {
+        delete process.env.RELEASE_COMMIT;
+      } else {
+        process.env.RELEASE_COMMIT = originalReleaseCommit;
+      }
+      if (originalGithubSha === undefined) {
+        delete process.env.GITHUB_SHA;
+      } else {
+        process.env.GITHUB_SHA = originalGithubSha;
       }
     }
   });

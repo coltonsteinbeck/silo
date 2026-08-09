@@ -50,6 +50,13 @@ export type LangfuseMetadataInput = {
   inputSafetyDetectorSources?: string[];
   inputContextEligible?: boolean;
   inheritedContextSafetyRisk?: boolean;
+  assistantSafetyPolicy?: string | null;
+  personaState?: string | null;
+  personaActivationSource?: string | null;
+  responseIntent?: string | null;
+  safetyAllowanceReasons?: string[];
+  candidateOutputCategories?: string[];
+  deliveredOutputCategories?: string[];
   contextSafetyAction?: string | null;
   contextSafetyCategories?: string[];
   contextSafetyDetectorSources?: string[];
@@ -110,6 +117,7 @@ export type LangfuseMetadataInput = {
   recoveryContextFree?: boolean;
   recoveryReason?: string | null;
   recoveryContextRetained?: boolean;
+  recoveryStrategy?: string | null;
   deliveryTruncated?: boolean;
 };
 
@@ -147,6 +155,18 @@ function normalizeOptionalString(value: string | null | undefined): string | und
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function normalizeReleaseCommit(value: string | null | undefined): string | undefined {
+  const normalized = normalizeOptionalString(value);
+  if (
+    !normalized ||
+    /^<[^>]+>$/.test(normalized) ||
+    /^(?:git-sha|unknown|unset)$/i.test(normalized)
+  ) {
+    return undefined;
+  }
+  return normalized;
+}
+
 function resolveReleaseCommitFromEnvironment(): string | undefined {
   const candidates = [
     process.env.RELEASE_COMMIT,
@@ -156,11 +176,12 @@ function resolveReleaseCommitFromEnvironment(): string | undefined {
     process.env.RAILWAY_GIT_COMMIT_SHA,
     process.env.RENDER_GIT_COMMIT,
     process.env.SOURCE_VERSION,
+    process.env.GIT_SHA,
     process.env.GIT_COMMIT
   ];
 
   for (const candidate of candidates) {
-    const normalized = normalizeOptionalString(candidate);
+    const normalized = normalizeReleaseCommit(candidate);
     if (normalized) {
       return normalized;
     }
@@ -334,8 +355,8 @@ export function buildLangfuseTraceMetadata(input: LangfuseMetadataInput): TraceM
   addMetadataField(
     metadata,
     'releaseCommit',
-    normalizeOptionalString(input.releaseCommit) ||
-      metadataDefaults.releaseCommit ||
+    normalizeReleaseCommit(input.releaseCommit) ||
+      normalizeReleaseCommit(metadataDefaults.releaseCommit) ||
       resolveReleaseCommitFromEnvironment()
   );
   addMetadataField(
@@ -406,6 +427,39 @@ export function buildLangfuseTraceMetadata(input: LangfuseMetadataInput): TraceM
   }
   if (typeof input.inheritedContextSafetyRisk === 'boolean') {
     addMetadataField(metadata, 'inheritedContextSafetyRisk', input.inheritedContextSafetyRisk);
+  }
+  addMetadataField(
+    metadata,
+    'assistantSafetyPolicy',
+    normalizeTagValue(input.assistantSafetyPolicy)
+  );
+  addMetadataField(metadata, 'personaState', normalizeTagValue(input.personaState));
+  addMetadataField(
+    metadata,
+    'personaActivationSource',
+    normalizeTagValue(input.personaActivationSource)
+  );
+  addMetadataField(metadata, 'responseIntent', normalizeTagValue(input.responseIntent));
+  if (input.safetyAllowanceReasons) {
+    addMetadataField(
+      metadata,
+      'safetyAllowanceReasons',
+      normalizeStringArray(input.safetyAllowanceReasons)
+    );
+  }
+  if (input.candidateOutputCategories) {
+    addMetadataField(
+      metadata,
+      'candidateOutputCategories',
+      normalizeStringArray(input.candidateOutputCategories)
+    );
+  }
+  if (input.deliveredOutputCategories) {
+    addMetadataField(
+      metadata,
+      'deliveredOutputCategories',
+      normalizeStringArray(input.deliveredOutputCategories)
+    );
   }
   addMetadataField(metadata, 'contextSafetyAction', normalizeTagValue(input.contextSafetyAction));
   if (input.contextSafetyCategories) {
@@ -583,6 +637,7 @@ export function buildLangfuseTraceMetadata(input: LangfuseMetadataInput): TraceM
     addMetadataField(metadata, 'recoveryContextFree', input.recoveryContextFree);
   }
   addMetadataField(metadata, 'recoveryReason', normalizeTagValue(input.recoveryReason));
+  addMetadataField(metadata, 'recoveryStrategy', normalizeTagValue(input.recoveryStrategy));
   if (typeof input.recoveryContextRetained === 'boolean') {
     addMetadataField(metadata, 'recoveryContextRetained', input.recoveryContextRetained);
   }

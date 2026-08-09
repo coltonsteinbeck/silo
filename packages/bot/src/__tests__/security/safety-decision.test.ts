@@ -167,6 +167,111 @@ describe('unified safety decisions', () => {
     expect(decision.contextEligible).toBe(false);
   });
 
+  test('allows only the exact nonsexual Dr. Cock title in active JIMB persona state', async () => {
+    const content = 'Dr. Cock reporting for duty. Your Docker volume is mounted read-only.';
+    const standard = await evaluateSafetyDecision(content, {
+      stage: 'assistant_output',
+      source: 'standard_guild'
+    });
+    const inactiveJimb = await evaluateSafetyDecision(content, {
+      stage: 'assistant_output',
+      source: 'jimb_inactive',
+      assistantSafetyPolicy: 'jimb_crude',
+      personaState: 'jimb',
+      responseIntent: 'ordinary'
+    });
+    const activeJimb = await evaluateSafetyDecision(content, {
+      stage: 'assistant_output',
+      source: 'jimb_active',
+      assistantSafetyPolicy: 'jimb_crude',
+      personaState: 'dr_cock',
+      responseIntent: 'ordinary'
+    });
+
+    expect(standard.action).toBe('block');
+    expect(inactiveJimb.action).toBe('block');
+    expect(activeJimb.action).toBe('allow');
+    expect(activeJimb.allowanceReasons).toContain('jimb/dr_cock_title');
+  });
+
+  test('allows a nonsexual Dr. Cock activation request as user input', async () => {
+    const decision = await evaluateSafetyDecision(
+      'Dr. Cock, explain why this Docker volume is read-only.',
+      {
+        stage: 'input',
+        source: 'jimb_activation_input'
+      }
+    );
+
+    expect(decision.action).toBe('allow');
+    expect(decision.contextEligible).toBe(true);
+  });
+
+  test('does not let active Dr. Cock state unlock explicit sexual output', async () => {
+    const decision = await evaluateSafetyDecision(
+      "I'm Dr. Cock. I pound your ass and narrate every thrust.",
+      {
+        stage: 'assistant_output',
+        source: 'jimb_explicit_fixture',
+        assistantSafetyPolicy: 'jimb_crude',
+        personaState: 'dr_cock',
+        responseIntent: 'ordinary'
+      }
+    );
+
+    expect(decision.action).toBe('block');
+    expect(decision.categories).toContain('sexual/explicit_generation');
+  });
+
+  test('allows provider-only crude or non-targeted flags only inside JIMB', async () => {
+    setPromptSafetyRuntimeForTests({
+      moderationRunner: async () => ({
+        flaggedCategories: ['sexual', 'harassment'],
+        scores: { sexual: 0.9, harassment: 0.9 }
+      })
+    });
+
+    const content = 'That printer is a pain in the ass; buy it dinner before it jams again.';
+    const standard = await evaluateSafetyDecision(content, {
+      stage: 'assistant_output',
+      source: 'standard_provider_flag'
+    });
+    const jimb = await evaluateSafetyDecision(content, {
+      stage: 'assistant_output',
+      source: 'jimb_provider_flag',
+      assistantSafetyPolicy: 'jimb_crude',
+      personaState: 'jimb',
+      responseIntent: 'ordinary'
+    });
+
+    expect(standard.action).toBe('block');
+    expect(jimb.action).toBe('allow');
+    expect(jimb.allowanceReasons).toEqual(
+      expect.arrayContaining(['jimb/non_explicit_crude', 'jimb/non_targeted_roast'])
+    );
+  });
+
+  test('blocks the shortened slur homonym in every assistant output policy', async () => {
+    const shortenedSlur = ['f', 'a', 'g'].join('');
+    for (const options of [
+      {},
+      {
+        assistantSafetyPolicy: 'jimb_crude' as const,
+        personaState: 'dr_cock' as const,
+        responseIntent: 'contextual_explanation' as const
+      }
+    ]) {
+      const decision = await evaluateSafetyDecision(`The British term is ${shortenedSlur}.`, {
+        stage: 'assistant_output',
+        source: 'shortened_slur_fixture',
+        ...options
+      });
+
+      expect(decision.action).toBe('block');
+      expect(decision.categories).toContain('hate/slur_usage');
+    }
+  });
+
   test('uses inherited risk to semantically block an euphemistic explicit continuation', async () => {
     process.env.OPENAI_GUARDRAILS_ENABLED = 'true';
     process.env.OPENAI_API_KEY = 'test-key';
