@@ -5,11 +5,7 @@ import type { UserRole } from '@silo/core';
 import { logger } from '@silo/core';
 
 export type UsageType =
-  | 'text_tokens'
-  | 'images'
-  | 'voice_minutes'
-  | 'vision_tokens'
-  | 'video_tokens';
+  'text_tokens' | 'images' | 'voice_minutes' | 'vision_tokens' | 'video_tokens';
 export type RoleTier = 'admin' | 'moderator' | 'trusted' | 'member' | 'restricted';
 
 interface QuotaCheckResult {

@@ -11,12 +11,10 @@ type QueryResult = { rows: any[]; rowCount: number };
 // Mock pool for testing
 function createMockPool() {
   return {
-    query: mock(
-      async (_sql: string, _params?: unknown[]): Promise<QueryResult> => ({
-        rows: [],
-        rowCount: 0
-      })
-    ),
+    query: mock(async (_sql: string, _params?: unknown[]): Promise<QueryResult> => ({
+      rows: [],
+      rowCount: 0
+    })),
     connect: mock(async () => ({
       release: mock(() => {})
     })),
@@ -116,9 +114,10 @@ describe('PostgresAdapter', () => {
 
   describe('healthCheck', () => {
     test('returns true when database responds', async () => {
-      adapter.pool.query = mock(
-        async (): Promise<QueryResult> => ({ rows: [{ result: 1 }], rowCount: 1 })
-      );
+      adapter.pool.query = mock(async (): Promise<QueryResult> => ({
+        rows: [{ result: 1 }],
+        rowCount: 1
+      }));
 
       const healthy = await adapter.healthCheck();
 
@@ -142,9 +141,10 @@ describe('PostgresAdapter', () => {
         { id: '1', user_id: 'user123', memory_content: 'Memory 1' },
         { id: '2', user_id: 'user123', memory_content: 'Memory 2' }
       ];
-      adapter.pool.query = mock(
-        async (): Promise<QueryResult> => ({ rows: mockMemories, rowCount: 2 })
-      );
+      adapter.pool.query = mock(async (): Promise<QueryResult> => ({
+        rows: mockMemories,
+        rowCount: 2
+      }));
 
       const memories = await adapter.getUserMemories('user123');
 
@@ -196,9 +196,10 @@ describe('PostgresAdapter', () => {
         { id: '1', channel_id: 'chan123', role: 'user', content: 'Hello' },
         { id: '2', channel_id: 'chan123', role: 'assistant', content: 'Hi!' }
       ];
-      adapter.pool.query = mock(
-        async (): Promise<QueryResult> => ({ rows: mockMessages, rowCount: 2 })
-      );
+      adapter.pool.query = mock(async (): Promise<QueryResult> => ({
+        rows: mockMessages,
+        rowCount: 2
+      }));
 
       const history = await adapter.getConversationHistory('chan123');
 
@@ -224,9 +225,10 @@ describe('PostgresAdapter', () => {
         role: 'user',
         content: 'Hello'
       };
-      adapter.pool.query = mock(
-        async (): Promise<QueryResult> => ({ rows: [mockMessage], rowCount: 1 })
-      );
+      adapter.pool.query = mock(async (): Promise<QueryResult> => ({
+        rows: [mockMessage],
+        rowCount: 1
+      }));
 
       const result = await adapter.storeConversationMessage('chan123', 'user123', 'user', 'Hello');
 

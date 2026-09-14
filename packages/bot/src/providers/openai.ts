@@ -217,8 +217,7 @@ export class OpenAIProvider implements TextProvider, ImageProvider, WebSearchPro
 
     // Extract thinking content if available (for models with extended thinking)
     const thinking = (choice.message as unknown as Record<string, unknown>).reasoning as
-      | string
-      | undefined;
+      string | undefined;
 
     return {
       content: choice.message.content,
