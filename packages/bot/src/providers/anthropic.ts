@@ -45,14 +45,7 @@ export class AnthropicProvider implements TextProvider {
     });
 
     const textSegments = response.content
-      .filter(
-        (
-          block
-        ): block is {
-          type: 'text';
-          text: string;
-        } => block.type === 'text' && typeof (block as { text?: unknown }).text === 'string'
-      )
+      .filter(block => block.type === 'text')
       .map(block => block.text.trim())
       .filter(Boolean);
 
