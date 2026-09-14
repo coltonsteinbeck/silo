@@ -91,10 +91,7 @@ const promptFallbackNoticeByGuild = new Map<
 >();
 const promptFallbackAuditLoggedByGuild = new Set<string>();
 type PromptFallbackNoticeReason =
-  | 'allowlist_required'
-  | 'hash_not_allowlisted'
-  | 'validation_rejected'
-  | 'guardrails_rejected';
+  'allowlist_required' | 'hash_not_allowlisted' | 'validation_rejected' | 'guardrails_rejected';
 
 function shouldEmitPromptFallbackNotice(
   guildId: string,
@@ -1772,8 +1769,7 @@ export async function startBot(): Promise<void> {
                         : null,
                     searchQuery:
                       (requestedTools.find(tool => tool.name === 'web_search')?.input?.query as
-                        | string
-                        | undefined) || null,
+                        string | undefined) || null,
                     mediaProvider: requestedTools.some(
                       tool => tool.name === 'image_generation' || tool.name === 'video_generation'
                     )

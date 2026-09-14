@@ -30,12 +30,7 @@ type LangfuseState = {
 };
 
 export type TraceMetadataValue =
-  | string
-  | number
-  | boolean
-  | null
-  | TraceMetadataValue[]
-  | { [key: string]: TraceMetadataValue };
+  string | number | boolean | null | TraceMetadataValue[] | { [key: string]: TraceMetadataValue };
 
 export type TraceMetadata = Record<string, TraceMetadataValue | undefined>;
 
