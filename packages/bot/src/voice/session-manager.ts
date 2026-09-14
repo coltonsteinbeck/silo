@@ -101,7 +101,8 @@ export class VoiceSessionManager {
       );
       connection.destroy();
       throw new Error(
-        `Failed to connect to voice channel within 30 seconds. Bot may need "Connect" and "Speak" permissions in ${channel.name}.`
+        `Failed to connect to voice channel within 30 seconds. Bot may need "Connect" and "Speak" permissions in ${channel.name}.`,
+        { cause: error }
       );
     }
 

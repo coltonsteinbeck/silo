@@ -345,7 +345,7 @@ export class OpenAIProvider implements TextProvider, ImageProvider, WebSearchPro
     } catch (error) {
       const message = redactSecrets(error instanceof Error ? error.message : String(error));
       logger.error('[OpenAI] Image generation failed:', message);
-      throw new Error(`OpenAI image generation failed: ${message}`);
+      throw new Error(`OpenAI image generation failed: ${message}`, { cause: error });
     }
   }
 
