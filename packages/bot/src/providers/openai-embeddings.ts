@@ -138,7 +138,7 @@ export class OpenAIEmbeddingsProvider implements EmbeddingProvider {
     } catch (error) {
       const message = errorMessage(error);
       logger.error('[OpenAI Embeddings] Generation failed:', message);
-      throw new Error(`OpenAI embedding generation failed: ${message}`);
+      throw new Error(`OpenAI embedding generation failed: ${message}`, { cause: error });
     }
   }
 
@@ -201,7 +201,7 @@ export class OpenAIEmbeddingsProvider implements EmbeddingProvider {
       } catch (error) {
         const message = errorMessage(error);
         logger.error('[OpenAI Embeddings] Batch generation failed:', message);
-        throw new Error(`OpenAI batch embedding generation failed: ${message}`);
+        throw new Error(`OpenAI batch embedding generation failed: ${message}`, { cause: error });
       }
     }
 
