@@ -1,8 +1,5 @@
 export type SafetyIncidentType =
-  | 'input_blocked'
-  | 'output_blocked'
-  | 'output_warned'
-  | 'moderation_api_fail_closed';
+  'input_blocked' | 'output_blocked' | 'output_warned' | 'moderation_api_fail_closed';
 
 export interface SafetyIncidentRecord {
   guildId: string;

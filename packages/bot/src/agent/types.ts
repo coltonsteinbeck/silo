@@ -10,17 +10,10 @@ import type { AgentMediaResult, AgentToolExecutor } from './tool-executor';
 import type { LangfuseMetadataInput } from '../telemetry/langfuse-metadata';
 
 export type AgentToolName =
-  | 'web_search'
-  | 'image_generation'
-  | 'video_generation'
-  | 'vision_analysis';
+  'web_search' | 'image_generation' | 'video_generation' | 'vision_analysis';
 
 export type AgentSafetyState =
-  | 'allowed'
-  | 'input_blocked'
-  | 'output_blocked'
-  | 'output_repaired'
-  | 'bounded_failure';
+  'allowed' | 'input_blocked' | 'output_blocked' | 'output_repaired' | 'bounded_failure';
 export type AgentGraphOutcome = 'success' | 'blocked' | 'repaired' | 'bounded_failure' | 'error';
 
 export interface AgentToolRequest {

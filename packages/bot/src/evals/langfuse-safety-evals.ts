@@ -79,8 +79,7 @@ export type CustomPromptGuardrailEvalActualResult = {
 };
 
 export type SafetyEvalActualResult =
-  | InputModerationEvalActualResult
-  | CustomPromptGuardrailEvalActualResult;
+  InputModerationEvalActualResult | CustomPromptGuardrailEvalActualResult;
 
 export type SafetyEvalComparison = {
   passed: boolean;

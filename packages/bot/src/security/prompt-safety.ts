@@ -2,10 +2,7 @@ import OpenAI from 'openai';
 import { deploymentDetector } from './deployment';
 
 export type GuardrailProfile =
-  | 'chat_input'
-  | 'chat_output'
-  | 'assistant_output'
-  | 'strict_tool_input';
+  'chat_input' | 'chat_output' | 'assistant_output' | 'strict_tool_input';
 
 export interface PromptSafetyEvaluationOptions {
   profile: GuardrailProfile;
