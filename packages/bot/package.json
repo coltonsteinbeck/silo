@@ -26,7 +26,7 @@
     "@langfuse/otel": "5.3.0",
     "@langfuse/tracing": "5.3.0",
     "@openai/guardrails": "0.2.1",
-    "@opentelemetry/context-async-hooks": "2.7.1",
+    "@opentelemetry/context-async-hooks": "2.11.0",
     "@opentelemetry/sdk-trace-node": "2.7.1",
     "@silo/core": "workspace:*",
     "@snazzah/davey": "0.1.12",
