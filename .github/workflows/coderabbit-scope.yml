@@ -1,0 +1,38 @@
+name: CodeRabbit release review scope
+
+on:
+  pull_request_target:
+    types: [opened, reopened, edited, synchronize, ready_for_review, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: coderabbit-scope-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  scope:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      # Metadata only: never check out or execute code from the PR.
+      - name: Reconcile release review label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")
+          eligible=$(jq -r --arg repo "$GH_REPO" '.state == "open" and .base.ref == "main" and (.head.ref | startswith("release/")) and .head.repo.full_name == $repo' <<< "$pr")
+          labeled=$(jq -r 'any(.labels[]; .name == "coderabbit-release")' <<< "$pr")
+          if [[ "$eligible" == true && "$labeled" == false ]]; then
+            gh label create coderabbit-release --repo "$GH_REPO" --color 7057ff --description "CodeRabbit review for release to main" --force
+            gh api --method POST "repos/$GH_REPO/issues/$PR_NUMBER/labels" -f 'labels[]=coderabbit-release'
+          elif [[ "$eligible" == false && "$labeled" == true ]]; then
+            gh api --method DELETE "repos/$GH_REPO/issues/$PR_NUMBER/labels/coderabbit-release"
+          fi
