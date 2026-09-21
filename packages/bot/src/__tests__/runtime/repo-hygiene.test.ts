@@ -8,7 +8,10 @@ describe('repo hygiene check', () => {
       'logs/pm2-out.log',
       'fileDump/conversation_messages_rows(4).csv',
       '.claude/agents/example.md',
-      'conversation_messages_rows(5).csv'
+      'conversation_messages_rows(5).csv',
+      '.workflow-local/cases/example.json',
+      'exports/messages.jsonl',
+      'backup.sqlite3'
     ]);
 
     expect(violations.map(violation => violation.file)).toEqual([
@@ -16,7 +19,10 @@ describe('repo hygiene check', () => {
       'logs/pm2-out.log',
       'fileDump/conversation_messages_rows(4).csv',
       '.claude/agents/example.md',
-      'conversation_messages_rows(5).csv'
+      'conversation_messages_rows(5).csv',
+      '.workflow-local/cases/example.json',
+      'exports/messages.jsonl',
+      'backup.sqlite3'
     ]);
   });
 
@@ -24,6 +30,8 @@ describe('repo hygiene check', () => {
     const violations = findRepoHygieneViolations([
       '.env.example',
       'packages/bot/src/__tests__/fixtures/conversation-output-safety.csv',
+      'docker/postgres-init/000_supabase_compat.sql',
+      'supabase/migrations/001_public_schema.sql',
       'logs.md'
     ]);
 
