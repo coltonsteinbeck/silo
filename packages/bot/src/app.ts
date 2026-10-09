@@ -108,7 +108,11 @@ import {
 import { resolveReplyContext } from './services/reply-context';
 import { shouldHandleAssistantMessage } from './services/message-trigger';
 import { fetchUrlContextBlock, hasUrlContextCandidate } from './services/url-context';
-import { decideVisionRouting, enforceVisionRoutingPrecheck } from './services/vision-routing';
+import {
+  buildVisionResponseInstruction,
+  decideVisionRouting,
+  enforceVisionRoutingPrecheck
+} from './services/vision-routing';
 import {
   initializeLangfuseTracing,
   shutdownLangfuseTracing,
@@ -1739,7 +1743,7 @@ export async function startBot(): Promise<void> {
             agentGraphConfig.searchEnabled,
             urlContext.items.length > 0
           );
-          const systemPrompt = `${baseSystemPrompt}${personaTurnInstruction}${webAccessInstruction}`;
+          const systemPrompt = `${baseSystemPrompt}${personaTurnInstruction}${webAccessInstruction}${buildVisionResponseInstruction(useVision)}`;
           const outputInputNsfwRisk =
             assistantSafetyPolicy === 'contextual_banter' && personaState === 'alternate'
               ? hasSemanticNsfwInputRisk(

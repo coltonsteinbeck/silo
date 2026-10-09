@@ -4,6 +4,14 @@ import type { AssembledConversationContext } from './conversation-context';
 export const VISION_PROVIDER_REQUIRED_MESSAGE =
   'I can’t analyze images right now. Please describe the image in text, or try again later.';
 
+export function buildVisionResponseInstruction(useVision: boolean): string {
+  if (!useVision) {
+    return '';
+  }
+
+  return '\n\nImage response rule: Use visual grounding silently and answer the latest user request directly in the configured persona. For an image-only turn, respond to the image in that persona. Do not prepend an image description or repeat the private grounding notes. If the user explicitly asks for a description, identification, or visible text, provide the requested details as the answer.';
+}
+
 export interface VisionRoutingDecision {
   useVision: boolean;
   estimatedVisionTokens: number;

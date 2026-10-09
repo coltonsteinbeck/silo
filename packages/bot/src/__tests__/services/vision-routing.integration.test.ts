@@ -2,6 +2,7 @@ import { describe, test, expect } from 'bun:test';
 import type { ImageProvider } from '@silo/core';
 import { assembleConversationContext } from '../../services/conversation-context';
 import {
+  buildVisionResponseInstruction,
   decideVisionRouting,
   enforceVisionRoutingPrecheck,
   VISION_PROVIDER_REQUIRED_MESSAGE
@@ -42,6 +43,7 @@ describe('vision routing integration seam', () => {
     expect(decision.useVision).toBe(false);
     expect(decision.estimatedVisionTokens).toBe(0);
     expect(decision.errorMessage).toBeNull();
+    expect(buildVisionResponseInstruction(decision.useVision)).toBe('');
   });
 
   test('precheck sends handler reply payload for missing vision provider', async () => {
@@ -90,5 +92,13 @@ describe('vision routing integration seam', () => {
     expect(decision.useVision).toBe(true);
     expect(decision.estimatedVisionTokens).toBe(1000);
     expect(decision.errorMessage).toBeNull();
+    const instruction = buildVisionResponseInstruction(decision.useVision);
+    expect(instruction).toContain('Use visual grounding silently');
+    expect(instruction).toContain('configured persona');
+    expect(instruction).toContain('For an image-only turn');
+    expect(instruction).toContain('Do not prepend an image description');
+    expect(instruction).toContain(
+      'explicitly asks for a description, identification, or visible text'
+    );
   });
 });
