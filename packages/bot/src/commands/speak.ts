@@ -143,11 +143,15 @@ export class SpeakCommand implements Command {
         true
       );
       const promptConfig = systemPromptManager.getEffectivePrompt(dbPrompt, promptEnabled, true);
+      const managedPersona = resolveManagedGuildPersonaPolicy(guildId);
+      const safeguardsEnabled = await areGuildSafeguardsEnabled(guildId);
       const instructions = composeSystemPromptWithSafety(
-        resolveManagedGuildPersonaPolicy(guildId)?.prompt ||
+        (safeguardsEnabled
+          ? managedPersona?.prompt
+          : managedPersona?.promptWithoutContentSafeguards || managedPersona?.prompt) ||
           promptConfig.prompt ||
           'You are a helpful AI assistant in a Discord voice channel. Keep responses concise and conversational.',
-        await areGuildSafeguardsEnabled(guildId)
+        safeguardsEnabled
       );
 
       // Join the voice channel if not already connected

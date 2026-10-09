@@ -7,6 +7,16 @@ import {
 } from './prompt-safety';
 
 const instruction = z.string().trim().min(1).max(4000);
+const turnInstructions = z
+  .object({
+    default: instruction,
+    alternate: instruction,
+    ordinary: instruction,
+    contextual_explanation: instruction,
+    boundary_redirect: instruction
+  })
+  .strict()
+  .readonly();
 const aliases = z
   .array(
     z
@@ -29,6 +39,7 @@ export const ManagedGuildPolicySchema = z
     textModel: z.string().regex(/^[a-zA-Z0-9._:-]{1,100}$/),
     promptVersion: z.string().trim().min(1).max(80),
     prompt: z.string().trim().min(1).max(16000),
+    promptWithoutContentSafeguards: z.string().trim().min(1).max(16000).optional(),
     customPromptsDisabled: z.literal(true),
     assistantOutputBlockedMessage: z.string().trim().min(1).max(200),
     allowMildAssistantProfanity: z.boolean(),
@@ -37,16 +48,8 @@ export const ManagedGuildPolicySchema = z
     alternatePersonaEnabled: z.boolean(),
     defaultAliases: aliases,
     alternateAliases: aliases,
-    turnInstructions: z
-      .object({
-        default: instruction,
-        alternate: instruction,
-        ordinary: instruction,
-        contextual_explanation: instruction,
-        boundary_redirect: instruction
-      })
-      .strict()
-      .readonly()
+    turnInstructions,
+    turnInstructionsWithoutContentSafeguards: turnInstructions.optional()
   })
   .strict()
   .readonly();

@@ -15,6 +15,8 @@ import { logger } from '@silo/core';
 import { buildPromptSafetyWarningMessage, evaluatePromptSafety } from '../security/prompt-safety';
 
 import { evaluateSafetyDecision } from '../security/safety-decision';
+import { resolveManagedGuildPersonaPolicy } from '../security/guild-persona-policy';
+import { composeSystemPromptWithSafety } from '../security/safety-policy';
 import { VoiceOutputGate } from './output-gate';
 import { withLangfuseRootTrace, type TraceMetadata } from '../telemetry/langfuse-client';
 
@@ -413,6 +415,8 @@ export class RealtimeSession {
       return;
     }
 
+    this.refreshManagedInstructions(safetyResult.safeguardsEnabled !== false);
+
     this.send({
       type: 'conversation.item.create',
       item: {
@@ -456,6 +460,7 @@ export class RealtimeSession {
       return;
     }
     if (safetyResult.allowed) {
+      this.refreshManagedInstructions(safetyResult.safeguardsEnabled !== false);
       this.requestResponse();
       return;
     }
@@ -468,6 +473,20 @@ export class RealtimeSession {
     });
 
     this.emitVoiceSafetyFallback(safetyResult.reasons, safetyResult.moderationCategories);
+  }
+
+  private refreshManagedInstructions(safeguardsEnabled: boolean): void {
+    const policy = resolveManagedGuildPersonaPolicy(this.options.guildId);
+    if (!policy) return;
+    const instructions = composeSystemPromptWithSafety(
+      safeguardsEnabled ? policy.prompt : policy.promptWithoutContentSafeguards || policy.prompt,
+      safeguardsEnabled
+    );
+    const update: SessionUpdateEvent = {
+      type: 'session.update',
+      session: { type: 'realtime', instructions }
+    };
+    this.send({ ...update });
   }
 
   private handleVoiceSafetyError(context: string, error: unknown): void {
