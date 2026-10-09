@@ -96,7 +96,9 @@ describe('vision routing integration seam', () => {
     expect(instruction).toContain('Use visual grounding silently');
     expect(instruction).toContain('configured persona');
     expect(instruction).toContain('For an image-only turn');
+    expect(instruction).toContain('give a brief in-character reaction');
     expect(instruction).toContain('Do not prepend an image description');
+    expect(instruction).toContain('list visual details');
     expect(instruction).toContain(
       'explicitly asks for a description, identification, or visible text'
     );
