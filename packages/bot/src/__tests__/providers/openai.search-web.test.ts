@@ -2,6 +2,24 @@ import { describe, expect, mock, test } from 'bun:test';
 import { OpenAIProvider } from '../../providers/openai';
 
 describe('OpenAIProvider.searchWeb', () => {
+  test('allows a bounded 20-second transport deadline without SDK retries or more tool calls', async () => {
+    const provider = new OpenAIProvider('sk-test');
+    const signal = new AbortController().signal;
+    const create = mock(
+      async (_request: Record<string, unknown>, _options: Record<string, unknown>) => ({
+        output_text: 'A sourced answer'
+      })
+    );
+    (provider as any).client = { responses: { create } };
+    await provider.searchWeb('A factual question', { signal });
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0]?.[1]).toEqual({ signal, maxRetries: 0, timeout: 20_000 });
+    expect(create.mock.calls[0]?.[0]).toMatchObject({
+      max_tool_calls: 2,
+      max_output_tokens: 1200,
+      store: false
+    });
+  });
   test('returns output_text with mapped usage and requested model', async () => {
     const provider = new OpenAIProvider('sk-test');
     let requestBody: Record<string, unknown> | undefined;

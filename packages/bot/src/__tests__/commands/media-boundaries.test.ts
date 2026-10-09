@@ -63,7 +63,7 @@ for (const kind of ['draw', 'video'] as const) {
     spyOn(AbortSignal, 'timeout').mockReturnValue(deadline.signal);
     const f = setup(kind);
     f.generate.mockImplementation(async () => {
-      deadline.abort(new DOMException('Deadline reached', 'TimeoutError'));
+      deadline.abort(new globalThis.DOMException('Deadline reached', 'TimeoutError'));
       throw deadline.signal.reason;
     });
     await f.command.execute(f.interaction);

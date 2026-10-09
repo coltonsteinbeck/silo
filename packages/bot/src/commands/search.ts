@@ -199,7 +199,7 @@ export class SearchCommand {
               processedQuery = moderation.processedPrompt;
             },
             execute: async () => {
-              const providerSignal = AbortSignal.any([signal, AbortSignal.timeout(20_000)]);
+              const providerSignal = AbortSignal.any([signal, AbortSignal.timeout(25_000)]);
               for (const provider of providers) {
                 providerSignal.throwIfAborted();
                 attempts++;
@@ -212,7 +212,7 @@ export class SearchCommand {
                     async generation => {
                       const result = await provider.searchWeb(processedQuery, {
                         maxResults: 3,
-                        signal: AbortSignal.any([providerSignal, AbortSignal.timeout(10_000)])
+                        signal: AbortSignal.any([providerSignal, AbortSignal.timeout(20_000)])
                       });
                       generation?.update({
                         model: result.model,

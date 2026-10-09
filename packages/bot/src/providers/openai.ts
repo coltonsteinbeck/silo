@@ -319,7 +319,7 @@ export class OpenAIProvider implements TextProvider, ImageProvider, WebSearchPro
           max_output_tokens: 1200,
           store: false
         } as any,
-        { signal: options?.signal, maxRetries: 0, timeout: 10_000 }
+        { signal: options?.signal, maxRetries: 0, timeout: 20_000 }
       )) as OpenAIWebSearchResult;
     } catch (error) {
       logger.error('[OpenAI] Web search failed', {

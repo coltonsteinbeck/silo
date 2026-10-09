@@ -446,7 +446,7 @@ test('search registration is independent of graph mode and requires quota plus p
   ).toBe(false);
 });
 
-test.each([10_000, 20_000, 30_000])(
+test.each([20_000, 25_000, 30_000])(
   'deadline %d aborts provider work with bounded fallback',
   async deadline => {
     const controllers = new Map<number, AbortController>();
@@ -462,16 +462,16 @@ test.each([10_000, 20_000, 30_000])(
           once: true
         })
       );
-      controllers
-        .get(deadline)!
-        .abort(new globalThis.DOMException('Deadline reached', 'TimeoutError'));
+      (controllers.get(deadline) ?? controllers.get(20_000))!.abort(
+        new globalThis.DOMException('Deadline reached', 'TimeoutError')
+      );
       return pending;
     });
     await f.run();
-    expect([...controllers.keys()]).toEqual([30_000, 20_000, 10_000]);
+    expect([...controllers.keys()]).toEqual([30_000, 25_000, 20_000]);
     expect(f.primary.searchWeb).toHaveBeenCalledTimes(1);
-    expect(f.fallback.searchWeb).toHaveBeenCalledTimes(deadline === 10_000 ? 1 : 0);
-    expect(f.interaction.followUp).toHaveBeenCalledTimes(deadline === 10_000 ? 1 : 0);
+    expect(f.fallback.searchWeb).toHaveBeenCalledTimes(deadline === 20_000 ? 1 : 0);
+    expect(f.interaction.followUp).toHaveBeenCalledTimes(deadline === 20_000 ? 1 : 0);
   }
 );
 
