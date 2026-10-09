@@ -305,6 +305,9 @@ export class OpenAIProvider implements TextProvider, ImageProvider, WebSearchPro
           model,
           input: query,
           instructions:
+            `Current UTC date: ${new Date().toISOString().slice(0, 10)}. ` +
+            'Resolve relative dates against this date unless the user specifies a timezone or date. ' +
+            'Never call a different calendar date today; distinguish the next event from an event today. ' +
             'Use ordinary web search queries to find relevant webpages, preferring primary sources. ' +
             'Do not use structured sports, weather, or finance feeds. ' +
             'Answer concisely from retrieved webpages with inline URL citations. ' +

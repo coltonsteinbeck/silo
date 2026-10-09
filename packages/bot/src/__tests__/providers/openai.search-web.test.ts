@@ -1,7 +1,31 @@
-import { describe, expect, mock, test } from 'bun:test';
+import { describe, expect, mock, spyOn, test } from 'bun:test';
 import { OpenAIProvider } from '../../providers/openai';
 
 describe('OpenAIProvider.searchWeb', () => {
+  test('anchors relative dates to the request clock while preserving the user query and override', async () => {
+    const clock = spyOn(Date.prototype, 'toISOString').mockReturnValue('2026-10-09T22:00:00.000Z');
+    try {
+      const provider = new OpenAIProvider('sk-test');
+      const create = mock(async (_request: Record<string, unknown>) => ({
+        output_text: 'No game today.'
+      }));
+      (provider as any).client = { responses: { create } };
+      await provider.searchWeb('who does Alabama football play today?', {
+        model: 'explicit-model'
+      });
+      const request = create.mock.calls[0]?.[0];
+      expect(request?.instructions).toContain('Current UTC date: 2026-10-09.');
+      expect(request?.instructions).toContain('Never call a different calendar date today');
+      expect(request).toMatchObject({
+        input: 'who does Alabama football play today?',
+        model: 'explicit-model',
+        max_tool_calls: 2,
+        max_output_tokens: 1200
+      });
+    } finally {
+      clock.mockRestore();
+    }
+  });
   test('allows a bounded 20-second transport deadline without SDK retries or more tool calls', async () => {
     const provider = new OpenAIProvider('sk-test');
     const signal = new AbortController().signal;
