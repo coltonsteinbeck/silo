@@ -7,6 +7,40 @@
 
 import { mock } from 'bun:test';
 
+// Unit and graph tests must never inherit production provider credentials from
+// a developer's local .env. Individual provider tests can install explicit
+// mock credentials after this preload runs.
+for (const credential of [
+  'OPENAI_API_KEY',
+  'ANTHROPIC_API_KEY',
+  'XAI_API_KEY',
+  'GOOGLE_API_KEY',
+  'LOCAL_API_KEY'
+]) {
+  delete process.env[credential];
+}
+process.env.OPENAI_GUARDRAILS_ENABLED = 'false';
+process.env.OPENAI_MODERATION_ENABLED = 'false';
+
+const providerApiHosts = new Set([
+  'api.openai.com',
+  'api.anthropic.com',
+  'api.x.ai',
+  'generativelanguage.googleapis.com'
+]);
+const nativeFetch = globalThis.fetch;
+globalThis.fetch = (async (
+  input: Parameters<typeof globalThis.fetch>[0],
+  init?: Parameters<typeof globalThis.fetch>[1]
+) => {
+  const url =
+    typeof input === 'string' ? new URL(input) : input instanceof URL ? input : new URL(input.url);
+  if (providerApiHosts.has(url.hostname)) {
+    throw new Error(`Outbound provider call blocked by test harness: ${url.hostname}`);
+  }
+  return nativeFetch(input, init);
+}) as typeof globalThis.fetch;
+
 // ============================================================================
 // Discord.js Mocks
 // ============================================================================
@@ -200,36 +234,6 @@ export function createMockAdminAdapter() {
       return config;
     }),
 
-    updateSafetyFeatures: mock(
-      async (
-        guildId: string,
-        updates: { edgyModeEnabled: boolean; deterministicSentimentReviewEnabled?: boolean }
-      ) => {
-        const existing = serverConfigs.get(guildId) ?? { guildId };
-        const existingFeatures = (existing.featuresEnabled as Record<string, unknown>) ?? {};
-        const deterministicSentimentReviewEnabled =
-          updates.deterministicSentimentReviewEnabled ??
-          (existingFeatures.deterministicSentimentReviewEnabled as boolean | undefined) ??
-          updates.edgyModeEnabled;
-
-        const next = {
-          ...existing,
-          guildId,
-          featuresEnabled: {
-            ...existingFeatures,
-            edgyModeEnabled: updates.edgyModeEnabled,
-            deterministicSentimentReviewEnabled
-          }
-        };
-
-        serverConfigs.set(guildId, next);
-        return next;
-      }
-    ),
-
-    getChannelConfig: mock(async () => null),
-    setChannelConfig: mock(async () => {}),
-
     getAlertsChannel: mock(async () => null),
     setAlertsChannel: mock(async () => {}),
 
@@ -277,12 +281,16 @@ export function createMockAdminAdapter() {
 // ============================================================================
 
 export function createMockProviderRegistry(): {
+  getConfiguredImageModel: ReturnType<typeof mock>;
+  getConfiguredVideoModel: ReturnType<typeof mock>;
   getTextProvider: ReturnType<typeof mock>;
   getImageProvider: ReturnType<typeof mock>;
   getVideoProvider: ReturnType<typeof mock>;
   getAvailableProviders: ReturnType<typeof mock>;
 } {
   return {
+    getConfiguredImageModel: mock(() => undefined),
+    getConfiguredVideoModel: mock(() => undefined),
     getTextProvider: mock((name?: string) => ({
       name: name ?? 'openai',
       isConfigured: () => true,
@@ -313,8 +321,8 @@ export function createMockProviderRegistry(): {
     })),
 
     getAvailableProviders: mock(() => ({
-      text: ['openai', 'anthropic'],
-      image: ['openai', 'xai', 'google'],
+      text: ['openai', 'xai'],
+      image: ['openai', 'xai'],
       video: ['xai']
     }))
   };

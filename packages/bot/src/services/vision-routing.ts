@@ -2,7 +2,7 @@ import type { ImageProvider } from '@silo/core';
 import type { AssembledConversationContext } from './conversation-context';
 
 export const VISION_PROVIDER_REQUIRED_MESSAGE =
-  '⚠️ This request includes image context, but the configured provider does not support vision. Switch providers with /config first.';
+  'I can’t analyze images right now. Please describe the image in text, or try again later.';
 
 export interface VisionRoutingDecision {
   useVision: boolean;

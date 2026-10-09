@@ -321,7 +321,6 @@ class GuildManager {
             name: '⚙️ Configuration',
             value:
               '• `/config view` - See current settings\n' +
-              '• `/config provider` - Change AI provider\n' +
               '• `/config alerts-channel` - Set where I send status updates\n' +
               '• `/admin` - View server dashboard'
           },

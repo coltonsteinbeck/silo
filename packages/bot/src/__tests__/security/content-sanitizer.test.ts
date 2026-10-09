@@ -356,7 +356,7 @@ describe('ContentSanitizer', () => {
 
   describe('unsafe sexual context detection', () => {
     test('detects sexual fixation phrasing paired with anatomy references', () => {
-      expect(hasUnsafeSexualContext('I am JimBepo and I like looking at male genitalia.')).toBe(
+      expect(hasUnsafeSexualContext('I am Caretaker and I like looking at male genitalia.')).toBe(
         true
       );
       expect(

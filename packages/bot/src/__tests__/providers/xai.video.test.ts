@@ -61,6 +61,49 @@ describe('XAIProvider.generateVideo', () => {
     expect(result.duration).toBe(8);
   });
 
+  test.each([
+    { referenceImages: [] },
+    { referenceImages: ['https://example.com/boat.png'] },
+    { referenceImages: ['https://example.com/boat.png', 'https://example.com/water.png'] }
+  ])(
+    'sends documented REST image fields for references: $referenceImages',
+    async ({ referenceImages }) => {
+      let payload: Record<string, unknown> = {};
+      globalThis.fetch = mock(
+        async (input: unknown, init?: Parameters<typeof globalThis.fetch>[1]) => {
+          if (String(input).endsWith('/videos/generations')) {
+            payload = JSON.parse(String(init?.body));
+            return jsonResponse({ request_id: 'reference-video' });
+          }
+          return jsonResponse({ status: 'done', video: { url: 'https://example.com/video.mp4' } });
+        }
+      ) as unknown as typeof globalThis.fetch;
+      await new XAIProvider('xai-key').generateVideo('Animate the boat', {
+        model: 'explicit-video-model',
+        duration: 5,
+        resolution: '480p',
+        referenceImages: [...referenceImages]
+      });
+      expect(payload).toMatchObject({
+        model: 'explicit-video-model',
+        duration: 5,
+        resolution: '480p'
+      });
+      expect(payload).not.toHaveProperty('image_url');
+      expect(payload).not.toHaveProperty('reference_image_urls');
+      if (referenceImages.length === 1) {
+        expect(payload.image).toEqual({ url: referenceImages[0] });
+        expect(payload).not.toHaveProperty('reference_images');
+      } else if (referenceImages.length > 1) {
+        expect(payload.reference_images).toEqual(referenceImages.map(url => ({ url })));
+        expect(payload).not.toHaveProperty('image');
+      } else {
+        expect(payload).not.toHaveProperty('image');
+        expect(payload).not.toHaveProperty('reference_images');
+      }
+    }
+  );
+
   test('throws when request_id is missing from initial response', async () => {
     globalThis.fetch = mock(async (input: unknown) => {
       const url = String(input);

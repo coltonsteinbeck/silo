@@ -12,6 +12,7 @@ import {
   createMockPermissionManager
 } from '@silo/core/test-setup';
 import { AnalyticsCommand } from '../../commands/analytics';
+import { executeCommandWithAnalytics } from '../../runtime/command-execution';
 
 describe('AnalyticsCommand', () => {
   let command: AnalyticsCommand;
@@ -62,6 +63,37 @@ describe('AnalyticsCommand', () => {
   });
 
   describe('execute', () => {
+    test('displays events from actual command execution and includes zero-millisecond samples', async () => {
+      const events: any[] = [];
+      const source = { ...createMockInteraction(), commandName: 'help' };
+      await executeCommandWithAnalytics({ execute: async () => {} }, source as any, {
+        logEvent: async event => {
+          events.push({ ...event, responseTimeMs: 0 });
+        }
+      });
+      mockAdminDb.getAnalytics = mock(async () => events);
+      const interaction = createMockInteraction({ options: { subcommand: 'general' } });
+      Object.setPrototypeOf(interaction.member, GuildMember.prototype);
+      await command.execute(interaction as any);
+      const reply = interaction._getReplies()[0] as { embeds: any[] };
+      const embed = reply.embeds[0].data ?? reply.embeds[0];
+      const usage = embed.fields.find((f: any) => f.name.includes('Command Usage')).value;
+      expect(usage).toContain('Total Commands: **1**');
+      expect(usage).toContain('Avg Response: **0.00s**');
+    });
+
+    test('displays unavailable response timing without a seconds suffix', async () => {
+      mockAdminDb.getAnalytics = mock(async () => []);
+      const interaction = createMockInteraction({ options: { subcommand: 'general' } });
+      Object.setPrototypeOf(interaction.member, GuildMember.prototype);
+      await command.execute(interaction as any);
+      const reply = interaction._getReplies()[0] as { embeds: any[] };
+      const embed = reply.embeds[0].data ?? reply.embeds[0];
+      expect(embed.fields.find((f: any) => f.name.includes('Command Usage')).value).toContain(
+        'Avg Response: **N/A**'
+      );
+    });
+
     test('rejects non-guild usage', async () => {
       const interaction = createMockInteraction({
         guildId: undefined
@@ -131,6 +163,20 @@ describe('AnalyticsCommand', () => {
   });
 
   describe('cost display', () => {
+    test('does not turn missing provider cost and usage into a zero-dollar estimate', async () => {
+      mockAdminDb.getAnalytics = mock(async () => [
+        { eventType: 'command_used', command: 'help', success: true }
+      ]);
+      const interaction = createMockInteraction({ options: { subcommand: 'general' } });
+      Object.setPrototypeOf(interaction.member, GuildMember.prototype);
+      await command.execute(interaction as any);
+      const reply = interaction._getReplies()[0] as { embeds: any[] };
+      const embed = reply.embeds[0].data ?? reply.embeds[0];
+      const cost = embed.fields.find((field: any) => field.name.includes('Usage & Cost')).value;
+      expect(cost).toContain('Unavailable');
+      expect(cost).not.toContain('$0.0000');
+    });
+
     test('uses estimated cost when available', async () => {
       mockPermissions.canModerate = mock(async () => true);
       mockAdminDb.getAnalytics = mock(async () => [

@@ -23,6 +23,7 @@ describe('ConfigCommand', () => {
 
   beforeEach(() => {
     mockAdminDb = createMockAdminAdapter();
+    mockAdminDb.logAction = mock(async () => {});
     mockPermissions = createMockPermissionManager();
     mockPermissions.isAdmin = mock(async () => true);
     command = new ConfigCommand(mockAdminDb, mockPermissions);
@@ -113,18 +114,26 @@ describe('ConfigCommand', () => {
     });
 
     describe('provider subcommand', () => {
-      test('responds when executed', async () => {
+      test('rejects stale provider controls without changing configuration', async () => {
         const interaction = createMockInteraction({
-          options: {
-            subcommand: 'provider',
-            provider: 'anthropic'
-          }
+          options: { subcommand: 'provider', provider: 'anthropic' },
+          member: createMockGuildMember({ isAdmin: true }) as any
         });
-
+        Object.setPrototypeOf(interaction.member, GuildMember.prototype);
         await command.execute(interaction as any);
-
-        // Command should produce a response (either permission error or success)
-        expect(interaction._getReplies().length).toBeGreaterThanOrEqual(0);
+        expect(mockAdminDb.setServerConfig).not.toHaveBeenCalled();
+        expect(mockAdminDb.logAction).not.toHaveBeenCalled();
+        expect(interaction._getReplies()).toEqual([
+          {
+            content: 'Answer routing is automatic. This setting is no longer available.',
+            ephemeral: true
+          }
+        ]);
+        expect(
+          command.data
+            .toJSON()
+            .options.some((option: { name: string }) => option.name === 'provider')
+        ).toBe(false);
       });
     });
 

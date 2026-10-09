@@ -1,6 +1,8 @@
-import { ChatInputCommandInteraction, GuildMember, SlashCommandBuilder } from 'discord.js';
+import { calculateVideoQuotaCost } from '../services/media-quota';
+import { ChatInputCommandInteraction, SlashCommandBuilder } from 'discord.js';
 import { logger } from '@silo/core';
 import { Command } from './types';
+import { executeCommandMedia, MediaQuotaDeniedError } from './media-execution';
 import { ProviderRegistry } from '../providers/registry';
 import { QuotaMiddleware } from '../middleware/quota';
 import { AdminAdapter } from '../database/admin-adapter';
@@ -15,33 +17,9 @@ import { buildLangfuseTags, buildLangfuseTraceMetadata } from '../telemetry/lang
 
 const XAI_VIDEO_MODEL = 'grok-imagine-video';
 
-// Pricing basis from xAI: 1 quota token ~= one image-input unit ($0.002).
-const IMAGE_INPUT_UNIT_PRICE_USD = 0.002;
-const VIDEO_OUTPUT_PRICE_USD: Record<'480p' | '720p', number> = {
-  '480p': 0.05,
-  '720p': 0.07
-};
-const BASE_VIDEO_DURATION_SECONDS = 5;
-
 interface VideoUrlSecurityOptions {
   policy?: UrlPolicyOptions;
   adminDb?: AdminAdapter;
-}
-
-function calculateVideoQuotaCost(
-  duration: number,
-  resolution: string,
-  referenceCount: number
-): number {
-  const normalizedResolution: '480p' | '720p' = resolution === '720p' ? '720p' : '480p';
-  const safeDuration = Math.max(1, duration);
-  const outputUsd =
-    VIDEO_OUTPUT_PRICE_USD[normalizedResolution] * (safeDuration / BASE_VIDEO_DURATION_SECONDS);
-  const referenceUsd = Math.max(0, referenceCount) * IMAGE_INPUT_UNIT_PRICE_USD;
-  const totalUsd = outputUsd + referenceUsd;
-
-  // Convert USD-estimated media cost to internal token units.
-  return Math.max(1, Math.ceil(totalUsd / IMAGE_INPUT_UNIT_PRICE_USD));
 }
 
 export class VideoCommand implements Command {
@@ -91,7 +69,8 @@ export class VideoCommand implements Command {
     private registry: ProviderRegistry,
     private quotaMiddleware?: QuotaMiddleware,
     private urlSecurity?: VideoUrlSecurityOptions,
-    private promptGuard: PromptModerationGuard = moderateCommandPrompt
+    private promptGuard: PromptModerationGuard = moderateCommandPrompt,
+    private shutdownSignal?: AbortSignal
   ) {}
 
   private async logUrlScreening(
@@ -172,71 +151,59 @@ export class VideoCommand implements Command {
   }
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
+    const signal = AbortSignal.any([
+      AbortSignal.timeout(720_000),
+      ...(this.shutdownSignal ? [this.shutdownSignal] : [])
+    ]);
+    signal.throwIfAborted();
     const prompt = interaction.options.getString('prompt', true);
     const duration = interaction.options.getInteger('duration') || 8;
     const resolution = interaction.options.getString('resolution') || '480p';
     const aspectRatio = interaction.options.getString('aspect-ratio') || '16:9';
 
-    const promptDecision = await this.promptGuard({
-      prompt,
-      guildId: interaction.guildId,
-      userId: interaction.user.id,
-      command: 'video',
-      phase: 'generate'
-    });
-
-    if (!promptDecision.allowed) {
-      await interaction.reply({
-        content: promptDecision.userMessage || '⚠️ Prompt blocked by content policy.',
-        ephemeral: true
+    await interaction.deferReply();
+    try {
+      const promptDecision = await this.promptGuard({
+        prompt,
+        guildId: interaction.guildId,
+        userId: interaction.user.id,
+        command: 'video',
+        phase: 'generate',
+        signal
       });
-      return;
-    }
 
-    const effectivePrompt = promptDecision.processedPrompt;
-
-    const refsResult = await this.collectReferenceImages(interaction);
-    if (!refsResult.valid) {
-      await interaction.reply({
-        content: `Unable to process references: ${refsResult.reason}`,
-        ephemeral: true
-      });
-      return;
-    }
-
-    const references = refsResult.references;
-    const effectiveResolution = resolution;
-    const quotaReferenceCount = references.length;
-    const quotaCost = calculateVideoQuotaCost(duration, effectiveResolution, quotaReferenceCount);
-
-    if (this.quotaMiddleware && interaction.guildId) {
-      const member = interaction.member as GuildMember;
-      const quotaCheck = await this.quotaMiddleware.checkQuota(
-        interaction.guildId,
-        interaction.user.id,
-        member,
-        'video_tokens',
-        quotaCost
-      );
-
-      if (!quotaCheck.allowed) {
-        await interaction.reply({
-          content: `⚠️ ${quotaCheck.reason}`,
-          ephemeral: true
+      signal.throwIfAborted();
+      if (!promptDecision.allowed) {
+        await interaction.editReply({
+          content: promptDecision.userMessage || '⚠️ Prompt blocked by content policy.'
         });
         return;
       }
-    }
 
-    await interaction.deferReply();
+      const effectivePrompt = promptDecision.processedPrompt;
 
-    try {
+      const refsResult = await this.collectReferenceImages(interaction);
+      signal.throwIfAborted();
+      if (!refsResult.valid) {
+        await interaction.editReply({
+          content: `Unable to process references: ${refsResult.reason}`
+        });
+        return;
+      }
+
+      const references = refsResult.references;
+      const effectiveResolution = resolution;
+      const quotaReferenceCount = references.length;
+      const quotaCost = calculateVideoQuotaCost(duration, effectiveResolution, quotaReferenceCount);
+
       const provider = this.registry.getVideoProvider('xai');
       if (!provider) {
         await interaction.editReply('No video provider configured for grok-imagine-video.');
         return;
       }
 
+      const requestedModel =
+        this.registry.getConfiguredVideoModel(provider.name) || XAI_VIDEO_MODEL;
       const generationMetadataInput = {
         guildId: interaction.guildId,
         channelId: interaction.channelId,
@@ -244,7 +211,7 @@ export class VideoCommand implements Command {
         messageType: 'slash-command' as const,
         commandName: 'video',
         provider: provider.name,
-        model: XAI_VIDEO_MODEL,
+        model: requestedModel,
         adapter: provider.name,
         usesTools: false,
         supportsImages: references.length > 0,
@@ -265,20 +232,29 @@ export class VideoCommand implements Command {
             referenceCount: references.length,
             quotaCost
           },
-          model: XAI_VIDEO_MODEL,
+          model: requestedModel,
           metadata: buildLangfuseTraceMetadata(generationMetadataInput)
         },
         async generation => {
-          const providerResult = await provider.generateVideo(effectivePrompt, {
-            model: XAI_VIDEO_MODEL,
-            duration,
-            resolution: effectiveResolution,
-            aspectRatio,
-            referenceImages: references
-          });
+          const providerResult = await executeCommandMedia(
+            interaction,
+            this.quotaMiddleware,
+            'video_tokens',
+            quotaCost,
+            signal,
+            () =>
+              provider.generateVideo(effectivePrompt, {
+                signal,
+                model: requestedModel,
+                duration,
+                resolution: effectiveResolution,
+                aspectRatio,
+                referenceImages: references
+              })
+          );
 
           generation?.update({
-            model: providerResult.model || XAI_VIDEO_MODEL,
+            model: providerResult.model || requestedModel,
             output: {
               hasContent: Boolean(providerResult.url),
               duration: providerResult.duration || duration,
@@ -286,7 +262,7 @@ export class VideoCommand implements Command {
             },
             metadata: buildLangfuseTraceMetadata({
               ...generationMetadataInput,
-              model: providerResult.model || XAI_VIDEO_MODEL
+              model: providerResult.model || requestedModel
             })
           });
 
@@ -294,13 +270,17 @@ export class VideoCommand implements Command {
         }
       );
 
-      const inlineVideo = await buildMediaReplyPayload({
-        kind: 'video',
-        url: result.url,
-        model: result.model || XAI_VIDEO_MODEL,
-        prompt: effectivePrompt,
-        moderationPassed: result.moderationPassed
-      });
+      const inlineVideo = await buildMediaReplyPayload(
+        {
+          kind: 'video',
+          url: result.url,
+          model: result.model || requestedModel,
+          prompt: effectivePrompt,
+          moderationPassed: result.moderationPassed
+        },
+        { signal }
+      );
+      signal.throwIfAborted();
       if (inlineVideo.uploaded) {
         await interaction.editReply({
           embeds: [],
@@ -319,22 +299,18 @@ export class VideoCommand implements Command {
           embeds: []
         });
       }
-
-      if (this.quotaMiddleware && interaction.guildId) {
-        await this.quotaMiddleware.recordUsage(
-          interaction.guildId,
-          interaction.user.id,
-          'video_tokens',
-          quotaCost
-        );
-      }
     } catch (error) {
+      if (signal.aborted) return;
       logger.error('Video generation failed', {
         guildId: interaction.guildId,
         userId: interaction.user.id,
         error
       });
-      await interaction.editReply('Video generation failed. Please try again in a moment.');
+      await interaction.editReply(
+        error instanceof MediaQuotaDeniedError
+          ? error.message
+          : 'Video generation failed. Please try again in a moment.'
+      );
     }
   }
 }

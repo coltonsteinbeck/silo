@@ -8,7 +8,8 @@ interface HygieneViolation {
 
 const allowedArtifactPaths = new Set([
   'packages/bot/src/__tests__/fixtures/conversation-output-safety.csv',
-  'docker/postgres-init/000_supabase_compat.sql'
+  'docker/postgres-init/000_supabase_compat.sql',
+  'packages/bot/src/__tests__/database/quota-role-contract.sql'
 ]);
 
 const blockedDirectoryReasons = new Map([
