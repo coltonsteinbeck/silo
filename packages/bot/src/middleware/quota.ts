@@ -3,6 +3,7 @@ import type { AdminAdapter } from '../database/admin-adapter';
 import type { PermissionManager } from '../permissions/manager';
 import type { UserRole } from '@silo/core';
 import { logger } from '@silo/core';
+import type { QuotaReservationLifecycleRow, QuotaReservationRow } from '../database/admin-adapter';
 
 export type UsageType =
   'text_tokens' | 'images' | 'voice_minutes' | 'vision_tokens' | 'video_tokens';
@@ -27,14 +28,45 @@ interface TokenUsageMetrics {
   totalTokens?: number;
 }
 
-// Guild-level max quotas (cannot exceed these)
-const GUILD_MAX_QUOTAS = {
-  text_tokens: 50000,
-  images: 5,
-  voice_minutes: 15,
-  vision_tokens: 20000,
-  video_tokens: 500
-} as const;
+export interface QuotaReservationRequest {
+  operationKey: string;
+  guildId: string;
+  userId: string;
+  member: GuildMember;
+  usageType: UsageType;
+  requestedAmount: number;
+  minimumAmount?: number;
+}
+
+export type QuotaReservationDecision =
+  | {
+      allowed: true;
+      reservation: QuotaReservationRow;
+      remaining: number;
+      max: number;
+    }
+  | {
+      allowed: false;
+      reason: string;
+      denialCode: string;
+      remaining: number;
+      max: number;
+    };
+
+export type ReservedQuotaExecution<T> =
+  | {
+      allowed: true;
+      value: T;
+      reservation: QuotaReservationRow;
+      commit: QuotaReservationLifecycleRow | null;
+      actualAmount: number;
+      settlementPending: boolean;
+    }
+  | Extract<QuotaReservationDecision, { allowed: false }>;
+
+const MAX_DATABASE_QUOTA_AMOUNT = 2_147_483_647;
+const QUOTA_TRANSITION_ATTEMPTS = 3;
+const QUOTA_TRANSITION_RETRY_DELAYS_MS = [25, 75] as const;
 
 // Estimate tuning constants
 const DEFAULT_ESTIMATE_RATIO = 0.3; // Default: 0.3 tokens per input character
@@ -59,6 +91,334 @@ export class QuotaMiddleware {
     }
 
     return this.permissions.resolveRoleTierFromMember(member);
+  }
+
+  private async resolveReservationRoleTier(
+    guildId: string,
+    userId: string,
+    member: GuildMember
+  ): Promise<RoleTier> {
+    const adminDb = this.adminDb as AdminAdapter & {
+      getUserRole?: (guildId: string, userId: string) => Promise<UserRole | null>;
+    };
+    const customRole = adminDb.getUserRole ? await adminDb.getUserRole(guildId, userId) : null;
+    const resolver = (
+      this.permissions as unknown as {
+        resolveRoleTierFromMember?: (member: GuildMember) => RoleTier;
+      }
+    ).resolveRoleTierFromMember;
+
+    return typeof resolver === 'function'
+      ? this.resolveRoleTier(member, customRole)
+      : await this.permissions.getUserRoleTier(guildId, userId, member);
+  }
+
+  /**
+   * Reserves quota atomically before a paid provider call. Duplicate operation keys cannot authorize a second call.
+   */
+  async reserveQuota(request: QuotaReservationRequest): Promise<QuotaReservationDecision> {
+    const requestedAmount = Math.ceil(request.requestedAmount);
+    const minimumAmount = Math.ceil(request.minimumAmount ?? requestedAmount);
+    if (
+      !request.operationKey ||
+      request.operationKey.length > 200 ||
+      !Number.isSafeInteger(requestedAmount) ||
+      !Number.isSafeInteger(minimumAmount) ||
+      requestedAmount < 1 ||
+      minimumAmount < 1 ||
+      requestedAmount > MAX_DATABASE_QUOTA_AMOUNT ||
+      minimumAmount > MAX_DATABASE_QUOTA_AMOUNT ||
+      minimumAmount > requestedAmount
+    ) {
+      logger.error('Quota reservation rejected invalid application request', {
+        guildId: request.guildId,
+        userId: request.userId,
+        type: request.usageType,
+        requestedAmount: request.requestedAmount,
+        minimumAmount: request.minimumAmount
+      });
+      return {
+        allowed: false,
+        reason: 'Quota data is temporarily unavailable. Please try again shortly.',
+        denialCode: 'invalid_request',
+        remaining: 0,
+        max: 0
+      };
+    }
+
+    try {
+      const roleTier = await this.resolveReservationRoleTier(
+        request.guildId,
+        request.userId,
+        request.member
+      );
+      const reservation = await this.adminDb.reserveQuotaUsage({
+        idempotencyKey: request.operationKey,
+        guildId: request.guildId,
+        userId: request.userId,
+        roleTier,
+        resource: request.usageType,
+        requestedAmount,
+        minimumAmount
+      });
+
+      if (!reservation.allowed || reservation.status !== 'reserved') {
+        const denialCode = reservation.reason || `reservation_${reservation.status}`;
+        return {
+          allowed: false,
+          reason: this.formatReservationDenial(request.usageType, denialCode),
+          denialCode,
+          remaining: Math.max(0, reservation.remaining),
+          max: Math.max(0, Math.min(reservation.userLimit, reservation.guildLimit))
+        };
+      }
+
+      logger.debug('Quota reserved', {
+        guildId: request.guildId,
+        userId: request.userId,
+        type: request.usageType,
+        requestedAmount,
+        reservedAmount: reservation.reservedAmount,
+        remaining: reservation.remaining,
+        quotaExempt: reservation.quotaExempt
+      });
+      return {
+        allowed: true,
+        reservation,
+        remaining: reservation.remaining,
+        max: Math.min(reservation.userLimit, reservation.guildLimit)
+      };
+    } catch (error) {
+      logger.error('Quota reservation failed closed', {
+        guildId: request.guildId,
+        userId: request.userId,
+        type: request.usageType,
+        errorType: error instanceof Error ? error.name : 'unknown'
+      });
+      return {
+        allowed: false,
+        reason: 'Quota service is temporarily unavailable. Please try again in a moment.',
+        denialCode: 'service_unavailable',
+        remaining: 0,
+        max: 0
+      };
+    }
+  }
+
+  async markQuotaAttempted(reservation: QuotaReservationRow): Promise<void> {
+    const transition = await this.adminDb.markQuotaUsageAttempted(reservation.idempotencyKey);
+    if (transition.status !== 'attempted') {
+      throw new Error(`Unexpected quota attempt status: ${transition.status}`);
+    }
+  }
+
+  async commitQuota(
+    reservation: QuotaReservationRow,
+    actualAmount: number
+  ): Promise<QuotaReservationLifecycleRow> {
+    const normalizedAmount = this.normalizeActualQuotaAmount(reservation, actualAmount);
+    await this.recordActualQuotaUsage(reservation, normalizedAmount);
+    return this.finalizeQuotaCommit(reservation, normalizedAmount);
+  }
+
+  private normalizeActualQuotaAmount(
+    reservation: QuotaReservationRow,
+    actualAmount: number
+  ): number {
+    const normalizedAmount = Math.ceil(actualAmount);
+    if (
+      !Number.isSafeInteger(normalizedAmount) ||
+      normalizedAmount < 1 ||
+      normalizedAmount > MAX_DATABASE_QUOTA_AMOUNT
+    ) {
+      throw new Error('Invalid actual quota amount');
+    }
+    if (normalizedAmount > reservation.reservedAmount) {
+      logger.warn('Provider usage exceeded its admission reservation; charging exact usage', {
+        event: 'quota_actual_overage',
+        reservedAmount: reservation.reservedAmount,
+        actualAmount: normalizedAmount,
+        overageAmount: normalizedAmount - reservation.reservedAmount
+      });
+    }
+    return normalizedAmount;
+  }
+
+  private async recordActualQuotaUsage(
+    reservation: QuotaReservationRow,
+    normalizedAmount: number
+  ): Promise<void> {
+    await this.retryQuotaTransition('record_actual', () =>
+      this.adminDb.recordQuotaUsageActual(reservation.idempotencyKey, normalizedAmount)
+    );
+  }
+
+  private async finalizeQuotaCommit(
+    reservation: QuotaReservationRow,
+    normalizedAmount: number
+  ): Promise<QuotaReservationLifecycleRow> {
+    const transition = await this.retryQuotaTransition('commit', () =>
+      this.adminDb.commitQuotaUsage(reservation.idempotencyKey, normalizedAmount)
+    );
+    if (transition.status !== 'committed') {
+      throw new Error(`Unexpected quota commit status: ${transition.status}`);
+    }
+    return transition;
+  }
+
+  private async retryQuotaTransition<T>(operation: string, execute: () => Promise<T>): Promise<T> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= QUOTA_TRANSITION_ATTEMPTS; attempt += 1) {
+      try {
+        return await execute();
+      } catch (error) {
+        lastError = error;
+        if (attempt === QUOTA_TRANSITION_ATTEMPTS) break;
+        logger.warn('Retrying durable quota lifecycle transition', {
+          operation,
+          attempt,
+          errorType: error instanceof Error ? error.name : typeof error
+        });
+        await new Promise(resolve =>
+          setTimeout(resolve, QUOTA_TRANSITION_RETRY_DELAYS_MS[attempt - 1] ?? 75)
+        );
+      }
+    }
+    throw lastError;
+  }
+
+  async releaseUnattemptedQuota(reservation: QuotaReservationRow, reason: string): Promise<void> {
+    const transition = await this.retryQuotaTransition('release', () =>
+      this.adminDb.releaseQuotaUsage(reservation.idempotencyKey, reason)
+    );
+    if (transition.status !== 'released') {
+      throw new Error(`Unexpected quota release status: ${transition.status}`);
+    }
+  }
+
+  /**
+   * Executes one bounded provider call under an atomic quota reservation.
+   * Provider errors leave the attempted reservation for conservative database
+   * reconciliation because the application cannot prove whether billing began.
+   */
+  async executeReserved<T>(
+    params: QuotaReservationRequest & {
+      beforeAttempt?: () => void | Promise<void>;
+      execute: (reservedAmount: number) => Promise<T>;
+      getActualAmount: (value: T) => number;
+    }
+  ): Promise<ReservedQuotaExecution<T>> {
+    const decision = await this.reserveQuota(params);
+    if (!decision.allowed) {
+      return decision;
+    }
+
+    const { reservation } = decision;
+    if (params.beforeAttempt) {
+      try {
+        await params.beforeAttempt();
+      } catch (error) {
+        try {
+          await this.releaseUnattemptedQuota(reservation, 'pre_attempt_check_failed');
+        } catch (releaseError) {
+          logger.error('Failed to release quota after pre-attempt check error', {
+            guildId: params.guildId,
+            userId: params.userId,
+            type: params.usageType,
+            errorType: releaseError instanceof Error ? releaseError.name : 'unknown'
+          });
+        }
+        throw error;
+      }
+    }
+    try {
+      await this.markQuotaAttempted(reservation);
+    } catch (error) {
+      try {
+        await this.releaseUnattemptedQuota(reservation, 'attempt_transition_failed');
+      } catch (releaseError) {
+        logger.error('Failed to release quota after attempt transition error', {
+          guildId: params.guildId,
+          userId: params.userId,
+          type: params.usageType,
+          errorType: releaseError instanceof Error ? releaseError.name : 'unknown'
+        });
+      }
+      throw error;
+    }
+
+    let value: T;
+    try {
+      value = await params.execute(reservation.reservedAmount);
+    } catch (error) {
+      logger.warn(
+        'Paid provider call failed with an attempted reservation pending reconciliation',
+        {
+          guildId: params.guildId,
+          userId: params.userId,
+          type: params.usageType,
+          reservedAmount: reservation.reservedAmount,
+          errorType: error instanceof Error ? error.name : 'unknown'
+        }
+      );
+      throw error;
+    }
+
+    let actualAmount = reservation.reservedAmount;
+    try {
+      const candidate = Math.ceil(params.getActualAmount(value));
+      if (Number.isSafeInteger(candidate) && candidate >= 1) {
+        actualAmount = candidate;
+      } else {
+        logger.error('Provider returned invalid quota usage; committing reserved amount', {
+          guildId: params.guildId,
+          userId: params.userId,
+          type: params.usageType,
+          reservedAmount: reservation.reservedAmount
+        });
+      }
+    } catch (error) {
+      logger.error('Provider usage extraction failed; committing reserved amount', {
+        guildId: params.guildId,
+        userId: params.userId,
+        type: params.usageType,
+        reservedAmount: reservation.reservedAmount,
+        errorType: error instanceof Error ? error.name : 'unknown'
+      });
+    }
+
+    // Persist the exact provider usage before attempting the counter update.
+    // Once recorded, a failed commit is safely recoverable by the global
+    // reconciler and must not discard an already-paid successful response.
+    actualAmount = this.normalizeActualQuotaAmount(reservation, actualAmount);
+    await this.recordActualQuotaUsage(reservation, actualAmount);
+    try {
+      const commit = await this.finalizeQuotaCommit(reservation, actualAmount);
+      return {
+        allowed: true,
+        value,
+        reservation,
+        commit,
+        actualAmount,
+        settlementPending: false
+      };
+    } catch (error) {
+      logger.error('Quota counter commit deferred to durable reconciliation', {
+        guildId: params.guildId,
+        userId: params.userId,
+        type: params.usageType,
+        actualAmount,
+        errorType: error instanceof Error ? error.name : typeof error
+      });
+      return {
+        allowed: true,
+        value,
+        reservation,
+        commit: null,
+        actualAmount,
+        settlementPending: true
+      };
+    }
   }
 
   /**
@@ -101,14 +461,6 @@ export class QuotaMiddleware {
       timestamp: now
     };
     return DEFAULT_ESTIMATE_RATIO;
-  }
-
-  /**
-   * Estimate response tokens based on input length
-   * Uses 7-day rolling average from accuracy logs
-   */
-  async estimateResponseTokens(inputLength: number): Promise<number> {
-    return this.estimateResponseTokensWithCap(inputLength, 4000);
   }
 
   /**
@@ -443,81 +795,6 @@ export class QuotaMiddleware {
   }
 
   /**
-   * Get user's remaining quota for all types
-   */
-  async getRemainingQuotas(
-    guildId: string,
-    userId: string,
-    member: GuildMember
-  ): Promise<Record<UsageType, { remaining: number; max: number }>> {
-    const tier = await this.permissions.getUserRoleTier(guildId, userId, member);
-    const quotaLimits = await this.adminDb.getRoleTierQuota(guildId, tier);
-    const userUsage = await this.adminDb.getUserDailyUsage(guildId, userId);
-
-    const result: Record<UsageType, { remaining: number; max: number }> = {
-      text_tokens: { remaining: 0, max: 0 },
-      images: { remaining: 0, max: 0 },
-      voice_minutes: { remaining: 0, max: 0 },
-      vision_tokens: { remaining: 0, max: 0 },
-      video_tokens: { remaining: 0, max: 0 }
-    };
-
-    for (const usageType of [
-      'text_tokens',
-      'images',
-      'voice_minutes',
-      'vision_tokens',
-      'video_tokens'
-    ] as UsageType[]) {
-      const max = this.getQuotaByType(quotaLimits, usageType);
-      const used = userUsage ? this.getUserUsageByType(userUsage, usageType) : 0;
-      result[usageType] = {
-        remaining: Math.max(0, max - used),
-        max
-      };
-    }
-
-    return result;
-  }
-
-  /**
-   * Get guild's daily usage summary
-   */
-  async getGuildUsageSummary(guildId: string): Promise<{
-    textTokens: { used: number; max: number };
-    images: { used: number; max: number };
-    voiceMinutes: { used: number; max: number };
-    visionTokens: { used: number; max: number };
-    videoTokens: { used: number; max: number };
-  }> {
-    const usage = await this.adminDb.getGuildDailyUsage(guildId);
-    const quota = await this.adminDb.getGuildQuota(guildId);
-
-    return {
-      textTokens: {
-        used: usage?.textTokens || 0,
-        max: quota?.textTokensMax || GUILD_MAX_QUOTAS.text_tokens
-      },
-      images: {
-        used: usage?.images || 0,
-        max: quota?.imagesMax || GUILD_MAX_QUOTAS.images
-      },
-      voiceMinutes: {
-        used: usage?.voiceMinutes || 0,
-        max: quota?.voiceMinutesMax || GUILD_MAX_QUOTAS.voice_minutes
-      },
-      visionTokens: {
-        used: usage?.visionTokens || 0,
-        max: quota?.visionTokensMax || GUILD_MAX_QUOTAS.vision_tokens
-      },
-      videoTokens: {
-        used: usage?.videoTokens || 0,
-        max: quota?.videoTokensMax ?? GUILD_MAX_QUOTAS.video_tokens
-      }
-    };
-  }
-
-  /**
    * Get quota value by usage type from quota limits object
    */
   private getQuotaByType(
@@ -593,5 +870,24 @@ export class QuotaMiddleware {
       default:
         return 0;
     }
+  }
+  private formatReservationDenial(usageType: UsageType, denialCode: string): string {
+    if (denialCode === 'guild_limit') {
+      return `Server has reached its daily ${this.formatUsageType(usageType)} limit.`;
+    }
+    if (usageType === 'voice_minutes' && denialCode === 'role_disabled') {
+      return 'Voice features require Trusted role or higher. Ask an admin for access.';
+    }
+    if (denialCode === 'user_limit' || denialCode === 'role_disabled') {
+      return `You've reached your daily ${this.formatUsageType(usageType)} limit. Resets at midnight ET.`;
+    }
+    if (
+      denialCode.startsWith('reservation_') ||
+      denialCode.startsWith('idempotency_key_already_') ||
+      denialCode === 'idempotency_conflict'
+    ) {
+      return 'This request is already being processed or has already completed.';
+    }
+    return 'Quota service is temporarily unavailable. Please try again in a moment.';
   }
 }

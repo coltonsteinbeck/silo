@@ -1,15 +1,19 @@
+import { toLangfuseUsage } from '../telemetry/langfuse-usage';
 import {
   ChatInputCommandInteraction,
+  GuildMember,
   SlashCommandBuilder,
   EmbedBuilder,
-  ChannelType
+  ChannelType,
+  PermissionFlagsBits
 } from 'discord.js';
 import { summarizeTextForTrace, withLangfuseGeneration } from '../telemetry/langfuse-client';
 import { buildLangfuseTags, buildLangfuseTraceMetadata } from '../telemetry/langfuse-metadata';
 import { Command } from './types';
 import { ProviderRegistry } from '../providers/registry';
-import { AdminAdapter } from '../database/admin-adapter';
 import { sanitizeDiscordMassMentions } from '../security/output-sanitizer';
+import { evaluateSafetyDecision } from '../security/safety-decision';
+import type { QuotaMiddleware } from '../middleware/quota';
 
 export class DigestCommand implements Command {
   data = new SlashCommandBuilder()
@@ -36,11 +40,18 @@ export class DigestCommand implements Command {
 
   constructor(
     private registry: ProviderRegistry,
-    private adminDb?: AdminAdapter
+    private quota?: QuotaMiddleware,
+    private shutdownSignal?: AbortSignal
   ) {}
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
-    await interaction.deferReply();
+    const signal = AbortSignal.any([
+      AbortSignal.timeout(60_000),
+      ...(this.shutdownSignal ? [this.shutdownSignal] : [])
+    ]);
+    signal.throwIfAborted();
+    // A requester may read channels that other members of the invocation channel cannot.
+    await interaction.deferReply({ ephemeral: true });
 
     const period = interaction.options.getString('period') || 'daily';
     const includeStats = interaction.options.getBoolean('include_stats') ?? false;
@@ -61,15 +72,25 @@ export class DigestCommand implements Command {
     const messagesByUser = new Map<string, number>();
     const messagesByChannel = new Map<string, number>();
     const allMessages: string[] = [];
+    const sourceChannelIds = new Set<string>();
+    const canRead = (channelId: string) =>
+      channels
+        .get(channelId)
+        ?.permissionsFor(interaction.user)
+        ?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory]) === true;
 
     for (const [, channel] of channels) {
-      if (!channel.isTextBased()) continue;
+      signal.throwIfAborted();
+      if (!channel.isTextBased() || !canRead(channel.id)) continue;
 
       try {
         const messages = await channel.messages.fetch({ limit: 100 });
+        signal.throwIfAborted();
+        if (!canRead(channel.id)) continue;
         const recentMessages = messages.filter(m => m.createdAt > since && !m.author.bot);
 
         for (const [, msg] of recentMessages) {
+          sourceChannelIds.add(channel.id);
           totalMessages++;
           messagesByUser.set(msg.author.id, (messagesByUser.get(msg.author.id) || 0) + 1);
           messagesByChannel.set(channel.id, (messagesByChannel.get(channel.id) || 0) + 1);
@@ -79,26 +100,45 @@ export class DigestCommand implements Command {
           }
         }
       } catch {
+        signal.throwIfAborted();
         // Skip channels we can't access
         continue;
       }
     }
 
+    signal.throwIfAborted();
     if (totalMessages === 0) {
       await interaction.editReply(`No messages found in the last ${this.getPeriodLabel(period)}.`);
       return;
     }
 
-    // Get guild's preferred provider
-    let preferredProvider: string | undefined;
-    if (this.adminDb && interaction.guildId) {
-      const serverConfig = await this.adminDb.getServerConfig(interaction.guildId);
-      preferredProvider = serverConfig?.defaultProvider || undefined;
+    if ([...sourceChannelIds].some(channelId => !canRead(channelId))) {
+      await interaction.editReply(
+        'Channel access changed while preparing the digest. Please try again.'
+      );
+      return;
     }
 
-    // Generate AI summary
-    const provider = this.registry.getTextProvider(preferredProvider);
-    const requestedModel = this.registry.getConfiguredTextModel(provider.name);
+    if (
+      !this.quota ||
+      !(interaction.member instanceof GuildMember) ||
+      interaction.member.id !== interaction.user.id ||
+      interaction.member.guild.id !== interaction.guildId
+    ) {
+      throw new Error('Summary quota admission is unavailable');
+    }
+    signal.throwIfAborted();
+    const textRoute = this.registry.getTextRoute('summary', undefined, {
+      middleware: this.quota,
+      operationKey: `discord:${interaction.id}:digest`,
+      guildId: interaction.guildId!,
+      userId: interaction.user.id,
+      member: interaction.member,
+      usageType: 'text_tokens'
+    });
+    textRoute.options.signal = signal;
+    const provider = textRoute.provider;
+    const requestedModel = textRoute.options.model;
     const context = allMessages.join('\n');
     const generationMetadataInput = {
       guildId: interaction.guildId,
@@ -156,12 +196,12 @@ Keep it under 300 words and conversational.`
               content: `Summarize this server activity from the last ${this.getPeriodLabel(period)}:\n\n${context.slice(0, 4000)}`
             }
           ],
-          { maxTokens: 500 }
+          { ...textRoute.options, maxTokens: 500 }
         );
 
         generation?.update({
           model: providerResponse.model || requestedModel || provider.name,
-          usageDetails: providerResponse.usage,
+          usageDetails: toLangfuseUsage(providerResponse.usage),
           output: {
             outputCharacters: providerResponse.content.length,
             hasContent: Boolean(providerResponse.content.trim())
@@ -175,7 +215,25 @@ Keep it under 300 words and conversational.`
         return providerResponse;
       }
     );
-    const digestContent = sanitizeDiscordMassMentions(response.content);
+    const digestContent = sanitizeDiscordMassMentions(response.content).slice(0, 4096);
+    signal.throwIfAborted();
+    const safety = await evaluateSafetyDecision(digestContent, {
+      stage: 'assistant_output',
+      source: 'activity_digest',
+      guildId: interaction.guildId,
+      userId: interaction.user.id,
+      failurePolicy: 'fail_closed',
+      signal
+    });
+    signal.throwIfAborted();
+    if (safety.failed || safety.action !== 'allow') {
+      await interaction.editReply(
+        safety.failed
+          ? 'Digest generation is temporarily unavailable. Please try again shortly.'
+          : 'I could not safely generate this digest. Please try a different time period.'
+      );
+      return;
+    }
 
     // Build embed
     const embed = new EmbedBuilder()
@@ -230,7 +288,14 @@ Keep it under 300 words and conversational.`
       }
     }
 
-    await interaction.editReply({ embeds: [embed] });
+    if ([...sourceChannelIds].some(channelId => !canRead(channelId))) {
+      await interaction.editReply(
+        'Channel access changed while preparing the digest. Please try again.'
+      );
+      return;
+    }
+    signal.throwIfAborted();
+    await interaction.editReply({ embeds: [embed], allowedMentions: { parse: [] } });
   }
 
   private getPeriodHours(period: string): number {

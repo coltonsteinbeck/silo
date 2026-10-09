@@ -21,6 +21,7 @@ export type { GuildInfo, WaitlistEntry, JoinResult } from './guild-manager';
 
 export {
   contentSanitizer,
+  ContentSanitizer,
   buildSafetyResponseInstruction,
   buildUserMessageForBlockedInput
 } from './content-sanitizer';
@@ -41,6 +42,8 @@ export {
   evaluateUserPromptGuardrails,
   evaluateCustomSystemPromptGuardrails,
   evaluateAssistantOutputGuardrails,
+  evaluateSemanticUserPromptGuardrails,
+  evaluateSemanticAssistantOutputGuardrails,
   prewarmGuardrailsRuntime,
   isGuardrailsEnabled
 } from './openai-guardrails';
@@ -48,15 +51,46 @@ export type { GuardrailsPromptDecision } from './openai-guardrails';
 export {
   evaluatePromptSafety,
   buildPromptSafetyWarningMessage,
+  hasBenignMedicalOrAnatomyContext,
   resetPromptSafetyRuntimeForTests,
   setPromptSafetyRuntimeForTests
 } from './prompt-safety';
-export type { GuardrailProfile, PromptSafetyResult } from './prompt-safety';
+export type { GuardrailProfile, ModerationFailure, PromptSafetyResult } from './prompt-safety';
+export {
+  evaluateSafetyDecision,
+  buildSafetyDecisionMessage,
+  buildContextReuseSafetyDecision,
+  hasExplicitAdultSexualIntent,
+  hasSemanticAssistantRisk,
+  hasSemanticJailbreakRisk,
+  hasSemanticNsfwInputRisk
+} from './safety-decision';
+export {
+  buildPersonaTurnInstruction,
+  containsPersonaAlias,
+  resolvePersonaState,
+  resolveResponseIntent,
+  stripPersonaAliases
+} from './persona-state';
+export type {
+  AssistantSafetyPolicy,
+  PersonaStateResolution,
+  PersonaActivationSource,
+  PersonaState,
+  ResponseIntent
+} from './persona-state';
+export type {
+  SafetyAction,
+  SafetyDecision,
+  SafetyDetectorSource,
+  SafetyFailurePolicy,
+  SafetyStage
+} from './safety-decision';
 
 export { composeSystemPromptWithSafety, IMMUTABLE_SAFETY_POLICY } from './safety-policy';
 export { resolvePromptPolicy } from './prompt-policy';
 export {
-  MANAGED_PERSONA_ID,
+  initializeManagedGuildPolicyRegistry,
   resolveManagedGuildPersonaPolicy,
   isManagedGuildCustomPromptDisabled
 } from './guild-persona-policy';

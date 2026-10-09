@@ -111,7 +111,7 @@ export class AnalyticsCommand implements Command {
           if (event.success) successfulCommands++;
           if (event.tokensUsed) totalTokens += event.tokensUsed;
           if (event.estimatedCostUsd) totalCost += event.estimatedCostUsd;
-          if (event.responseTimeMs) {
+          if (event.responseTimeMs !== undefined && Number.isFinite(event.responseTimeMs)) {
             totalResponseTime += event.responseTimeMs;
             responseTimeCount++;
           }
@@ -165,7 +165,9 @@ export class AnalyticsCommand implements Command {
           ? aggCost.toFixed(4)
           : totalCost > 0
             ? totalCost.toFixed(4)
-            : ((totalTokens / 1000) * 0.002).toFixed(4); // fallback rough estimate
+            : totalTokens > 0
+              ? ((totalTokens / 1000) * 0.002).toFixed(4) // fallback rough estimate
+              : null;
 
       const displayTokens = aggTokens > 0 ? aggTokens : totalTokens;
 
@@ -182,7 +184,7 @@ export class AnalyticsCommand implements Command {
         .addFields(
           {
             name: '📈 Command Usage',
-            value: `Total Commands: **${totalCommands}**\nSuccess Rate: **${successRate}%**\nAvg Response: **${avgResponseTime}s**`,
+            value: `Total Commands: **${totalCommands}**\nSuccess Rate: **${successRate}%**\nAvg Response: **${avgResponseTime === 'N/A' ? avgResponseTime : `${avgResponseTime}s`}**`,
             inline: false
           },
           {
@@ -202,7 +204,7 @@ export class AnalyticsCommand implements Command {
           },
           {
             name: '💰 Usage & Cost',
-            value: `Total Tokens: **${displayTokens.toLocaleString()}**\nEst. Cost (30d window data): **$${estimatedCost}**`,
+            value: `Total Tokens: **${displayTokens.toLocaleString()}**\nEst. Cost (30d window data): **${estimatedCost === null ? 'Unavailable' : `$${estimatedCost}`}**`,
             inline: false
           },
           {

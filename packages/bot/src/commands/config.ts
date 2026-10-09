@@ -30,23 +30,6 @@ export class ConfigCommand implements Command {
       .setDMPermission(false)
       .addSubcommand(sub =>
         sub
-          .setName('provider')
-          .setDescription('Set the default AI provider for this server')
-          .addStringOption(opt =>
-            opt
-              .setName('provider')
-              .setDescription('AI provider to use')
-              .setRequired(true)
-              .addChoices(
-                { name: 'OpenAI', value: 'openai' },
-                { name: 'Anthropic', value: 'anthropic' },
-                { name: 'xAI', value: 'xai' },
-                { name: 'Google', value: 'google' }
-              )
-          )
-      )
-      .addSubcommand(sub =>
-        sub
           .setName('auto-thread')
           .setDescription('Enable or disable automatic thread creation')
           .addBooleanOption(opt =>
@@ -158,21 +141,8 @@ export class ConfigCommand implements Command {
     try {
       switch (subcommand) {
         case 'provider': {
-          const provider = interaction.options.getString('provider', true);
-          await this.adminDb.setServerConfig({
-            guildId: interaction.guildId,
-            defaultProvider: provider as any
-          });
-
-          await this.adminDb.logAction({
-            guildId: interaction.guildId,
-            userId: interaction.user.id,
-            action: 'config_changed',
-            details: { setting: 'provider', value: provider }
-          });
-
           await interaction.reply({
-            content: `✅ Default AI provider set to **${provider}**`,
+            content: 'Answer routing is automatic. This setting is no longer available.',
             ephemeral: true
           });
           break;
@@ -403,7 +373,6 @@ export class ConfigCommand implements Command {
 
           const lines = [
             '**Current Server Configuration:**',
-            `• Default Provider: ${config?.defaultProvider || 'openai'}`,
             `• Auto Thread: ${config?.autoThread ? 'Enabled' : 'Disabled'}`,
             `• Memory Retention: ${config?.memoryRetentionDays || 30} days`,
             `• Rate Limit Multiplier: ${config?.rateLimitMultiplier || 1.0}x`,
