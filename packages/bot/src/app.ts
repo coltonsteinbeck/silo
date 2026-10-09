@@ -237,6 +237,7 @@ async function resolveRuntimePrompt(
   systemPrompt: { prompt: string | null; enabled: boolean }
 ) {
   const managedPersona = resolveManagedGuildPersonaPolicy(guildId);
+  const managedSafeguardsEnabled = await areGuildSafeguardsEnabled(guildId);
   const { prompt: dbPrompt, enabled: promptEnabled } = systemPrompt;
   const managedCustomPromptsDisabled = Boolean(managedPersona?.customPromptsDisabled);
   const effectivePromptEnabled = managedCustomPromptsDisabled ? false : promptEnabled;
@@ -246,7 +247,9 @@ async function resolveRuntimePrompt(
   );
 
   const defaultPrompt =
-    managedPersona?.prompt ||
+    (managedSafeguardsEnabled
+      ? managedPersona?.prompt
+      : managedPersona?.promptWithoutContentSafeguards || managedPersona?.prompt) ||
     'You are a helpful Discord bot assistant. Be helpful, friendly, and conversational.';
 
   let runtimeCustomPrompt = managedCustomPromptsDisabled ? null : promptConfig.prompt;
@@ -277,6 +280,7 @@ async function resolveRuntimePrompt(
     requireCustomPromptAllowlist: deploymentDetector.getConfig().isProduction
   });
   return {
+    managedSafeguardsEnabled,
     promptConfig,
     promptPolicy,
     managedCustomPromptsDisabled,
@@ -1185,6 +1189,7 @@ export async function startBot(): Promise<void> {
                   moderationError: result.moderation.moderationError || null,
                   safetyAction: result.moderation.safetyDecision?.action || null,
                   detectorSources: result.moderation.safetyDecision?.detectorSources || [],
+                  allowanceReasons: result.moderation.safetyDecision?.allowanceReasons || [],
                   contextEligible: result.moderation.safetyDecision?.contextEligible ?? false,
                   failureState: result.moderation.safetyDecision?.failed || false,
                   moderationMode: inputModerationMode,
@@ -1448,6 +1453,7 @@ export async function startBot(): Promise<void> {
           const {
             promptConfig,
             promptPolicy,
+            managedSafeguardsEnabled,
             managedCustomPromptsDisabled,
             effectivePromptEnabled,
             runtimeCustomPrompt,
@@ -1455,7 +1461,7 @@ export async function startBot(): Promise<void> {
           } = await resolveRuntimePrompt(guildId, systemPromptResult);
           const baseSystemPrompt = composeSystemPromptWithSafety(
             promptPolicy.effectivePrompt,
-            await areGuildSafeguardsEnabled(guildId)
+            managedSafeguardsEnabled
           );
           const conciseResponseInstruction =
             '\n\nResponse style rule: Keep responses concise and clear by default (2-4 sentences). Only provide longer responses when the user explicitly asks for detail. When the user requests a finite exact output such as a list, range, table, or code block, complete the requested output before adding persona commentary; never replace requested items with shorthand.';
@@ -1722,7 +1728,10 @@ export async function startBot(): Promise<void> {
             personaResolution.activationSource;
           const personaTurnInstruction = buildPersonaTurnInstruction({
             policy: assistantSafetyPolicy,
-            instructions: managedPersona?.turnInstructions,
+            instructions: managedSafeguardsEnabled
+              ? managedPersona?.turnInstructions
+              : managedPersona?.turnInstructionsWithoutContentSafeguards ||
+                managedPersona?.turnInstructions,
             personaState,
             responseIntent
           });
