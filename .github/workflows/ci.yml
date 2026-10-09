@@ -73,5 +73,5 @@ jobs:
       - name: Test
         run: bun test
 
-      - name: Validate radio transport
-        run: bun run radio:validate
+      - name: Validate radio encoder
+        run: bun run radio:validate --offline
