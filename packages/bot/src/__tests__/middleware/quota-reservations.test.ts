@@ -144,6 +144,52 @@ describe('QuotaMiddleware', () => {
   });
 
   describe('atomic reservation lifecycle', () => {
+    test('returns successful paid output when recording actual usage fails', async () => {
+      mockAdminDb.recordQuotaUsageActual.mockRejectedValue(new Error('Database unavailable'));
+      const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
+      const provider = mock(async () => ({ content: 'Paid answer' }));
+      const result = await middleware.executeReserved({
+        operationKey: 'message:recording-failure',
+        guildId: 'guild1',
+        userId: 'user1',
+        member: { id: 'user1' } as any,
+        usageType: 'text_tokens',
+        requestedAmount: 500,
+        minimumAmount: 1,
+        execute: provider,
+        getActualAmount: () => 73
+      });
+      expect(result).toMatchObject({
+        allowed: true,
+        value: { content: 'Paid answer' },
+        commit: null,
+        settlementPending: true
+      });
+      expect(provider).toHaveBeenCalledTimes(1);
+      expect(mockAdminDb.commitQuotaUsage).not.toHaveBeenCalled();
+      expect(mockAdminDb.releaseQuotaUsage).not.toHaveBeenCalled();
+    });
+
+    test('database insufficient_quota denial explains the daily limit', async () => {
+      mockAdminDb.reserveQuotaUsage.mockResolvedValue({
+        allowed: false,
+        reason: 'insufficient_quota',
+        status: 'released'
+      });
+      const result = await new QuotaMiddleware(mockAdminDb, mockPermissions).reserveQuota({
+        operationKey: 'message:denied',
+        guildId: 'guild1',
+        userId: 'user1',
+        member: { id: 'user1' } as any,
+        usageType: 'text_tokens',
+        requestedAmount: 500,
+        minimumAmount: 1
+      });
+      expect(result).toMatchObject({
+        allowed: false,
+        reason: "You've reached your daily text token limit. Resets at midnight ET."
+      });
+    });
     test('does not execute paid work for a duplicate still-reserved operation', async () => {
       mockAdminDb.reserveQuotaUsage = mock(async () => ({
         idempotencyKey: 'discord:duplicate:search',

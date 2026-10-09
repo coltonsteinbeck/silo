@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
+import * as safetyDecision from '../../security/safety-decision';
 import type { TextProvider } from '@silo/core';
 import { getDefaultAgentGraphLimits } from '../../agent/config';
 import { BOUNDED_FAILURE_CONTENT, runBoundedAgentGraph } from '../../agent/bounded-graph';
@@ -139,11 +140,22 @@ describe('bounded agent graph', () => {
   });
 
   afterEach(() => {
+    mock.restore();
     process.env.OPENAI_GUARDRAILS_ENABLED = originalGuardrailsEnabled;
     process.env.OPENAI_MODERATION_ENABLED = originalModerationEnabled;
     process.env.OPENAI_API_KEY = originalOpenAiApiKey;
     resetPromptSafetyRuntimeForTests();
     resetGuardrailsRuntimeForTests();
+  });
+
+  test('passes the turn cancellation signal to canonical output evaluation', async () => {
+    const controller = new AbortController();
+    const evaluate = spyOn(safetyDecision, 'evaluateSafetyDecision');
+    await runBoundedAgentGraph(
+      createInput(createProvider(), { generationOptions: { signal: controller.signal } })
+    );
+    expect(evaluate).toHaveBeenCalled();
+    for (const [, options] of evaluate.mock.calls) expect(options.signal).toBe(controller.signal);
   });
 
   test.each(['openai', 'xai'])('runs acyclic graph with mocked %s provider', async providerName => {

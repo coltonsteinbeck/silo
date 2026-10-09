@@ -130,7 +130,7 @@ const UNICODE_CONFUSABLE_CHAR_MAP: Record<string, string> = {
 };
 
 const INITIALISM_INTENT_PATTERN =
-  /\b(?:abbreviation|acronym|initialism|initials?|first\s+letters?|first\s+letter\s+of\s+each|separate(?:\s+the)?\s+letters?|letters?\s+with\s+periods?|acrostic|(?:sorry\s+)?i\s+meant)\b/i;
+  /\b(?:abbreviation|acronym|initialism|initials|initial\s+letters?|first\s+letters?|first\s+letter\s+of\s+each|separate(?:\s+the)?\s+letters?|letters?\s+with\s+periods?|acrostic)\b/i;
 
 const OUTPUT_MASK_CHARACTER_CLASS: Record<string, string> = {
   a: '[aаα4@]',
@@ -226,11 +226,19 @@ function collectSeparatedMatches(content: string): string[] {
 }
 
 function collectInitialismMatches(content: string): string[] {
-  if (!INITIALISM_INTENT_PATTERN.test(content)) return [];
+  const normalized = normalizeSafetyCharacters(content).toLowerCase();
+  if (!INITIALISM_INTENT_PATTERN.test(normalized)) {
+    // A correction may supply the entire company phrase without repeating the
+    // acronym cue. Match its complete initials, not arbitrary prose windows.
+    const correction = normalized.match(/^(?:sorry\s+)?i\s+meant\s+([a-z\s]+)[.!?]?$/);
+    const initials = correction?.[1]
+      ?.match(/[a-z]+/g)
+      ?.map(word => word[0])
+      .join('');
+    return initials && BLOCKED_FORM_SET.has(initials) ? [initials] : [];
+  }
 
-  const words = normalizeSafetyCharacters(content)
-    .toLowerCase()
-    .match(/[a-z]+/g);
+  const words = normalized.match(/[a-z]+/g);
   if (!words) return [];
 
   const matches: string[] = [];

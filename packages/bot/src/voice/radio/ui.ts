@@ -13,6 +13,9 @@ export const STALE_RADIO_CONTROLS_MESSAGE =
   'These radio controls are stale. Use the buttons on the current player.';
 
 const NO_MENTIONS = { parse: [] as never[] };
+const clampText = (value: string, limit: number): string =>
+  value.length <= limit ? value : `${value.slice(0, limit - 1)}…`;
+const trackTitle = (track: RadioTrack): string => clampText(track.title, 100);
 
 const repeatLabel = (mode: RadioQueue['repeatMode']): string => {
   if (mode === 1) return '🔂 One';
@@ -67,10 +70,14 @@ export function createNowPlayingEmbed(
   const embed = new EmbedBuilder()
     .setColor(track.isSpotifyTrack ? '#1DB954' : isPlaying ? '#00ff00' : '#ff9900')
     .setTitle(title)
-    .setDescription(`**${track.title}**`)
+    .setDescription(`**${clampText(track.title, 1000)}**`)
     .addFields(
-      { name: '👤 Artist/Channel', value: track.channel || 'Unknown', inline: true },
-      { name: '⏱️ Duration', value: track.duration || 'Unknown', inline: true },
+      {
+        name: '👤 Artist/Channel',
+        value: clampText(track.channel || 'Unknown', 1024),
+        inline: true
+      },
+      { name: '⏱️ Duration', value: clampText(track.duration || 'Unknown', 1024), inline: true },
       {
         name: '📋 Queue',
         value: `${queue.currentIndex + 1}/${queue.songs.length}`,
@@ -87,9 +94,11 @@ export function createNowPlayingEmbed(
     const upcoming =
       queue.songs
         .slice(queue.currentIndex + 1, queue.currentIndex + 4)
-        .map((song, index) => `${index + 1}. ${song.title}${song.isSpotifyTrack ? ' 🎵' : ''}`)
+        .map(
+          (song, index) => `${index + 1}. ${trackTitle(song)}${song.isSpotifyTrack ? ' 🎵' : ''}`
+        )
         .join('\n') || 'No upcoming songs';
-    embed.addFields({ name: '🔜 Up Next', value: upcoming });
+    embed.addFields({ name: '🔜 Up Next', value: clampText(upcoming, 1024) });
   }
   return embed;
 }
@@ -157,19 +166,25 @@ export function createQueueOverview(queue: RadioQueue): InteractionReplyOptions 
   if (current) {
     embed.addFields({
       name: '🎵 Currently Playing',
-      value: `**${current.title}**${current.isSpotifyTrack ? ' 🎵' : ''}\n*by ${current.channel || 'Unknown'}*`
+      value: clampText(
+        `**${trackTitle(current)}**${current.isSpotifyTrack ? ' 🎵' : ''}\n*by ${current.channel || 'Unknown'}*`,
+        1024
+      )
     });
   }
   if (previous.length > 0) {
     embed.addFields({
       name: '⏮️ Recently Played',
-      value: previous
-        .slice(-3)
-        .map((song, index, songs) => {
-          const position = queue.currentIndex - songs.length + index + 1;
-          return `${position}. ${song.title}${song.isSpotifyTrack ? ' 🎵' : ''}`;
-        })
-        .join('\n')
+      value: clampText(
+        previous
+          .slice(-3)
+          .map((song, index, songs) => {
+            const position = queue.currentIndex - songs.length + index + 1;
+            return `${position}. ${trackTitle(song)}${song.isSpotifyTrack ? ' 🎵' : ''}`;
+          })
+          .join('\n'),
+        1024
+      )
     });
   }
   if (upcoming.length > 0) {
@@ -177,11 +192,11 @@ export function createQueueOverview(queue: RadioQueue): InteractionReplyOptions 
       .slice(0, 8)
       .map(
         (song, index) =>
-          `${queue.currentIndex + 2 + index}. ${song.title}${song.isSpotifyTrack ? ' 🎵' : ''}`
+          `${queue.currentIndex + 2 + index}. ${trackTitle(song)}${song.isSpotifyTrack ? ' 🎵' : ''}`
       )
       .join('\n');
     const more = upcoming.length > 8 ? `\n*...and ${upcoming.length - 8} more songs*` : '';
-    embed.addFields({ name: '🔜 Up Next', value: `${visible}${more}` });
+    embed.addFields({ name: '🔜 Up Next', value: clampText(`${visible}${more}`, 1024) });
   } else if (!queue.isFinished) {
     embed.addFields({
       name: '🔜 Up Next',

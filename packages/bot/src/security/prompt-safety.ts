@@ -217,7 +217,7 @@ const PROTECTED_GROUP_PATTERN = new RegExp(
 );
 
 const SEXUAL_CONTENT_TERM_FRAGMENT =
-  '(?:sex(?:ual)?|sexuali[sz](?:e|ed|ing|ation)|sext(?:ing)?|intercourse|nude|naked|explicit|porn(?:ography)?|erotic|lewd|blowjob|handjob|anal|hook\\s*up|make\\s*out|fetish|roleplay)';
+  '(?:sex(?:ual)?|sexuali[sz](?:e|ed|ing|ation)|sext(?:ing)?|intercourse|nude|naked|sexually\\s+explicit|porn(?:ography)?|erotic|lewd|blowjob|handjob|anal|hook\\s*up|make\\s*out|fetish|(?:sexual|erotic|nsfw)\\s+roleplay)';
 const SPELLED_MINOR_AGE_FRAGMENT =
   '(?:(?:age|aged)\\s+(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen)|(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen)(?:[-\\s]+(?:years?|yrs?)[-\\s]+olds?|[-\\s]*year[-\\s]*olds?|[-\\s]*y\\/?o))';
 const NAMED_MINOR_REFERENCE_FRAGMENT =

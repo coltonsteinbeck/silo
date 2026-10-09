@@ -35,7 +35,7 @@ export async function handleAdminPatchNotes(
       await interaction.editReply('Set up a patch-note webhook first.');
       return;
     }
-    const channel = await interaction.guild.channels.fetch(targetId);
+    const channel = await interaction.guild.channels.fetch(targetId).catch(() => null);
     const member = await interaction.guild.members.fetch({
       user: interaction.user.id,
       force: true

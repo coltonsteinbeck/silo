@@ -103,4 +103,24 @@ describe('radio Discord UI', () => {
     expect(json.flags).toBe(64);
     expect(json.allowedMentions).toEqual({ parse: [] });
   });
+
+  test('long metadata remains within Discord embed limits in the player and full queue', () => {
+    const songs = Array.from({ length: 20 }, () => ({
+      ...tracks[1]!,
+      title: 'x'.repeat(5000),
+      channel: 'a'.repeat(2000),
+      duration: 'd'.repeat(2000)
+    }));
+    for (const payload of [
+      createQueueOverview(queue({ songs, currentIndex: 3 })),
+      createPersistentRadioPayload(queue({ songs, currentIndex: 3 }))
+    ]) {
+      const json = serialize(payload);
+      const embed = json.embeds[0];
+      expect(embed.title.length).toBeLessThanOrEqual(256);
+      expect((embed.description ?? '').length).toBeLessThanOrEqual(4096);
+      for (const field of embed.fields) expect(field.value.length).toBeLessThanOrEqual(1024);
+      expect(JSON.stringify(embed).length).toBeLessThan(6500);
+    }
+  });
 });

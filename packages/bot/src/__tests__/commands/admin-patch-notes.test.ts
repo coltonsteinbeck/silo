@@ -107,6 +107,14 @@ test('status returns a channel only and never leaks the stored credential', asyn
   expect(globalThis.fetch).not.toHaveBeenCalled();
 });
 
+test('unavailable channel uses the permission reply without external requests', async () => {
+  interaction.guild.channels.fetch.mockRejectedValue(new Error('Missing access'));
+  await new AdminCommand(db, permissions).execute(interaction);
+  expect(replyContent()).toContain('Manage Webhooks');
+  expect(replyContent()).not.toContain('database configuration');
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
 test('missing encryption key fails privately before any external request', async () => {
   await new AdminCommand(db, permissions).execute(interaction);
   expect(replyContent()).toContain('PATCH_NOTES_ENCRYPTION_KEY');

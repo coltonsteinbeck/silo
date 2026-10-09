@@ -58,6 +58,19 @@ function setup(kind: 'draw' | 'video') {
   return { command, interaction, quota, controller, generate, guard };
 }
 for (const kind of ['draw', 'video'] as const) {
+  test(`${kind} reports a provider deadline instead of leaving a deferred reply pending`, async () => {
+    const deadline = new AbortController();
+    spyOn(AbortSignal, 'timeout').mockReturnValue(deadline.signal);
+    const f = setup(kind);
+    f.generate.mockImplementation(async () => {
+      deadline.abort(new DOMException('Deadline reached', 'TimeoutError'));
+      throw deadline.signal.reason;
+    });
+    await f.command.execute(f.interaction);
+    expect(f.interaction.editReply).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(f.interaction.editReply.mock.calls)).toContain('timed out');
+    expect(f.quota.executeReserved).toHaveBeenCalledTimes(1);
+  });
   test(`${kind} reserves once before generation and never increments legacy usage`, async () => {
     const f = setup(kind);
     await f.command.execute(f.interaction);

@@ -239,7 +239,7 @@ export class SearchCommand {
                   else actualTokens += tokens;
                   if (response.searchCalls === undefined) searchCallsKnown = false;
                   else searchCalls += response.searchCalls;
-                  if (response.refused || REFUSAL_PREFIX.test(response.content.trim())) {
+                  if (response.refused) {
                     outcome = 'blocked';
                     return null;
                   }

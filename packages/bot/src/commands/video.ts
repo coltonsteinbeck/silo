@@ -300,7 +300,11 @@ export class VideoCommand implements Command {
         });
       }
     } catch (error) {
-      if (signal.aborted) return;
+      if (signal.aborted) {
+        if (!this.shutdownSignal?.aborted)
+          await interaction.editReply('Video generation timed out. Please try again in a moment.');
+        return;
+      }
       logger.error('Video generation failed', {
         guildId: interaction.guildId,
         userId: interaction.user.id,

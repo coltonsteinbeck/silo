@@ -331,24 +331,28 @@ test('missing evidence permits one fallback and accounts both known usages', asy
   expect(f.charged()).toBe(100);
 });
 
-test.each(['refusal', 'text-refusal', 'auth', 'validation'])(
-  'does not provider-hop after %s',
-  async kind => {
+test.each(['refusal', 'auth', 'validation'])('does not provider-hop after %s', async kind => {
+  const f = setup();
+  if (kind === 'refusal')
+    f.primary.searchWeb.mockResolvedValue({ ...answer, refused: true } as any);
+  else
+    f.primary.searchWeb.mockRejectedValue(
+      Object.assign(new Error('rejected'), { status: kind === 'auth' ? 401 : 400 })
+    );
+  await f.run();
+  expect(f.fallback.searchWeb).not.toHaveBeenCalled();
+  expect(f.interaction.followUp).not.toHaveBeenCalled();
+});
+
+test.each(["I couldn't find reliable information.", 'I cannot confirm the schedule.'])(
+  'uncertain text without an explicit refusal permits bounded fallback: %s',
+  async content => {
     const f = setup();
-    if (kind === 'refusal')
-      f.primary.searchWeb.mockResolvedValue({ ...answer, refused: true } as any);
-    else if (kind === 'text-refusal')
-      f.primary.searchWeb.mockResolvedValue({
-        ...answer,
-        content: 'I cannot help with that request.'
-      });
-    else
-      f.primary.searchWeb.mockRejectedValue(
-        Object.assign(new Error('rejected'), { status: kind === 'auth' ? 401 : 400 })
-      );
+    f.primary.searchWeb.mockResolvedValue({ ...answer, content, citations: [] });
     await f.run();
-    expect(f.fallback.searchWeb).not.toHaveBeenCalled();
-    expect(f.interaction.followUp).not.toHaveBeenCalled();
+    expect(f.fallback.searchWeb).toHaveBeenCalledTimes(1);
+    expect(f.interaction.followUp).toHaveBeenCalledTimes(1);
+    expect(f.charged()).toBe(100);
   }
 );
 

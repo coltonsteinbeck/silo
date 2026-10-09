@@ -541,6 +541,7 @@ async function outputSafetyNode(state: State): Promise<StateUpdate> {
       const evaluateCandidate = (content: string) =>
         evaluateSafetyDecision(content, {
           guildId: state.metadata.guildId,
+          signal: state.generationOptions?.signal,
           stage: 'assistant_output',
           source: 'agent_output_safety',
           inheritedRisk: state.inheritedSafetyRisk,

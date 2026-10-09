@@ -487,7 +487,13 @@ export class DrawCommand implements Command {
         signal
       });
     } catch (error) {
-      if (signal.aborted) return;
+      if (signal.aborted) {
+        if (!this.shutdownSignal?.aborted)
+          await interaction.editReply({
+            content: 'Image generation timed out. Please try again in a moment.'
+          });
+        return;
+      }
       logger.error('Draw prompt moderation failed', {
         guildId: interaction.guildId,
         userId: interaction.user.id,
@@ -499,7 +505,13 @@ export class DrawCommand implements Command {
       return;
     }
 
-    if (signal.aborted) return;
+    if (signal.aborted) {
+      if (!this.shutdownSignal?.aborted)
+        await interaction.editReply({
+          content: 'Image generation timed out. Please try again in a moment.'
+        });
+      return;
+    }
     if (!promptDecision.allowed) {
       await interaction.editReply({
         content: promptDecision.userMessage || '⚠️ Prompt blocked by content policy.'
@@ -510,7 +522,13 @@ export class DrawCommand implements Command {
     const effectivePrompt = promptDecision.processedPrompt;
 
     const referenceValidation = await this.validateReferences(references, model, interaction);
-    if (signal.aborted) return;
+    if (signal.aborted) {
+      if (!this.shutdownSignal?.aborted)
+        await interaction.editReply({
+          content: 'Image generation timed out. Please try again in a moment.'
+        });
+      return;
+    }
     if (!referenceValidation.valid) {
       await interaction.editReply({
         content: `Unable to process references: ${referenceValidation.reason}`
@@ -589,7 +607,13 @@ export class DrawCommand implements Command {
         quotaCost
       });
     } catch (error) {
-      if (signal.aborted) return;
+      if (signal.aborted) {
+        if (!this.shutdownSignal?.aborted)
+          await interaction.editReply({
+            content: 'Image generation timed out. Please try again in a moment.'
+          });
+        return;
+      }
       logger.error('Draw generation failed', {
         guildId: interaction.guildId,
         userId: interaction.user.id,
@@ -728,7 +752,14 @@ export class DrawCommand implements Command {
       session.prompt = promptDecision.processedPrompt;
       this.sessions.set(session.id, session);
     } catch (error) {
-      if (signal.aborted) return true;
+      if (signal.aborted) {
+        if (!this.shutdownSignal?.aborted)
+          await interaction.followUp({
+            content: 'Image regeneration timed out. Please try again in a moment.',
+            ephemeral: true
+          });
+        return true;
+      }
       logger.error('Draw regeneration failed', {
         guildId: interaction.guildId,
         userId: interaction.user.id,
@@ -871,7 +902,13 @@ export class DrawCommand implements Command {
       this.sessions.set(session.id, session);
       await interaction.editReply({ content: 'Image updated successfully.' });
     } catch (error) {
-      if (signal.aborted) return true;
+      if (signal.aborted) {
+        if (!this.shutdownSignal?.aborted)
+          await interaction.editReply({
+            content: 'Image edit timed out. Please try again in a moment.'
+          });
+        return true;
+      }
       logger.error('Draw modal edit failed', {
         guildId: interaction.guildId,
         userId: interaction.user.id,

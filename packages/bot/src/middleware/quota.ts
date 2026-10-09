@@ -388,11 +388,11 @@ export class QuotaMiddleware {
     }
 
     // Persist the exact provider usage before attempting the counter update.
-    // Once recorded, a failed commit is safely recoverable by the global
-    // reconciler and must not discard an already-paid successful response.
-    actualAmount = this.normalizeActualQuotaAmount(reservation, actualAmount);
-    await this.recordActualQuotaUsage(reservation, actualAmount);
+    // Failed recording or settlement must not discard an already-paid response.
+    // The reconciler uses durable actual usage, or the reserved amount if absent.
     try {
+      actualAmount = this.normalizeActualQuotaAmount(reservation, actualAmount);
+      await this.recordActualQuotaUsage(reservation, actualAmount);
       const commit = await this.finalizeQuotaCommit(reservation, actualAmount);
       return {
         allowed: true,
@@ -878,7 +878,11 @@ export class QuotaMiddleware {
     if (usageType === 'voice_minutes' && denialCode === 'role_disabled') {
       return 'Voice features require Trusted role or higher. Ask an admin for access.';
     }
-    if (denialCode === 'user_limit' || denialCode === 'role_disabled') {
+    if (
+      denialCode === 'insufficient_quota' ||
+      denialCode === 'user_limit' ||
+      denialCode === 'role_disabled'
+    ) {
       return `You've reached your daily ${this.formatUsageType(usageType)} limit. Resets at midnight ET.`;
     }
     if (

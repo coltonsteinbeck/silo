@@ -22,6 +22,14 @@ const MAX_RECURSION_DEPTH = 6;
 const SECRET_FIELD_PATTERN =
   /(api[-_]?key|secret|token|password|authorization|cookie|set-cookie|session|credential)/i;
 
+const CORRELATION_ID_FIELDS = new Set([
+  'discordGuildId',
+  'discordChannelId',
+  'discordMessageId',
+  'discordInteractionId'
+]);
+const TIMESTAMP_FIELDS = new Set(['modelCircuitContextDisabledUntil', 'promptUpdatedAt']);
+
 type LangfuseState = {
   enabled: boolean;
   initialized: boolean;
@@ -143,6 +151,14 @@ function sanitizeTraceValue(value: unknown, depth = 0, seen = new WeakSet<object
           return [key, REDACTED_VALUE];
         }
 
+        if (
+          key === 'metadata' &&
+          entryValue &&
+          typeof entryValue === 'object' &&
+          !Array.isArray(entryValue)
+        ) {
+          return [key, sanitizeMetadata(entryValue as TraceMetadata, depth + 1, seen)];
+        }
         return [key, sanitizeTraceValue(entryValue, depth + 1, seen)];
       })
     );
@@ -151,17 +167,34 @@ function sanitizeTraceValue(value: unknown, depth = 0, seen = new WeakSet<object
   return String(value);
 }
 
-function sanitizeMetadata(metadata: TraceMetadata | undefined): TraceMetadata | undefined {
+export function sanitizeMetadata(
+  metadata: TraceMetadata | undefined,
+  depth = 0,
+  seen = new WeakSet<object>()
+): TraceMetadata | undefined {
   if (!metadata) {
     return undefined;
   }
+  if (depth >= MAX_RECURSION_DEPTH || seen.has(metadata)) return undefined;
+  seen.add(metadata);
 
   const sanitizedEntries = Object.entries(metadata).flatMap(([key, value]) => {
     if (value === undefined) {
       return [];
     }
 
-    const sanitizedValue = sanitizeTraceValue(value);
+    const isCorrelationId =
+      CORRELATION_ID_FIELDS.has(key) && typeof value === 'string' && /^\d{15,22}$/.test(value);
+    const isTimestamp =
+      TIMESTAMP_FIELDS.has(key) &&
+      typeof value === 'string' &&
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value) &&
+      Number.isFinite(Date.parse(value));
+    const sanitizedValue = SECRET_FIELD_PATTERN.test(key)
+      ? REDACTED_VALUE
+      : isCorrelationId || isTimestamp
+        ? value
+        : sanitizeTraceValue(value, depth + 1, seen);
     if (sanitizedValue === undefined) {
       return [];
     }
