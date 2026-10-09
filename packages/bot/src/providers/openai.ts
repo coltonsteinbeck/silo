@@ -300,30 +300,32 @@ export class OpenAIProvider implements TextProvider, ImageProvider, WebSearchPro
     let response: OpenAIWebSearchResult;
 
     try {
-      response = (await this.client.responses.create(
-        {
-          model,
-          input: query,
-          instructions:
-            `Current UTC date: ${new Date().toISOString().slice(0, 10)}. ` +
-            'Resolve relative dates against this date unless the user specifies a timezone or date. ' +
-            'Never call a different calendar date today; distinguish the next event from an event today. ' +
-            'Use ordinary web search queries to find relevant webpages, preferring primary sources. ' +
-            'Do not use structured sports, weather, or finance feeds. ' +
-            'Answer concisely from retrieved webpages with inline URL citations. ' +
-            'Cite the exact page that directly supports each claim, not a homepage or an unrelated search result. ' +
-            'When release notes are requested, retrieve and cite the version-specific official release notes. ' +
-            'Never attach an unrelated citation just to provide a source; unsupported or fictional events have no verified winner. ' +
-            'For schedules, match the requested sport and competition; an empty or unsupported feed is not evidence that no event exists. ' +
-            'If sources cannot establish the answer, say so without guessing.',
-          tools: [{ type: 'web_search' }],
-          tool_choice: 'required',
-          max_tool_calls: 2,
-          max_output_tokens: 1200,
-          store: false
-        } as any,
-        { signal: options?.signal, maxRetries: 0, timeout: 20_000 }
-      )) as OpenAIWebSearchResult;
+      const request = {
+        model,
+        input: query,
+        instructions:
+          `Current UTC date: ${new Date().toISOString().slice(0, 10)}. ` +
+          'Resolve relative dates against this date unless the user specifies a timezone or date. ' +
+          'Never call a different calendar date today; distinguish the next event from an event today. ' +
+          'Use ordinary web search queries to find relevant webpages, preferring primary sources. ' +
+          'Do not use structured sports, weather, or finance feeds. ' +
+          'Answer concisely from retrieved webpages with inline URL citations. ' +
+          'Cite the exact page that directly supports each claim, not a homepage or an unrelated search result. ' +
+          'When release notes are requested, retrieve and cite the version-specific official release notes. ' +
+          'Never attach an unrelated citation just to provide a source; unsupported or fictional events have no verified winner. ' +
+          'For schedules, match the requested sport and competition; an empty or unsupported feed is not evidence that no event exists. ' +
+          'If sources cannot establish the answer, say so without guessing.',
+        tools: [{ type: 'web_search' }],
+        tool_choice: 'required',
+        max_tool_calls: 2,
+        max_output_tokens: 1200,
+        store: false
+      } satisfies ResponseCreateParamsNonStreaming & { max_tool_calls: number };
+      response = (await this.client.responses.create(request, {
+        signal: options?.signal,
+        maxRetries: 0,
+        timeout: 20_000
+      })) as OpenAIWebSearchResult;
     } catch (error) {
       logger.error('[OpenAI] Web search failed', {
         model,
