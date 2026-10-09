@@ -29,6 +29,7 @@ const CORRELATION_ID_FIELDS = new Set([
   'discordInteractionId'
 ]);
 const TIMESTAMP_FIELDS = new Set(['modelCircuitContextDisabledUntil', 'promptUpdatedAt']);
+const HASH_FIELDS = new Set(['release', 'releaseCommit', 'promptHash']);
 
 type LangfuseState = {
   enabled: boolean;
@@ -190,9 +191,13 @@ export function sanitizeMetadata(
       typeof value === 'string' &&
       /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value) &&
       Number.isFinite(Date.parse(value));
+    const isHash =
+      HASH_FIELDS.has(key) &&
+      typeof value === 'string' &&
+      /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(value);
     const sanitizedValue = SECRET_FIELD_PATTERN.test(key)
       ? REDACTED_VALUE
-      : isCorrelationId || isTimestamp
+      : isCorrelationId || isTimestamp || isHash
         ? value
         : sanitizeTraceValue(value, depth + 1, seen);
     if (sanitizedValue === undefined) {

@@ -2,6 +2,16 @@ import { describe, expect, test } from 'bun:test';
 import { sanitizeMetadata, summarizeTextForTrace } from '../../telemetry/langfuse-client';
 
 describe('Langfuse trace text privacy', () => {
+  test('keeps validated commit and prompt hashes intact without allowing arbitrary metadata text', () => {
+    const commit = `${'a'.repeat(15)}${'1'.repeat(12)}${'b'.repeat(13)}`;
+    const promptHash = `${'c'.repeat(30)}${'2'.repeat(20)}${'d'.repeat(14)}`;
+    expect(sanitizeMetadata({ release: commit, releaseCommit: commit, promptHash })).toEqual({
+      release: commit,
+      releaseCommit: commit,
+      promptHash
+    });
+    expect(sanitizeMetadata({ release: 'person@example.com' })!.release).toBe('[email]');
+  });
   test('preserves typed correlation metadata while redacting free text and secret fields', () => {
     const id = '1'.repeat(18);
     const timestamp = '2026-08-14T18:00:00.000Z';
