@@ -412,6 +412,7 @@ All configuration in `.env`:
 - `bun run runtime:prepare` - Install and verify the pinned yt-dlp radio runtime
 - `bun run radio:verify-runtime` - Verify the packaged yt-dlp version and checksum
 - `bun run radio:validate` - Prove the pinned public fixture produces a Discord audio packet
+- `bun run radio:validate --offline` - Exercise the real audio encoder with generated PCM without a public-media request; CI uses this mode after verifying the pinned yt-dlp artifact
 - `bun run migrate` - Apply pending migrations to default target (local)
 - `bun run migrate:status` - Show applied/pending migrations without changes
 - `bun run migrate:dry-run` - Preview pending migrations without applying
