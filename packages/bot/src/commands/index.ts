@@ -14,8 +14,11 @@ import { ModCommand } from './mod';
 import { AnalyticsCommand } from './analytics';
 import { SpeakCommand } from './speak';
 import { StopSpeakingCommand } from './stopspeaking';
+import { RadioCommand } from './radio';
 import { FeedbackCommand } from './feedback';
 import { HelpCommand } from './help';
+import { SearchCommand } from './search';
+import { createAgentGraphRuntimeConfig } from '../agent/config';
 import { DatabaseAdapter, Config } from '@silo/core';
 import { ProviderRegistry } from '../providers/registry';
 import { AdminAdapter } from '../database/admin-adapter';
@@ -28,7 +31,9 @@ export function createCommands(
   config: Config,
   adminDb: AdminAdapter,
   permissions: PermissionManager,
-  quotaMiddleware?: QuotaMiddleware
+  quotaMiddleware?: QuotaMiddleware,
+  shutdownSignal?: AbortSignal,
+  resolvePromptHash?: (guildId: string) => Promise<string>
 ): Collection<string, Command> {
   const commands = new Collection<string, Command>();
 
@@ -49,17 +54,23 @@ export function createCommands(
   };
 
   // Media generation
-  const draw = new DrawCommand(registry, quotaMiddleware, urlSecurity);
+  const draw = new DrawCommand(registry, quotaMiddleware, urlSecurity, undefined, shutdownSignal);
   commands.set(draw.data.name, draw);
 
-  const video = new VideoCommand(registry, quotaMiddleware, urlSecurity);
+  const video = new VideoCommand(registry, quotaMiddleware, urlSecurity, undefined, shutdownSignal);
   commands.set(video.data.name, video);
 
   // Collaboration features
-  const thread = new ThreadCommand(db, registry, adminDb);
+  const thread = new ThreadCommand(
+    db,
+    registry,
+    quotaMiddleware,
+    shutdownSignal,
+    resolvePromptHash
+  );
   commands.set(thread.data.name, thread);
 
-  const digest = new DigestCommand(registry, adminDb);
+  const digest = new DigestCommand(registry, quotaMiddleware, shutdownSignal);
   commands.set(digest.data.name, digest);
 
   // Admin commands
@@ -80,13 +91,24 @@ export function createCommands(
   commands.set(speak.data.name, speak);
   const stopSpeaking = new StopSpeakingCommand(quotaMiddleware);
   commands.set(stopSpeaking.data.name, stopSpeaking);
+  const radio = new RadioCommand();
+  commands.set(radio.data.name, radio);
 
   // Feedback command
   const feedback = new FeedbackCommand(adminDb);
   commands.set(feedback.data.name, feedback);
 
+  if (
+    quotaMiddleware &&
+    createAgentGraphRuntimeConfig().searchEnabled &&
+    (registry.getWebSearchProvider('openai') || registry.getWebSearchProvider('xai'))
+  ) {
+    const search = new SearchCommand(registry, quotaMiddleware, permissions, shutdownSignal);
+    commands.set(search.data.name, search);
+  }
+
   // Help command
-  const help = new HelpCommand();
+  const help = new HelpCommand(commands.has('search'));
   commands.set(help.data.name, help);
 
   return commands;

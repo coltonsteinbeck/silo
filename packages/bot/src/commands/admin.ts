@@ -4,12 +4,14 @@ import {
   EmbedBuilder,
   GuildMember,
   MessageFlags,
+  ChannelType,
   SlashCommandSubcommandsOnlyBuilder
 } from 'discord.js';
 import { Command } from './types';
 import { AdminAdapter } from '../database/admin-adapter';
 import { PermissionManager } from '../permissions/manager';
 import { logger } from '@silo/core';
+import { handleAdminPatchNotes } from './admin-patch-notes';
 
 export class AdminCommand implements Command {
   public readonly data: SlashCommandSubcommandsOnlyBuilder;
@@ -22,6 +24,42 @@ export class AdminCommand implements Command {
       .setName('admin')
       .setDescription('Admin control panel with bot statistics and server info')
       .setDMPermission(false)
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('patch-notes-setup')
+          .setDescription('Create and store a patch-note webhook for this server')
+          .addChannelOption(option =>
+            option
+              .setName('channel')
+              .setDescription('Patch-note destination')
+              .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+              .setRequired(true)
+          )
+      )
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('patch-notes-status')
+          .setDescription('Show the configured patch-note channel')
+      )
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('patch-notes-send')
+          .setDescription('Send patch notes once per release version')
+          .addStringOption(option =>
+            option
+              .setName('version')
+              .setDescription('Release version, such as 1.2.3')
+              .setMaxLength(80)
+              .setRequired(true)
+          )
+          .addStringOption(option =>
+            option
+              .setName('notes')
+              .setDescription('Patch notes')
+              .setMaxLength(1800)
+              .setRequired(true)
+          )
+      )
       .addSubcommand(subcommand =>
         subcommand.setName('panel').setDescription('View the admin control panel')
       )
@@ -95,6 +133,11 @@ export class AdminCommand implements Command {
 
     try {
       switch (subcommand) {
+        case 'patch-notes-setup':
+        case 'patch-notes-status':
+        case 'patch-notes-send':
+          await handleAdminPatchNotes(interaction, this.adminDb);
+          break;
         case 'panel':
           await this.handlePanel(interaction, member);
           break;
@@ -177,7 +220,6 @@ export class AdminCommand implements Command {
         {
           name: '⚙️ Server Configuration',
           value: [
-            `Default Provider: ${config?.defaultProvider || 'openai'}`,
             `Auto Thread: ${config?.autoThread ? '✅' : '❌'}`,
             `Memory Retention: ${config?.memoryRetentionDays || 30} days`,
             `Rate Limit Multiplier: ${config?.rateLimitMultiplier || 1.0}x`
@@ -392,12 +434,10 @@ export class AdminCommand implements Command {
     // Filter to this user's events
     const userEvents = analytics.filter(e => e.userId === targetUser.id);
 
-    // Count events by type
-    const textRequests = userEvents.filter(
-      e => e.eventType === 'command_used' && e.command !== 'draw' && e.command !== 'speak'
-    ).length;
-    const imageRequests = userEvents.filter(e => e.command === 'draw').length;
-    const voiceRequests = userEvents.filter(e => e.command === 'speak').length;
+    // Handler records count commands, not paid provider requests or delivered artifacts.
+    const commandEvents = userEvents.filter(e => e.eventType === 'command_used');
+    const imageCommands = commandEvents.filter(e => e.command === 'draw').length;
+    const voiceCommands = commandEvents.filter(e => e.command === 'speak').length;
 
     // Get current quota status
     const usage = await this.adminDb.getUserDailyUsage(guildId, targetUser.id);
@@ -408,11 +448,11 @@ export class AdminCommand implements Command {
       .setThumbnail(targetUser.displayAvatarURL())
       .addFields(
         {
-          name: '📊 Last 7 Days',
+          name: '📊 Command Activity (7 Days)',
           value: [
-            `💬 Text Requests: ${textRequests}`,
-            `🎨 Image Requests: ${imageRequests}`,
-            `🎤 Voice Sessions: ${voiceRequests}`
+            `Commands: ${commandEvents.length}`,
+            `🎨 Draw Commands: ${imageCommands}`,
+            `🎤 Speak Commands: ${voiceCommands}`
           ].join('\n'),
           inline: true
         },

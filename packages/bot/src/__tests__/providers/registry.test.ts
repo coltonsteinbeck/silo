@@ -4,8 +4,9 @@
  * Tests provider initialization, selection, and availability checking.
  */
 
-import { describe, test, expect } from 'bun:test';
-import { ProviderRegistry } from '../../providers/registry';
+import { describe, test, expect, mock } from 'bun:test';
+import { QuotaMiddleware } from '../../middleware/quota';
+import { ProviderRegistry, classifyTextWorkload } from '../../providers/registry';
 
 describe('ProviderRegistry', () => {
   const createMinimalConfig = (overrides = {}) => ({
@@ -30,7 +31,6 @@ describe('ProviderRegistry', () => {
     },
     features: {
       enableRAG: false,
-      enableLocalModels: false,
       enableVoice: true,
       enableImages: true
     },
@@ -66,21 +66,28 @@ describe('ProviderRegistry', () => {
       expect(available.image).toContain('openai');
     });
 
-    test('initializes Anthropic provider when API key present', () => {
-      const config = createMinimalConfig({
-        providers: {
-          anthropic: {
-            apiKey: 'sk-ant-test',
-            model: 'claude-3-opus'
-          }
-        }
-      });
-      const registry = new ProviderRegistry(config as any);
-
-      const available = registry.getAvailableProviders();
-      expect(available.text).toContain('anthropic');
-      // Anthropic doesn't provide image generation
-      expect(available.image).not.toContain('anthropic');
+    test('ignores retired provider configuration', () => {
+      for (const name of ['anthropic', 'google', 'local']) {
+        const registry = new ProviderRegistry(
+          createMinimalConfig({
+            providers: {
+              [name]: {
+                apiKey: 'test-key',
+                model: 'retired',
+                baseURL: 'https://example.invalid/v1'
+              }
+            },
+            features: { enableLocalModels: true }
+          }) as any
+        );
+        expect(registry.getAvailableProviders()).toEqual({
+          text: [],
+          image: [],
+          video: [],
+          webSearch: []
+        });
+        expect(() => registry.getTextProvider(name)).toThrow('No text provider configured');
+      }
     });
 
     test('initializes multiple providers', () => {
@@ -90,9 +97,9 @@ describe('ProviderRegistry', () => {
             apiKey: 'sk-openai-test',
             model: 'gpt-4o'
           },
-          anthropic: {
+          xai: {
             apiKey: 'sk-ant-test',
-            model: 'claude-3-opus'
+            model: 'grok-model'
           }
         }
       });
@@ -100,30 +107,7 @@ describe('ProviderRegistry', () => {
 
       const available = registry.getAvailableProviders();
       expect(available.text).toContain('openai');
-      expect(available.text).toContain('anthropic');
-    });
-
-    test('initializes local provider when enabled', () => {
-      const config = createMinimalConfig({
-        providers: {
-          local: {
-            apiKey: 'local',
-            model: 'llama3.1',
-            baseURL: 'http://localhost:11434/v1'
-          }
-        },
-        features: {
-          enableRAG: false,
-          enableLocalModels: true,
-          enableVoice: true,
-          enableImages: true
-        }
-      });
-
-      const registry = new ProviderRegistry(config as any);
-      const available = registry.getAvailableProviders();
-
-      expect(available.text).toContain('local');
+      expect(available.text).toContain('xai');
     });
   });
 
@@ -132,13 +116,13 @@ describe('ProviderRegistry', () => {
       const config = createMinimalConfig({
         providers: {
           openai: { apiKey: 'sk-test', model: 'gpt-4o' },
-          anthropic: { apiKey: 'sk-ant', model: 'claude-3' }
+          xai: { apiKey: 'sk-ant', model: 'grok-model' }
         }
       });
       const registry = new ProviderRegistry(config as any);
 
-      const provider = registry.getTextProvider('anthropic');
-      expect(provider.name).toBe('anthropic');
+      const provider = registry.getTextProvider('xai');
+      expect(provider.name).toBe('xai');
     });
 
     test('returns first configured provider when no name specified', () => {
@@ -160,7 +144,7 @@ describe('ProviderRegistry', () => {
       expect(() => registry.getTextProvider()).toThrow('No text provider configured');
     });
 
-    test('falls back to default when named provider not found', () => {
+    test('rejects unavailable named providers without hidden substitution', () => {
       const config = createMinimalConfig({
         providers: {
           openai: { apiKey: 'sk-test', model: 'gpt-4o' }
@@ -168,9 +152,7 @@ describe('ProviderRegistry', () => {
       });
       const registry = new ProviderRegistry(config as any);
 
-      // Request nonexistent provider, should fall back
-      const provider = registry.getTextProvider('nonexistent');
-      expect(provider.name).toBe('openai');
+      expect(() => registry.getTextProvider('nonexistent')).toThrow('No text provider configured');
     });
   });
 
@@ -189,9 +171,7 @@ describe('ProviderRegistry', () => {
 
     test('throws when no image provider configured', () => {
       const config = createMinimalConfig({
-        providers: {
-          anthropic: { apiKey: 'sk-ant', model: 'claude-3' } // No image support
-        }
+        providers: {}
       });
       const registry = new ProviderRegistry(config as any);
 
@@ -251,14 +231,229 @@ describe('ProviderRegistry', () => {
       const config = createMinimalConfig({
         providers: {
           openai: { apiKey: 'sk-test', model: 'gpt-4o' },
-          anthropic: { apiKey: 'sk-ant', model: 'claude-3' }
+          xai: { apiKey: 'sk-ant', model: 'grok-model' }
         }
       });
       const registry = new ProviderRegistry(config as any);
 
       const available = registry.getAvailableProviders();
       expect(available.text).toHaveLength(2);
-      expect(available.image).toHaveLength(1); // Only OpenAI supports images
+      expect(available.image).toHaveLength(2);
     });
+  });
+});
+
+describe('automatic text workloads', () => {
+  const route = (model: string, effort = 'none') => ({ provider: 'openai', model, effort });
+  const config = {
+    providers: {
+      openai: { apiKey: 'test', model: 'default' },
+      xai: { apiKey: 'test', model: 'alternate' }
+    },
+    features: { enableRAG: false },
+    textRouting: {
+      routine: route('routine'),
+      analysis: route('analysis', 'low'),
+      complex: route('complex', 'high'),
+      summary: route('summary'),
+      extraction: route('extraction')
+    }
+  };
+  test('selects configured workload models and reasoning without mutating shared clients', () => {
+    const registry = new ProviderRegistry(config as any);
+    for (const role of ['routine', 'analysis', 'complex', 'summary', 'extraction'] as const) {
+      expect(registry.getTextRoute(role).options.model).toBe(role);
+    }
+    expect(registry.getTextRoute('complex').options.reasoning).toEqual({ effort: 'high' });
+    expect(registry.getConfiguredTextModel('openai')).toBe('default');
+  });
+  test('retains persona route for ordinary conversation and uses explicit complex role', () => {
+    const registry = new ProviderRegistry(config as any);
+    const persona = { textProvider: 'xai', textModel: 'persona-model' };
+    expect(registry.getTextRoute('routine', persona).options.model).toBe('persona-model');
+    expect(registry.getTextRoute('complex', persona).provider.name).toBe('openai');
+    expect(registry.getTextRoute('complex', persona).options.model).toBe('complex');
+  });
+  test('cannot downgrade a configured complex role when its provider is unavailable', () => {
+    expect(
+      () => new ProviderRegistry({ ...config, providers: { xai: config.providers.xai } } as any)
+    ).toThrow('No text provider configured');
+  });
+  test('classifies ordinary, analytical and explicitly complex requests without another API call', () => {
+    expect(classifyTextWorkload('hello there')).toBe('routine');
+    expect(classifyTextWorkload('Compare these two options')).toBe('analysis');
+    expect(classifyTextWorkload('Give me a thorough architecture review')).toBe('complex');
+  });
+});
+
+test.each([
+  [
+    'Draft a 200-word proposal comparing two fictional database migration strategies, including rollback tradeoffs.',
+    'complex'
+  ],
+  ['Please write a report on the migration results.', 'complex'],
+  ['Compose a proposal for a community garden.', 'complex'],
+  ['Write a one-line thank-you note.', 'routine'],
+  ['What does "draft a proposal" mean?', 'routine']
+] as const)(
+  'classifies structured writing without upgrading incidental references: %s',
+  (prompt, expected) => {
+    expect(classifyTextWorkload(prompt)).toBe(expected);
+  }
+);
+
+describe('bounded text availability fallback', () => {
+  function quotaContext(limit = 20000) {
+    const rows = new Map<string, any>();
+    const db = {
+      getUserRole: async () => null,
+      reserveQuotaUsage: async (request: any) => {
+        const held = [...rows.values()].reduce(
+          (total, row) => total + (row.actualAmount ?? row.reservedAmount),
+          0
+        );
+        const row = {
+          ...request,
+          status: 'reserved',
+          allowed: held + request.requestedAmount <= limit,
+          reservedAmount: request.requestedAmount,
+          actualAmount: null,
+          remaining: limit - held,
+          userLimit: limit,
+          guildLimit: limit,
+          reason: 'quota_exceeded'
+        };
+        if (row.allowed) rows.set(request.idempotencyKey, row);
+        return row;
+      },
+      markQuotaUsageAttempted: async (key: string) =>
+        Object.assign(rows.get(key), { status: 'attempted' }),
+      recordQuotaUsageActual: async (key: string, amount: number) => {
+        rows.get(key).actualAmount = amount;
+      },
+      commitQuotaUsage: async (key: string, amount: number) =>
+        Object.assign(rows.get(key), { status: 'committed', actualAmount: amount })
+    };
+    return {
+      rows,
+      context: {
+        middleware: new QuotaMiddleware(
+          db as any,
+          { getUserRoleTier: async () => 'member' } as any
+        ),
+        operationKey: 'test-turn',
+        guildId: 'guild',
+        userId: 'user',
+        member: {} as any,
+        usageType: 'text_tokens' as const
+      }
+    };
+  }
+  function setup(error?: Error) {
+    const route = { provider: 'openai', model: 'primary', effort: 'none' };
+    const registry = new ProviderRegistry({
+      providers: {
+        openai: { apiKey: 'test' },
+        xai: { apiKey: 'test' }
+      },
+      features: { enableRAG: false },
+      textRouting: {
+        routine: route,
+        analysis: route,
+        complex: route,
+        summary: route,
+        extraction: route,
+        fallback: { provider: 'xai', model: 'fallback', effort: 'low', maxTokens: 200 }
+      }
+    } as any);
+    const primary = mock(async () => {
+      if (error) throw error;
+      return { content: 'Cannot help', model: 'primary', finishReason: 'content_filter' as const };
+    });
+    const fallback = mock(async (_messages: unknown, _options?: unknown) => ({
+      content: 'Available answer',
+      usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 },
+      model: 'fallback'
+    }));
+    registry.getTextProvider('openai').generateText = primary;
+    registry.getTextProvider('xai').generateText = fallback;
+    return { registry, primary, fallback };
+  }
+  test('performs one explicit fallback for an availability failure', async () => {
+    const { registry, primary, fallback } = setup(
+      Object.assign(new Error('Unavailable'), { status: 503 })
+    );
+    const { context, rows } = quotaContext();
+    const route = registry.getTextRoute('routine', undefined, context);
+    expect((await route.provider.generateText([], { maxTokens: 16000 })).model).toBe('fallback');
+    expect(primary).toHaveBeenCalledTimes(1);
+    expect(fallback).toHaveBeenCalledTimes(1);
+    expect(fallback.mock.calls[0]?.[1]).toMatchObject({
+      model: 'fallback',
+      maxTokens: 200,
+      reasoning: { effort: 'low' }
+    });
+    expect([...rows.values()]).toMatchObject([
+      { status: 'attempted', reservedAmount: 16000, actualAmount: null },
+      { status: 'committed', reservedAmount: 200, actualAmount: 20 }
+    ]);
+  });
+  test('retains ambiguous primary quota and denies an unaffordable fallback', async () => {
+    const { registry, primary, fallback } = setup(
+      Object.assign(new Error('Unavailable'), { status: 503 })
+    );
+    const { context, rows } = quotaContext(400);
+    await expect(
+      registry.getTextRoute('routine', undefined, context).provider.generateText([])
+    ).rejects.toThrow('Text quota reservation denied');
+    expect(primary).toHaveBeenCalledTimes(1);
+    expect(fallback).not.toHaveBeenCalled();
+    expect([...rows.values()]).toMatchObject([
+      { status: 'attempted', reservedAmount: 400, actualAmount: null }
+    ]);
+  });
+  test('settles successful missing usage conservatively', async () => {
+    const { registry } = setup();
+    const { context, rows } = quotaContext();
+    await registry.getTextRoute('routine', undefined, context).provider.generateText([]);
+    expect([...rows.values()]).toMatchObject([
+      { status: 'committed', reservedAmount: 400, actualAmount: 400 }
+    ]);
+  });
+  test('does not enable paid fallback without atomic quota admission', async () => {
+    const { registry, fallback } = setup(Object.assign(new Error('Unavailable'), { status: 503 }));
+    await expect(registry.getTextRoute('routine').provider.generateText([])).rejects.toThrow(
+      'Unavailable'
+    );
+    expect(fallback).not.toHaveBeenCalled();
+  });
+  test('does not hop providers on refusal, authentication or invalid requests', async () => {
+    const refusal = setup();
+    expect(
+      (await refusal.registry.getTextRoute('routine').provider.generateText([])).finishReason
+    ).toBe('content_filter');
+    expect(refusal.fallback).not.toHaveBeenCalled();
+    for (const status of [400, 401, 403]) {
+      const { registry, fallback } = setup(Object.assign(new Error('Rejected'), { status }));
+      await expect(registry.getTextRoute('routine').provider.generateText([])).rejects.toThrow(
+        'Rejected'
+      );
+      expect(fallback).not.toHaveBeenCalled();
+    }
+  });
+  test('never downgrades complex work or retries a cancelled request', async () => {
+    const { registry, primary, fallback } = setup(
+      Object.assign(new Error('Unavailable'), { status: 503 })
+    );
+    await expect(registry.getTextRoute('complex').provider.generateText([])).rejects.toThrow(
+      'Unavailable'
+    );
+    expect(fallback).not.toHaveBeenCalled();
+    primary.mockClear();
+    await expect(
+      registry.getTextRoute('routine').provider.generateText([], { signal: AbortSignal.abort() })
+    ).rejects.toThrow();
+    expect(primary).not.toHaveBeenCalled();
+    expect(fallback).not.toHaveBeenCalled();
   });
 });

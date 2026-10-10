@@ -8,68 +8,19 @@ describe('agent intent router', () => {
     'latest SF6 balance patch',
     'current mortgage rates',
     "today's NBA scores",
-    'who is winning the NBA finals?',
     'who is winning the NBA finals rn?',
-    "who's winning the NBA Finals right now?",
-    'live NBA Finals score'
-  ])('routes current factual prompt to search: %s', async prompt => {
-    const result = await routeAgentIntent({ text: prompt });
-
-    expect(result.intent).toBe('search');
-    expect(result.requestedTools).toContainEqual({
-      name: 'web_search',
-      input: { query: prompt, maxResults: 5 }
-    });
-  });
-
-  test.each([
+    'How are you? Who is winning the NBA finals rn?',
+    'Who is winning? When is the next game? What is the current score?',
+    'Search the web for recent news',
+    'find a video about the latest release',
     'write fictional patch notes for my game',
     'what is Street Fighter?',
     'summarize this URL https://example.com/patch'
-  ])('does not force search for stable or URL-context prompt: %s', async prompt => {
-    const result = await routeAgentIntent({ text: prompt });
-
-    expect(result.questionType).toBe('conversational');
-    expect(result.requestedTools.some(tool => tool.name === 'web_search')).toBe(false);
-  });
-
-  test('marks mixed conversational and searchable turns while searching only the searchable question', async () => {
-    const result = await routeAgentIntent({
-      text: 'How are you? Who is winning the NBA finals rn?'
-    });
-
-    expect(result.intent).toBe('search');
-    expect(result.questionType).toBe('mixed');
-    expect(result.questionCount).toBe(2);
-    expect(result.searchableQuestionCount).toBe(1);
-    expect(result.conversationalQuestionCount).toBe(1);
-    expect(result.requestedTools).toEqual([
-      {
-        name: 'web_search',
-        input: { query: 'Who is winning the NBA finals rn', maxResults: 5 }
-      }
-    ]);
-  });
-
-  test('plans bounded multi-search for multiple searchable questions in one turn', async () => {
-    const result = await routeAgentIntent({
-      text: 'Who is winning the NBA finals rn? When is the next NBA finals game? What is the current series score?'
-    });
-
-    expect(result.intent).toBe('search');
-    expect(result.questionType).toBe('searchable');
-    expect(result.questionCount).toBe(3);
-    expect(result.searchableQuestionCount).toBe(3);
-    expect(result.requestedTools).toEqual([
-      {
-        name: 'web_search',
-        input: { query: 'Who is winning the NBA finals rn', maxResults: 5 }
-      },
-      {
-        name: 'web_search',
-        input: { query: 'When is the next NBA finals game', maxResults: 5 }
-      }
-    ]);
+  ])('never infers web search from an ordinary prompt: %s', async text => {
+    const result = await routeAgentIntent({ text });
+    expect(result.intent).toBe('answer');
+    expect(result.requestedTools).toEqual([]);
+    expect(result).not.toHaveProperty('searchableQuestionCount');
   });
 
   test.each(['draw a cyberpunk Ryu poster', 'generate an image of a Discord banner'])(
@@ -88,6 +39,38 @@ describe('agent intent router', () => {
     expect(result.intent).toBe('vision_analyze');
     expect(result.reason).toBe('image_only_vision_context');
     expect(result.clarificationReason).toBeUndefined();
+    expect(result.requestedTools).toEqual([]);
+  });
+
+  test.each([
+    'Keep this image but make its background blue.',
+    'Please keep the photo and change the background to white.',
+    'Use this picture but make the background green.'
+  ])('routes an explicit background edit with a reference: %s', async text => {
+    const result = await routeAgentIntent({ text, hasImageAttachments: true });
+    expect(result.intent).toBe('image_edit');
+    expect(result.requestedTools).toEqual([
+      { name: 'image_generation', input: { prompt: text, action: 'edit' } }
+    ]);
+  });
+
+  test.each([
+    'Explain how to keep this image but make its background blue.',
+    'Describe this image but make the explanation short.',
+    'Keep this image but make a poem about its background.',
+    'Quoted text: "Keep this image but make its background blue." Summarize it.'
+  ])(
+    'does not turn informational or quoted background wording into a paid edit: %s',
+    async text => {
+      const result = await routeAgentIntent({ text, hasImageAttachments: true });
+      expect(result.requestedTools.some(tool => tool.name === 'image_generation')).toBe(false);
+    }
+  );
+
+  test('requires an actual reference for background editing', async () => {
+    const result = await routeAgentIntent({
+      text: 'Keep this image but make its background blue.'
+    });
     expect(result.requestedTools).toEqual([]);
   });
 
@@ -119,7 +102,7 @@ describe('agent intent router', () => {
     }
   );
 
-  test('uses model-assisted classification for ambiguous prompts without direct tool execution', async () => {
+  test('clarifies ambiguous paid actions without spending on a classifier', async () => {
     const textProvider: TextProvider = {
       name: 'openai',
       capabilities: { vision: true },
@@ -134,11 +117,66 @@ describe('agent intent router', () => {
     const result = await routeAgentIntent({
       text: 'Can you make this better?',
       hasImageAttachments: true,
-      textProvider
+      textProvider,
+      inputSafetyDecision: { action: 'allow', contextEligible: true, failed: false }
     });
 
     expect(result.intent).toBe('clarify');
     expect(result.requestedTools).toEqual([]);
-    expect(textProvider.generateText).toHaveBeenCalledTimes(1);
+    expect(textProvider.generateText).not.toHaveBeenCalled();
   });
+
+  test.each([
+    ['blocked', { action: 'block', contextEligible: false, failed: false }],
+    ['failed', { action: 'allow', contextEligible: true, failed: true }],
+    ['missing', undefined]
+  ] as const)(
+    'does not classify ambiguous %s input with a model',
+    async (_label, inputSafetyDecision) => {
+      const textProvider: TextProvider = {
+        name: 'openai',
+        capabilities: { vision: true },
+        isConfigured: () => true,
+        generateText: mock(async () => ({
+          content: '{"intent":"image_edit"}',
+          model: 'classifier'
+        }))
+      };
+
+      const result = await routeAgentIntent({
+        text: 'Can you make this better?',
+        hasImageAttachments: true,
+        textProvider,
+        inputSafetyDecision
+      });
+
+      expect(result.intent).toBe('clarify');
+      expect(textProvider.generateText).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each(['search', 'unsupported_intent'])(
+    'does not accept model-selected %s as an ambiguous intent',
+    async intent => {
+      const textProvider: TextProvider = {
+        name: 'openai',
+        capabilities: { vision: true },
+        isConfigured: () => true,
+        generateText: mock(async () => ({
+          content: JSON.stringify({ intent, confidence: 0.99 }),
+          model: 'classifier'
+        }))
+      };
+
+      const result = await routeAgentIntent({
+        text: 'Can you make this better?',
+        hasImageAttachments: true,
+        textProvider,
+        inputSafetyDecision: { action: 'allow', contextEligible: true, failed: false }
+      });
+
+      expect(result.intent).toBe('clarify');
+      expect(result.requestedTools).toEqual([]);
+    }
+  );
 });

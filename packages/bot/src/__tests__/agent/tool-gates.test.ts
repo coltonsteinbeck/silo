@@ -12,20 +12,20 @@ const requestedTools: AgentToolRequest[] = [
 ];
 
 describe('agent tool gates', () => {
-  test('keeps search and media tools only when their feature flags are enabled', () => {
+  test('never admits search to conversation tools regardless of feature flags', () => {
     expect(
       filterRequestedAgentTools(requestedTools, {
         searchEnabled: true,
         mediaNaturalLanguageEnabled: true
       }).map(tool => tool.name)
-    ).toEqual(['web_search', 'image_generation', 'video_generation']);
+    ).toEqual(['image_generation', 'video_generation']);
 
     expect(
       filterRequestedAgentTools(requestedTools, {
         searchEnabled: true,
         mediaNaturalLanguageEnabled: false
       }).map(tool => tool.name)
-    ).toEqual(['web_search']);
+    ).toEqual([]);
 
     expect(
       filterRequestedAgentTools(requestedTools, {

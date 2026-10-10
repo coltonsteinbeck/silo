@@ -8,7 +8,12 @@
 import { describe, test, expect, afterEach } from 'bun:test';
 import { withEnv } from '../../test-setup';
 import { ConfigLoader } from '../../config/loader';
-import { ConfigSchema, ProviderConfigSchema, DatabaseConfigSchema } from '../../config/schema';
+import {
+  ConfigSchema,
+  ProviderConfigSchema,
+  DatabaseConfigSchema,
+  TextRoutingSchema
+} from '../../config/schema';
 
 describe('ConfigSchema', () => {
   describe('ProviderConfigSchema', () => {
@@ -27,14 +32,14 @@ describe('ConfigSchema', () => {
       expect(result.success).toBe(true);
     });
 
-    test('accepts anthropic config', () => {
-      const result = ProviderConfigSchema.safeParse({
-        anthropic: {
-          apiKey: 'sk-ant-test',
-          model: 'claude-3-opus'
-        }
-      });
-      expect(result.success).toBe(true);
+    test('ignores retired provider configuration', () => {
+      expect(
+        ProviderConfigSchema.parse({
+          anthropic: { apiKey: 'retired' },
+          google: { apiKey: 'retired' },
+          local: { baseURL: 'https://example.invalid/v1' }
+        })
+      ).toEqual({});
     });
 
     test('applies default model for openai', () => {
@@ -45,7 +50,7 @@ describe('ConfigSchema', () => {
       });
       expect(result.success).toBe(true);
       if (result.success) {
-        expect(result.data.openai?.model).toBe('gpt-5.4-nano');
+        expect(result.data.openai?.model).toBe('gpt-6-luna');
       }
     });
 
@@ -173,7 +178,6 @@ describe('ConfigSchema', () => {
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.features.enableRAG).toBe(false);
-        expect(result.data.features.enableLocalModels).toBe(false);
         expect(result.data.features.enableVoice).toBe(true);
         expect(result.data.features.enableImages).toBe(true);
       }
@@ -249,6 +253,21 @@ describe('ConfigLoader', () => {
       expect(() => ConfigLoader.load()).toThrow();
     });
 
+    test.each([undefined, '', 'explicit-model'])(
+      'uses the OpenAI default only without an environment model: %s',
+      model => {
+        cleanup = withEnv({
+          DISCORD_TOKEN: 'a'.repeat(60),
+          DISCORD_CLIENT_ID: 'fixture-client',
+          DATABASE_URL: 'postgresql://example.invalid/db',
+          REDIS_URL: 'redis://example.invalid',
+          OPENAI_API_KEY: 'sk-test',
+          OPENAI_MODEL: model
+        });
+        expect(ConfigLoader.load().providers.openai?.model).toBe(model || 'gpt-6-luna');
+      }
+    );
+
     test('loads provider configs when API keys present', () => {
       cleanup = withEnv({
         DISCORD_TOKEN: 'a'.repeat(60),
@@ -256,15 +275,20 @@ describe('ConfigLoader', () => {
         DATABASE_URL: 'postgresql://localhost/db',
         REDIS_URL: 'redis://localhost:6379',
         OPENAI_API_KEY: 'sk-test-key',
-        ANTHROPIC_API_KEY: 'sk-ant-test'
+        ANTHROPIC_API_KEY: 'retired',
+        GOOGLE_API_KEY: 'retired',
+        LOCAL_API_KEY: 'retired',
+        ENABLE_LOCAL_MODELS: 'true'
       });
 
       const config = ConfigLoader.load();
 
       expect(config.providers.openai).toBeDefined();
       expect(config.providers.openai?.apiKey).toBe('sk-test-key');
-      expect(config.providers.anthropic).toBeDefined();
-      expect(config.providers.anthropic?.apiKey).toBe('sk-ant-test');
+      for (const name of ['anthropic', 'google', 'local']) {
+        expect(config.providers).not.toHaveProperty(name);
+      }
+      expect(config.features).not.toHaveProperty('enableLocalModels');
     });
 
     test('skips provider when API key not present', () => {
@@ -280,7 +304,7 @@ describe('ConfigLoader', () => {
       const config = ConfigLoader.load();
 
       expect(config.providers.openai).toBeUndefined();
-      expect(config.providers.anthropic).toBeUndefined();
+      expect(config.providers).not.toHaveProperty('anthropic');
     });
 
     test('parses feature flags correctly', () => {
@@ -354,5 +378,34 @@ describe('ConfigLoader', () => {
 
       expect(ConfigLoader.validate()).toBe(false);
     });
+  });
+});
+
+describe('text model role configuration', () => {
+  test('rejects incomplete roles instead of silently downgrading a workload', () => {
+    expect(
+      TextRoutingSchema.safeParse({ routine: { provider: 'openai', model: 'text-model' } }).success
+    ).toBe(false);
+  });
+  test('validates each model, provider, effort and bounded output allowance', () => {
+    const role = { provider: 'openai', model: 'text-model', effort: 'none', maxTokens: 400 };
+    const config = {
+      routine: role,
+      analysis: role,
+      complex: role,
+      summary: role,
+      extraction: role
+    };
+    expect(TextRoutingSchema.safeParse(config).success).toBe(true);
+    for (const invalid of [
+      { model: '' },
+      { provider: 'unknown' },
+      { effort: 'invalid' },
+      { maxTokens: 16001 }
+    ]) {
+      expect(
+        TextRoutingSchema.safeParse({ ...config, complex: { ...role, ...invalid } }).success
+      ).toBe(false);
+    }
   });
 });

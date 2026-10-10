@@ -1,8 +1,6 @@
-import OpenAI from 'openai';
-import type {
-  ChatCompletion,
-  ChatCompletionCreateParamsNonStreaming
-} from 'openai/resources/chat/completions';
+import OpenAI, { toFile } from 'openai';
+import { downloadMedia } from '../services/media-download';
+import type { ResponseCreateParamsNonStreaming } from 'openai/resources/responses/responses';
 import {
   logger,
   type TextProvider,
@@ -18,48 +16,7 @@ import {
   type WebSearchProvider,
   type WebSearchResponse
 } from '@silo/core';
-
-type OpenAIImageToolQuality = 'auto' | 'high' | 'medium' | 'low';
-type OpenAIImageToolAction = 'auto' | 'generate' | 'edit';
-type OpenAIImageToolInputFidelity = 'low' | 'high';
-
-type OpenAIResponsesInputText = {
-  type: 'input_text';
-  text: string;
-};
-
-type OpenAIResponsesInputImage = {
-  type: 'input_image';
-  image_url: string;
-};
-
-type OpenAIResponsesInputContent = OpenAIResponsesInputText | OpenAIResponsesInputImage;
-
-interface OpenAIResponsesCreateRequest {
-  model: string;
-  input: Array<{
-    role: 'user';
-    content: OpenAIResponsesInputContent[];
-  }>;
-  tools: Array<{
-    type: 'image_generation';
-    size: string;
-    quality: OpenAIImageToolQuality;
-    action: OpenAIImageToolAction;
-    input_fidelity?: OpenAIImageToolInputFidelity;
-  }>;
-}
-
-interface OpenAIImageGenerationCall {
-  type?: string;
-  status?: string;
-  result?: string;
-  revised_prompt?: string;
-}
-
-interface OpenAIResponsesCreateResult {
-  output?: OpenAIImageGenerationCall[];
-}
+import { normalizeTextGenerationFinishReason } from './finish-reason';
 
 interface OpenAIWebSearchAnnotation {
   type?: string;
@@ -77,6 +34,7 @@ interface OpenAIWebSearchContentItem {
 
 interface OpenAIWebSearchOutputItem {
   type?: string;
+  phase?: string | null;
   content?: OpenAIWebSearchContentItem[];
 }
 
@@ -89,6 +47,23 @@ interface OpenAIWebSearchResult {
     output_tokens?: number;
     total_tokens?: number;
   };
+}
+
+// The SDK convenience text concatenates commentary and final messages.
+function answerMessages(response: OpenAIWebSearchResult): OpenAIWebSearchOutputItem[] {
+  const messages = (response.output || []).filter(item => item.type === 'message' || !item.type);
+  return messages.some(item => item.phase === 'final_answer')
+    ? messages.filter(item => item.phase === 'final_answer')
+    : messages.filter(item => item.phase !== 'commentary');
+}
+
+function answerText(response: OpenAIWebSearchResult): string {
+  const text = answerMessages(response)
+    .flatMap(item => item.content || [])
+    .filter(item => item.type === 'output_text' || !item.type)
+    .map(item => item.text || '')
+    .join('');
+  return response.output?.some(item => item.phase) ? text : response.output_text || text;
 }
 
 type OpenAIImageSize = '256x256' | '512x512' | '1024x1024' | '1024x1536' | '1536x1024' | 'auto';
@@ -114,7 +89,7 @@ function redactSecrets(value: string): string {
     .replace(/\bBearer\s+[A-Za-z0-9_.-]+\b/gi, 'Bearer [redacted-token]');
 }
 
-type OpenAIReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+type OpenAIReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh';
 
 const MAX_OPENAI_OUTPUT_TOKENS = 16000;
 
@@ -124,6 +99,8 @@ function toReasoningEffort(
   if (!reasoning) {
     return null;
   }
+
+  if (reasoning.effort) return reasoning.effort;
 
   if (reasoning.type === 'enabled') {
     return 'medium';
@@ -151,7 +128,7 @@ export class OpenAIProvider implements TextProvider, ImageProvider, WebSearchPro
   private defaultModel: string;
   private defaultImageModel: string;
 
-  constructor(apiKey?: string, model: string = 'gpt-5.4-nano', imageModel: string = 'gpt-image-1') {
+  constructor(apiKey?: string, model: string = 'gpt-6-luna', imageModel: string = 'gpt-image-1') {
     this.defaultModel = model;
     this.defaultImageModel = imageModel;
     if (apiKey) {
@@ -171,71 +148,59 @@ export class OpenAIProvider implements TextProvider, ImageProvider, WebSearchPro
       throw new Error('OpenAI provider not configured');
     }
 
-    // Build request payload
-    const requestParams: Record<string, unknown> = {
+    const effort = toReasoningEffort(options?.reasoning);
+    const request: ResponseCreateParamsNonStreaming = {
       model: options?.model || this.defaultModel,
-      messages: messages.map(m => ({
-        role: m.role,
-        content: m.content
-      })),
-      temperature: options?.temperature ?? 0.8,
-      stream: false
+      input: messages.map(({ role, content }) => ({ role, content })),
+      store: false,
+      stream: false,
+      ...(effort ? { reasoning: { effort } } : {}),
+      // Reasoning models reject sampling controls unless reasoning is disabled.
+      ...(effort === 'none' && options?.temperature !== undefined
+        ? { temperature: options.temperature }
+        : {})
     };
-
     let maxOutputTokens =
       typeof options?.maxTokens === 'number' ? clampOutputTokens(options.maxTokens) : undefined;
-
-    // chat.completions for GPT-5 models expects max_completion_tokens
-    if (options?.reasoning) {
-      const effort = toReasoningEffort(options.reasoning);
-      if (effort) {
-        requestParams.reasoning = { effort };
-      }
-
-      if (options.reasoning.type === 'budgeted' && typeof options.reasoning.budget === 'number') {
-        const budgetCap = clampOutputTokens(options.reasoning.budget);
-        maxOutputTokens =
-          typeof maxOutputTokens === 'number' ? Math.min(maxOutputTokens, budgetCap) : budgetCap;
-      }
+    if (options?.reasoning?.type === 'budgeted' && typeof options.reasoning.budget === 'number') {
+      const budgetCap = clampOutputTokens(options.reasoning.budget);
+      maxOutputTokens =
+        maxOutputTokens === undefined ? budgetCap : Math.min(maxOutputTokens, budgetCap);
     }
+    if (maxOutputTokens !== undefined) request.max_output_tokens = maxOutputTokens;
 
-    if (typeof maxOutputTokens === 'number') {
-      requestParams.max_completion_tokens = maxOutputTokens;
+    const response = await this.client.responses.create(request, {
+      signal: options?.signal,
+      maxRetries: 0
+    });
+    if (response.status !== 'completed' && response.status !== 'incomplete') {
+      throw new Error('OpenAI text generation did not complete');
     }
-
-    const response = await this.client.chat.completions.create(
-      requestParams as unknown as ChatCompletionCreateParamsNonStreaming
+    const refusals = response.output.flatMap(item =>
+      item.type === 'message'
+        ? item.content.flatMap(part => (part.type === 'refusal' ? [part.refusal] : []))
+        : []
     );
-
-    // Type guard: stream is false, so response is ChatCompletion, not Stream
-    const chatResponse = response as ChatCompletion & { _request_id?: string | null };
-
-    const choice = chatResponse.choices[0];
-    if (!choice?.message?.content) {
-      throw new Error('No response from OpenAI');
-    }
-
-    // Extract thinking content if available (for models with extended thinking)
-    const thinking = (choice.message as unknown as Record<string, unknown>).reasoning as
-      string | undefined;
-
+    const content = refusals.length ? refusals.join('\n') : answerText(response);
+    if (!content?.trim()) throw new Error('No response from OpenAI');
+    const providerFinishReason = refusals.length
+      ? 'refusal'
+      : response.incomplete_details?.reason ||
+        (response.status === 'completed' ? 'stop' : 'incomplete');
     return {
-      content: choice.message.content,
-      thinking,
-      usage: chatResponse.usage
+      content,
+      usage: response.usage
         ? {
-            promptTokens: chatResponse.usage.prompt_tokens,
-            completionTokens: chatResponse.usage.completion_tokens,
-            totalTokens: chatResponse.usage.total_tokens,
-            reasoningTokens: (chatResponse.usage as unknown as Record<string, unknown>)
-              .reasoning_tokens as number | undefined,
-            cacheCreationTokens: (chatResponse.usage as unknown as Record<string, unknown>)
-              .cache_creation_input_tokens as number | undefined,
-            cacheReadTokens: (chatResponse.usage as unknown as Record<string, unknown>)
-              .cache_read_input_tokens as number | undefined
+            promptTokens: response.usage.input_tokens,
+            completionTokens: response.usage.output_tokens,
+            totalTokens: response.usage.total_tokens,
+            reasoningTokens: response.usage.output_tokens_details?.reasoning_tokens,
+            cacheReadTokens: response.usage.input_tokens_details?.cached_tokens
           }
         : undefined,
-      model: chatResponse.model
+      model: response.model,
+      finishReason: normalizeTextGenerationFinishReason(providerFinishReason),
+      providerFinishReason
     };
   }
 
@@ -250,66 +215,43 @@ export class OpenAIProvider implements TextProvider, ImageProvider, WebSearchPro
     try {
       const references = options?.referenceImages || [];
 
-      if (references.length > 0) {
-        const tool: OpenAIResponsesCreateRequest['tools'][number] = {
-          type: 'image_generation',
-          size: options?.size || '1024x1024',
-          quality: (options?.quality as OpenAIImageToolQuality) || 'auto',
-          action: options?.action || 'edit'
-        };
-
-        if (options?.inputFidelity) {
-          tool.input_fidelity = options.inputFidelity;
-        }
-
-        const createResponse = this.client.responses.create as unknown as (
-          request: OpenAIResponsesCreateRequest
-        ) => Promise<OpenAIResponsesCreateResult>;
-
-        const response = await createResponse({
-          model: options?.model || this.defaultImageModel,
-          input: [
-            {
-              role: 'user',
-              content: [
-                { type: 'input_text', text: prompt },
-                ...references.map<OpenAIResponsesInputImage>(imageUrl => ({
-                  type: 'input_image',
-                  image_url: imageUrl
-                }))
-              ]
-            }
-          ],
-          tools: [tool]
-        });
-
-        const output = Array.isArray(response.output) ? response.output : [];
-        const imageCall = output.find(item => item.type === 'image_generation_call');
-        if (!imageCall?.result) {
-          throw new Error('No image output from OpenAI response tool call');
-        }
-
-        return {
-          url: `data:image/png;base64,${imageCall.result}`,
-          revisedPrompt: imageCall.revised_prompt,
-          model: options?.model || this.defaultImageModel
-        };
-      }
-
-      logger.info('[OpenAI] Generating image:', {
-        model: options?.model || this.defaultImageModel,
-        prompt: prompt.substring(0, 100),
-        size: options?.size,
-        quality: options?.quality
-      });
-
-      const response = await this.client.images.generate({
+      if (references.length > this.capabilities.maxImageReferences)
+        throw new Error('Too many reference images');
+      const params = {
         model: options?.model || this.defaultImageModel,
         prompt,
         n: 1,
         size: toOpenAIImageSize(options?.size),
         quality: (options?.quality as 'auto' | 'high' | 'medium' | 'low') || 'auto'
-      });
+      };
+      const signal = AbortSignal.any([
+        AbortSignal.timeout(180_000),
+        ...(options?.signal ? [options.signal] : [])
+      ]);
+      const requestOptions = { signal, maxRetries: 0 };
+      const images = [];
+      for (const reference of references) {
+        const media = await downloadMedia(reference, { maxBytes: 20 * 1024 * 1024, signal });
+        if (!['image/png', 'image/jpeg', 'image/webp'].includes(media.contentType))
+          throw new Error('Unsupported reference image');
+        images.push(
+          await toFile(media.bytes, 'reference.' + media.contentType.split('/')[1], {
+            type: media.contentType
+          })
+        );
+      }
+      const response = references.length
+        ? await this.client.images.edit(
+            {
+              ...params,
+              image: images,
+              ...(['gpt-image-1', 'gpt-image-1.5'].includes(params.model) && options?.inputFidelity
+                ? { input_fidelity: options.inputFidelity }
+                : {})
+            },
+            requestOptions
+          )
+        : await this.client.images.generate(params, requestOptions);
 
       // Response received successfully
 
@@ -349,6 +291,7 @@ export class OpenAIProvider implements TextProvider, ImageProvider, WebSearchPro
   }
 
   async searchWeb(query: string, options?: WebSearchOptions): Promise<WebSearchResponse> {
+    options?.signal?.throwIfAborted();
     if (!this.client) {
       throw new Error('OpenAI provider not configured');
     }
@@ -357,30 +300,43 @@ export class OpenAIProvider implements TextProvider, ImageProvider, WebSearchPro
     let response: OpenAIWebSearchResult;
 
     try {
-      response = (await this.client.responses.create({
+      const request = {
         model,
         input: query,
+        instructions:
+          `Current UTC date: ${new Date().toISOString().slice(0, 10)}. ` +
+          'Resolve relative dates against this date unless the user specifies a timezone or date. ' +
+          'Never call a different calendar date today; distinguish the next event from an event today. ' +
+          'Use ordinary web search queries to find relevant webpages, preferring primary sources. ' +
+          'Do not use structured sports, weather, or finance feeds. ' +
+          'Answer concisely from retrieved webpages with inline URL citations. ' +
+          'Cite the exact page that directly supports each claim, not a homepage or an unrelated search result. ' +
+          'When release notes are requested, retrieve and cite the version-specific official release notes. ' +
+          'Never attach an unrelated citation just to provide a source; unsupported or fictional events have no verified winner. ' +
+          'For schedules, match the requested sport and competition; an empty or unsupported feed is not evidence that no event exists. ' +
+          'If sources cannot establish the answer, say so without guessing.',
         tools: [{ type: 'web_search' }],
-        max_output_tokens: 1200
-      } as any)) as OpenAIWebSearchResult;
+        tool_choice: 'required',
+        max_tool_calls: 2,
+        max_output_tokens: 1200,
+        store: false
+      } satisfies ResponseCreateParamsNonStreaming & { max_tool_calls: number };
+      response = (await this.client.responses.create(request, {
+        signal: options?.signal,
+        maxRetries: 0,
+        timeout: 20_000
+      })) as OpenAIWebSearchResult;
     } catch (error) {
       logger.error('[OpenAI] Web search failed', {
-        query,
         model,
-        error
+        errorType: error instanceof Error ? error.name : typeof error
       });
       throw error;
     }
 
-    const outputText =
-      response.output_text ||
-      (response.output || [])
-        .flatMap(item => item.content || [])
-        .map(item => item.text || '')
-        .join('')
-        .trim();
+    const outputText = answerText(response).trim();
 
-    const citations = (response.output || [])
+    const citations = answerMessages(response)
       .flatMap(item => item.content || [])
       .flatMap(item => item.annotations || [])
       .filter(annotation => annotation.type === 'url_citation' && annotation.url)
@@ -392,12 +348,12 @@ export class OpenAIProvider implements TextProvider, ImageProvider, WebSearchPro
         endIndex: annotation.end_index
       }));
 
-    if (!outputText) {
-      throw new Error('OpenAI web search returned no answer text');
-    }
-
     return {
       content: outputText,
+      refused: (response.output || []).some(item =>
+        (item.content || []).some(content => content.type === 'refusal')
+      ),
+      searchCalls: response.output?.filter(item => item.type === 'web_search_call').length,
       citations,
       model: response.model || options?.model || this.defaultModel,
       usage: response.usage
