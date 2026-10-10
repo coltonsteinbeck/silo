@@ -4,15 +4,9 @@ export const ProviderConfigSchema = z.object({
   openai: z
     .object({
       apiKey: z.string().optional(),
-      model: z.string().default('gpt-5.4-nano'),
+      model: z.string().default('gpt-6-luna'),
       imageModel: z.string().default('gpt-image-1'),
       baseURL: z.string().url().optional()
-    })
-    .optional(),
-  anthropic: z
-    .object({
-      apiKey: z.string().optional(),
-      model: z.string().default('claude-sonnet-4-6')
     })
     .optional(),
   xai: z
@@ -23,23 +17,27 @@ export const ProviderConfigSchema = z.object({
       videoModel: z.string().default('grok-imagine-video'),
       baseURL: z.string().url().default('https://api.x.ai/v1')
     })
-    .optional(),
-  local: z
-    .object({
-      apiKey: z.string().optional(),
-      model: z.string().default('llama3.1'),
-      baseURL: z.string().url().default('http://localhost:11434/v1')
-    })
-    .optional(),
-  google: z
-    .object({
-      apiKey: z.string().optional(),
-      model: z.string().optional(), // Deprecated: use textModel/imageModel
-      textModel: z.string().optional(),
-      imageModel: z.string().optional()
-    })
     .optional()
 });
+
+const TextRouteSchema = z.object({
+  provider: z.enum(['openai', 'xai']),
+  model: z.string().trim().min(1),
+  effort: z.enum(['none', 'low', 'medium', 'high', 'xhigh']).optional(),
+  maxTokens: z.number().int().min(1).max(16000).optional()
+});
+
+export const TextRoutingSchema = z
+  .object({
+    routine: TextRouteSchema,
+    analysis: TextRouteSchema,
+    complex: TextRouteSchema,
+    summary: TextRouteSchema,
+    extraction: TextRouteSchema,
+    persona: TextRouteSchema.optional(),
+    fallback: TextRouteSchema.optional()
+  })
+  .strict();
 
 export const DatabaseConfigSchema = z.object({
   url: z.string().min(1),
@@ -67,7 +65,6 @@ export const RateLimitConfigSchema = z.object({
 
 export const FeaturesConfigSchema = z.object({
   enableRAG: z.boolean().default(false),
-  enableLocalModels: z.boolean().default(false),
   enableVoice: z.boolean().default(true),
   enableImages: z.boolean().default(true)
 });
@@ -160,6 +157,7 @@ export const ConfigSchema = z.object({
     guildId: z.string().optional()
   }),
   providers: ProviderConfigSchema,
+  textRouting: TextRoutingSchema.optional(),
   database: DatabaseConfigSchema,
   redis: RedisConfigSchema,
   rateLimits: RateLimitConfigSchema,

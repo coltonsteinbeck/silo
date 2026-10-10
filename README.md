@@ -89,7 +89,7 @@ DATABASE_URL=postgresql://...  # Your Postgres connection string
 REDIS_URL=redis://localhost:6379
 OPENAI_API_KEY=your_openai_key  # For text, images, and voice
 # or
-ANTHROPIC_API_KEY=your_anthropic_key  # For text only
+XAI_API_KEY=your_xai_key  # For text, images, and video
 ```
 
 ### Run
@@ -119,15 +119,6 @@ SUPABASE_DEV_PW=your-dev-postgres-password
 DEPLOYMENT_MODE=production
 HOSTED_DB_IDENTIFIER=prod-xxxxx.supabase.co
 SUPABASE_PW=your-prod-postgres-password
-```
-
-Local model (Ollama / LM Studio) example:
-
-```bash
-ENABLE_LOCAL_MODELS=true
-LOCAL_BASE_URL=http://localhost:11434/v1
-LOCAL_MODEL=llama3.1
-# LOCAL_API_KEY=optional (many local endpoints ignore it)
 ```
 
 ### Langfuse Observability
@@ -176,7 +167,11 @@ AGENT_MEDIA_NL_ENABLED=false
 AGENT_SEARCH_FALLBACK_PROVIDER=disabled
 ```
 
-Graph v2 is acyclic: ingress -> input safety -> context -> deterministic tool planning -> bounded tool execution -> model generation/synthesis -> output safety -> persistence. It does not run autonomous ReAct loops. Provider support continues to come from the existing registry, so configured OpenAI, Anthropic, xAI, Google, and local OpenAI-compatible text models use the same provider implementations as the non-graph path. Provider-native search is available for OpenAI and xAI when `AGENT_SEARCH_ENABLED=true`; set `AGENT_SEARCH_FALLBACK_PROVIDER=openai` or `xai` in staging/production so current-information prompts can search even when the selected text provider does not expose web search. Explicit natural-language image/video generation is available when `AGENT_MEDIA_NL_ENABLED=true`. Unsupported tools return deterministic tool results instead of breaking the turn.
+Text workloads can use explicit provider/model roles through `TEXT_MODEL_ROLES`, a JSON object with `routine`, `analysis`, `complex`, `summary`, and `extraction` entries. Each entry contains `provider` (`openai` or `xai`), `model`, and optional `effort` and `maxTokens` (1–16000). Optional `persona` and `fallback` entries use the same shape. Actual model IDs must be supported by the selected provider. Missing configured providers fail at startup. Without this setting, existing provider model settings remain supported.
+
+Conversation selects a workload automatically; summaries and thread names use the summary role. Ordinary managed-persona conversation retains its configured persona route unless a persona role is supplied. Explicitly complex work uses the complex role. Routine and analytical requests may make one availability fallback to the configured alternate provider; managed-persona requests use the routine route as that alternate. Refusals and invalid requests never trigger provider hopping, and complex work is never downgraded. All attempts share a deadline and disable SDK retries. Ambiguous media requests ask for clarification without a model classification call.
+
+Graph v2 is acyclic: ingress -> input safety -> context -> deterministic tool planning -> bounded tool execution -> model generation/synthesis -> output safety -> persistence. It does not run autonomous ReAct loops. Provider support continues to come from the existing registry, so configured OpenAI and xAI text models use the same provider implementations as the non-graph path. Web search requires the explicit `/search query` command and `AGENT_SEARCH_ENABLED=true`. It uses a configured OpenAI or xAI provider independently of graph mode; `AGENT_SEARCH_FALLBACK_PROVIDER` allows one fallback for availability failures or missing evidence. Ordinary conversation and graph tool requests never initiate search. Explicit natural-language image/video generation is available when `AGENT_MEDIA_NL_ENABLED=true`. Unsupported tools return deterministic tool results instead of breaking the turn.
 
 Assistant output uses a stricter `assistant_output` guardrail profile than normal chat input. This lets current user turns remain passable while generated unsafe personas, explicit sexual continuations, sexualized violence, hate, harassment, and similar bad assistant answers are blocked before Discord delivery and persistence.
 
@@ -185,15 +180,15 @@ For rollout and trace details, see [docs/AGENT_GRAPH.md](docs/AGENT_GRAPH.md).
 ### Docker Deployment
 
 ```bash
-# Build the image
-docker build -t silo-bot .
+# Build a release image from a clean, committed checkout
+bash scripts/build-release-image.sh silo-bot:latest
 
 # Run with environment variables
 docker run -d \
   --name silo \
   --env-file .env \
   --restart unless-stopped \
-  silo-bot
+  silo-bot:latest
 
 # Or with docker-compose (includes Postgres + Redis)
 docker-compose -f docker-compose.prod.yml up -d
@@ -288,7 +283,7 @@ Migration safety rules:
 
 ### Core Capabilities
 
-- **Multi-Provider AI**: OpenAI (gpt-5-mini), Anthropic, xAI, Google, local OpenAI-compatible (Ollama/LM Studio)
+- **Multi-Provider AI**: OpenAI and xAI
 - **Conversational AI**: @mention bot for natural conversations with context
 - **Mention Safety**: Bot-generated text neutralizes `@everyone` and `@here`, and generated Discord replies disable mention parsing
 - **Realtime Voice**: Talk to Silo in voice channels with multiple voice options (alloy, ash, ballad, coral, echo, sage, shimmer, verse)
@@ -328,11 +323,15 @@ Memory scope rules:
   - Voice options: alloy, ash, ballad, coral, echo, sage, shimmer, verse
   - Channel: optionally specify which voice channel to join
 - `/stopspeaking` - End your voice session
+- `/radio <link> <channel>` - Play a YouTube video, playlist, Short, embed, livestream, or an individual Spotify track
+  - Radio and realtime voice chat are mutually exclusive within a server
+  - Spotify albums and playlists are rejected; use an individual track or YouTube playlist
+  - Player controls include Pause/Resume, Skip, Stop, Queue, Repeat, and Previous
 
 #### Collaboration
 
-- `/thread [name]` - Create conversation threads (AI auto-names if not specified)
-- `/digest [period] [include_stats]` - Server activity summaries (1h, 12h, daily, weekly)
+- `/thread [name]` - Create conversation threads; eligible requester context can supply an AI-generated name when no name is given.
+- `/digest [period] [include_stats]` - Private server activity summaries (1h, 12h, daily, weekly), limited to channels the requester can read. Generated summaries and thread names require text quota and output safety approval.
 
 #### Feedback
 
@@ -341,7 +340,7 @@ Memory scope rules:
 #### Admin & Moderation
 
 - `/admin` - View server statistics and configuration dashboard
-- `/config provider|auto-thread|retention|rate-limit|view` - Configure server settings
+- `/config auto-thread|retention|rate-limit|view` - Configure server settings
 - `/mod warn|timeout|purge|history` - Moderation tools
 - `/analytics [period]` - View command usage, costs, and feedback stats
 
@@ -410,6 +409,10 @@ All configuration in `.env`:
 
 - `bun run dev` - Start in development mode
 - `bun run build` - Build for production
+- `bun run runtime:prepare` - Install and verify the pinned yt-dlp radio runtime
+- `bun run radio:verify-runtime` - Verify the packaged yt-dlp version and checksum
+- `bun run radio:validate` - Prove the pinned public fixture produces a Discord audio packet
+- `bun run radio:validate --offline` - Exercise the real audio encoder with generated PCM without a public-media request; CI uses this mode after verifying the pinned yt-dlp artifact
 - `bun run migrate` - Apply pending migrations to default target (local)
 - `bun run migrate:status` - Show applied/pending migrations without changes
 - `bun run migrate:dry-run` - Preview pending migrations without applying

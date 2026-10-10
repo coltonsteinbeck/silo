@@ -36,8 +36,7 @@ export function resolveToolCapabilities(params: {
     supportsWebSearch,
     webSearchProviderName: supportsWebSearch ? webSearchProviderName : undefined,
     supportsImageGeneration: available.image.includes(params.providerName),
-    supportsVideoGeneration:
-      available.video.includes(params.providerName) || Boolean(params.capabilities?.videoGeneration)
+    supportsVideoGeneration: available.video.length > 0
   };
 }
 
@@ -50,6 +49,6 @@ export function toAgentProviderCapabilities(
     capabilities: matrix.capabilities,
     hasImageProvider: matrix.supportsImageGeneration,
     hasVideoProvider: matrix.supportsVideoGeneration,
-    hasWebSearch: matrix.supportsWebSearch
+    hasWebSearch: false
   };
 }

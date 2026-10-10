@@ -44,4 +44,20 @@ describe('safety-policy', () => {
     expect(composed).toContain(IMMUTABLE_SAFETY_POLICY_MARKER);
     expect(composed).toContain('System safety rules (immutable):');
   });
+
+  test('removes the complete legacy marked policy while retaining surrounding persona instructions', () => {
+    const legacy = IMMUTABLE_SAFETY_POLICY.replace(
+      'prefer a brief, safe response',
+      'give a brief refusal'
+    );
+    const base = `Use the configured persona.\n${legacy}\n\nAnswer concisely.`;
+    const disabled = composeSystemPromptWithSafety(base, false);
+    expect(disabled).toContain('Use the configured persona.');
+    expect(disabled).toContain('Answer concisely.');
+    expect(disabled).not.toContain('System safety rules');
+    expect(disabled).not.toContain('give a brief refusal');
+    const enabled = composeSystemPromptWithSafety(base);
+    expect(enabled.match(/System safety rules/g)).toHaveLength(1);
+    expect(enabled).not.toContain('give a brief refusal');
+  });
 });

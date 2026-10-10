@@ -16,6 +16,7 @@ export async function shutdownApplication({
   healthServer,
   releaseProcessLock,
   shutdownTracing,
+  stopRadio,
   log,
   exit = process.exit,
   tracingShutdownTimeoutMs = 1000
@@ -26,6 +27,7 @@ export async function shutdownApplication({
   healthServer: HealthServer;
   releaseProcessLock: ReleaseProcessLock | null;
   shutdownTracing: () => Promise<void>;
+  stopRadio?: () => Promise<void>;
   log: Logger;
   exit?: (code?: number) => never;
   tracingShutdownTimeoutMs?: number;
@@ -55,6 +57,12 @@ export async function shutdownApplication({
     await healthServer.stop();
   } catch (error) {
     log.error('Failed to stop health server:', error);
+  }
+
+  try {
+    await stopRadio?.();
+  } catch (error) {
+    log.error('Failed to stop radio playback during shutdown:', error);
   }
 
   try {
