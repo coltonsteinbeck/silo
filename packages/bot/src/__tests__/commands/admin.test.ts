@@ -5,6 +5,7 @@
  */
 
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { GuildMember } from 'discord.js';
 import {
   createMockInteraction,
   createMockAdminAdapter,
@@ -62,6 +63,29 @@ describe('AdminCommand', () => {
   });
 
   describe('execute', () => {
+    test('quota history labels command events accurately and scopes them to the selected user', async () => {
+      mockPermissions.isAdmin = mock(async () => true);
+      mockAdminDb.getAnalytics = mock(async () => [
+        { userId: '111222333', eventType: 'command_used', command: 'help' },
+        { userId: '111222333', eventType: 'command_used', command: 'draw', success: false },
+        { userId: '111222333', eventType: 'sentiment', command: 'speak' },
+        { userId: 'other-user', eventType: 'command_used', command: 'speak' }
+      ]);
+      mockAdminDb.getUserDailyUsage = mock(async () => null);
+      const interaction = createMockInteraction({ options: { subcommand: 'quota-history' } });
+      Object.assign(interaction.user, { displayAvatarURL: () => 'https://example.com/avatar.png' });
+      Object.setPrototypeOf(interaction.member, GuildMember.prototype);
+      await command.execute(interaction as any);
+      const reply = interaction._getReplies()[0] as { embeds: any[] };
+      const embed = reply.embeds[0].data ?? reply.embeds[0];
+      const activity = embed.fields.find((field: any) => field.name.includes('Command Activity'));
+      expect(activity.value).toContain('Commands: 2');
+      expect(activity.value).toContain('Draw Commands: 1');
+      expect(activity.value).toContain('Speak Commands: 0');
+      expect(activity.value).not.toContain('Text Requests');
+      expect(activity.value).not.toContain('Voice Sessions');
+    });
+
     test('rejects non-guild usage', async () => {
       const interaction = createMockInteraction({
         guildId: undefined

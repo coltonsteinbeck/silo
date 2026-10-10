@@ -73,7 +73,6 @@ class SystemPromptManager {
   private filePrompt: string | null = null;
   private filePromptPath: string | null = null;
   private fileWatcherActive = false;
-  private defaultPrompt: string = '';
 
   constructor() {
     this.loadFilePrompt();
@@ -245,16 +244,6 @@ class SystemPromptManager {
       };
     }
 
-    // 3. Default prompt
-    if (this.defaultPrompt) {
-      return {
-        prompt: this.defaultPrompt,
-        enabled: true,
-        source: 'default',
-        warnings
-      };
-    }
-
     // No prompt configured
     return {
       prompt: null,
@@ -262,16 +251,6 @@ class SystemPromptManager {
       source: 'default',
       warnings
     };
-  }
-
-  /**
-   * Set the default system prompt (used as fallback)
-   */
-  setDefaultPrompt(prompt: string): void {
-    const validation = this.validatePrompt(prompt);
-    if (validation.valid) {
-      this.defaultPrompt = validation.sanitizedPrompt || '';
-    }
   }
 
   /**
