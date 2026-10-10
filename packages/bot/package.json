@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "bun --watch src/index.ts",
     "predev": "bun test",
-    "build": "bun build src/index.ts --outdir dist --target bun --external ffmpeg-static",
+    "build": "bun build src/index.ts --outdir dist --target bun --external ffmpeg-static --external @snazzah/davey",
     "start": "bun dist/index.js",
     "prestart": "bun test",
     "start:prod": "bun src/shard.ts",
