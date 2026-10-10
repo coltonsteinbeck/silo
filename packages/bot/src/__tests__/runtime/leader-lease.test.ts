@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test';
 import { EventEmitter } from 'node:events';
+import { performance } from 'node:perf_hooks';
 import { RuntimeLeaderLease } from '../../runtime/leader-lease';
 
 const leases: RuntimeLeaderLease[] = [];

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import type { Client } from 'pg';
 
 const HEARTBEAT_MS = 5000;
