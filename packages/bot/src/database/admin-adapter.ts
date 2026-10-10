@@ -1,4 +1,6 @@
+import { isManagedGuildCustomPromptDisabled } from '../security/guild-persona-policy';
 import { Pool } from 'pg';
+import { redactUrlForTelemetry, redactUrlSecurityMetadata } from '../security/url-telemetry';
 import { createHash } from 'crypto';
 import {
   ServerConfig,
@@ -7,22 +9,97 @@ import {
   AnalyticsEvent,
   UserRole,
   ResponseFeedback,
-  ChannelConfig,
   logger
 } from '@silo/core';
 import { hashPrompt } from '../security/prompt-policy';
 
 const QUOTA_LOCAL_DATE_SQL = `quota_local_date()`;
 
-function normalizeUrlForStorage(rawUrl: string): string {
-  try {
-    const parsed = new URL(rawUrl);
-    parsed.search = '';
-    parsed.hash = '';
-    return parsed.toString();
-  } catch {
-    return rawUrl.split('#')[0]?.split('?')[0] || rawUrl;
+export interface PatchNotesWebhook {
+  guildId: string;
+  channelId: string;
+  webhookId: string;
+  encryptedToken: string;
+  createdBy: string;
+}
+
+function mapPatchNotesWebhook(row: Record<string, string>): PatchNotesWebhook {
+  return {
+    guildId: row.guild_id!,
+    channelId: row.channel_id!,
+    webhookId: row.webhook_id!,
+    encryptedToken: row.encrypted_token!,
+    createdBy: row.created_by!
+  };
+}
+
+export type QuotaUsageResource =
+  'text_tokens' | 'images' | 'voice_minutes' | 'vision_tokens' | 'video_tokens';
+export type QuotaReservationStatus = 'reserved' | 'attempted' | 'committed' | 'released';
+
+export interface QuotaReservationRow {
+  idempotencyKey: string;
+  status: QuotaReservationStatus;
+  allowed: boolean;
+  reason: string | null;
+  requestedAmount: number;
+  reservedAmount: number;
+  remaining: number;
+  userLimit: number;
+  guildLimit: number;
+  usageDate: string;
+  quotaExempt: boolean;
+}
+
+export interface QuotaReservationLifecycleRow {
+  idempotencyKey: string;
+  status: QuotaReservationStatus;
+  reservedAmount: number;
+  actualAmount: number | null;
+  usageDate: string;
+  idempotent: boolean;
+}
+
+function asFiniteQuotaNumber(value: unknown, fallback = 0): number {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function normalizeQuotaDate(value: unknown): string {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? '' : value.toISOString().slice(0, 10);
   }
+  return typeof value === 'string' ? value.slice(0, 10) : '';
+}
+
+function mapQuotaReservationRow(row: Record<string, unknown>): QuotaReservationRow {
+  return {
+    idempotencyKey: String(row.idempotency_key ?? ''),
+    status: String(row.status ?? 'released') as QuotaReservationStatus,
+    allowed: row.allowed === true,
+    reason: typeof row.reason === 'string' ? row.reason : null,
+    requestedAmount: asFiniteQuotaNumber(row.requested_amount),
+    reservedAmount: asFiniteQuotaNumber(row.reserved_amount),
+    remaining: asFiniteQuotaNumber(row.remaining),
+    userLimit: asFiniteQuotaNumber(row.user_limit),
+    guildLimit: asFiniteQuotaNumber(row.guild_limit),
+    usageDate: normalizeQuotaDate(row.usage_date),
+    quotaExempt: row.quota_exempt === true
+  };
+}
+
+function mapQuotaLifecycleRow(row: Record<string, unknown>): QuotaReservationLifecycleRow {
+  return {
+    idempotencyKey: String(row.idempotency_key ?? ''),
+    status: String(row.status ?? 'released') as QuotaReservationStatus,
+    reservedAmount: asFiniteQuotaNumber(row.reserved_amount),
+    actualAmount:
+      row.actual_amount === null || row.actual_amount === undefined
+        ? null
+        : asFiniteQuotaNumber(row.actual_amount),
+    usageDate: normalizeQuotaDate(row.usage_date),
+    idempotent: row.idempotent === true
+  };
 }
 
 function hashUrl(normalizedUrl: string): string {
@@ -40,6 +117,79 @@ function isUndefinedColumnError(error: unknown): error is { code: string; messag
 
 export class AdminAdapter {
   constructor(private pool: Pool) {}
+
+  async getPatchNotesWebhook(guildId: string): Promise<PatchNotesWebhook | null> {
+    const result = await this.pool.query(
+      `SELECT guild_id, channel_id, webhook_id, encrypted_token, created_by
+       FROM guild_patch_note_webhooks WHERE guild_id = $1`,
+      [guildId]
+    );
+    return result.rows[0] ? mapPatchNotesWebhook(result.rows[0]) : null;
+  }
+
+  async configurePatchNotesWebhook(
+    guildId: string,
+    create: () => Promise<PatchNotesWebhook>
+  ): Promise<PatchNotesWebhook> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const lock = await client.query(
+        'SELECT pg_try_advisory_xact_lock(hashtextextended($1, 83427)) AS acquired',
+        [guildId]
+      );
+      if (!lock.rows[0]?.acquired) throw new Error('Patch-note setup is already running.');
+      const existing = await client.query(
+        `SELECT guild_id, channel_id, webhook_id, encrypted_token, created_by
+         FROM guild_patch_note_webhooks WHERE guild_id = $1`,
+        [guildId]
+      );
+      const webhook = existing.rows[0] ? mapPatchNotesWebhook(existing.rows[0]) : await create();
+      if (webhook.guildId !== guildId) throw new Error('Webhook guild mismatch.');
+      if (!existing.rows[0]) {
+        await client.query(
+          `INSERT INTO guild_patch_note_webhooks
+           (guild_id, channel_id, webhook_id, encrypted_token, created_by)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [guildId, webhook.channelId, webhook.webhookId, webhook.encryptedToken, webhook.createdBy]
+        );
+      }
+      await client.query('COMMIT');
+      return webhook;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async claimPatchNotesDelivery(
+    guildId: string,
+    version: string,
+    notesSha256: string,
+    userId: string
+  ): Promise<boolean> {
+    const result = await this.pool.query(
+      `INSERT INTO guild_patch_note_deliveries (guild_id, version, notes_sha256, created_by)
+       VALUES ($1, $2, $3, $4) ON CONFLICT (guild_id, version) DO NOTHING RETURNING version`,
+      [guildId, version, notesSha256, userId]
+    );
+    return result.rows.length === 1;
+  }
+
+  async completePatchNotesDelivery(
+    guildId: string,
+    version: string,
+    messageId: string
+  ): Promise<void> {
+    const result = await this.pool.query(
+      `UPDATE guild_patch_note_deliveries SET status = 'delivered', message_id = $3
+       WHERE guild_id = $1 AND version = $2 AND status = 'attempted' RETURNING version`,
+      [guildId, version, messageId]
+    );
+    if (result.rows.length !== 1) throw new Error('Patch-note receipt could not be recorded.');
+  }
 
   private async getStoredSystemPromptState(guildId: string): Promise<{
     systemPrompt: string | null;
@@ -132,11 +282,12 @@ export class AdminAdapter {
     return {
       serverConfig: this.mapServerConfigRow(row),
       systemPrompt: {
-        prompt:
-          forVoice && row.voice_system_prompt
+        prompt: isManagedGuildCustomPromptDisabled(guildId)
+          ? null
+          : forVoice && row.voice_system_prompt
             ? row.voice_system_prompt
             : (row.system_prompt ?? null),
-        enabled
+        enabled: !isManagedGuildCustomPromptDisabled(guildId) && enabled
       }
     };
   }
@@ -173,62 +324,6 @@ export class AdminAdapter {
     return this.mapServerConfigRow(row);
   }
 
-  async updateSafetyFeatures(
-    guildId: string,
-    updates: {
-      edgyModeEnabled: boolean;
-      deterministicSentimentReviewEnabled?: boolean;
-    }
-  ): Promise<ServerConfig> {
-    const result = await this.pool.query(
-      `INSERT INTO server_config (guild_id, features_enabled)
-       VALUES (
-         $1,
-         jsonb_build_object(
-           'edgyModeEnabled', $2::boolean,
-           'deterministicSentimentReviewEnabled', COALESCE($3::boolean, $2::boolean)
-         )
-       )
-       ON CONFLICT (guild_id)
-       DO UPDATE SET
-         features_enabled = COALESCE(server_config.features_enabled, '{}'::jsonb) || jsonb_build_object(
-           'edgyModeEnabled', $2::boolean,
-           'deterministicSentimentReviewEnabled',
-             COALESCE(
-               $3::boolean,
-               (server_config.features_enabled->>'deterministicSentimentReviewEnabled')::boolean,
-               $2::boolean
-             )
-         ),
-         updated_at = NOW()
-       RETURNING *`,
-      [guildId, updates.edgyModeEnabled, updates.deterministicSentimentReviewEnabled ?? null]
-    );
-
-    return this.mapServerConfigRow(result.rows[0]);
-  }
-
-  async getChannelConfig(guildId: string, channelId: string): Promise<ChannelConfig | null> {
-    const config = await this.getServerConfig(guildId);
-    if (!config || !config.channelConfigs) return null;
-    return config.channelConfigs[channelId] || null;
-  }
-
-  async setChannelConfig(
-    guildId: string,
-    channelId: string,
-    channelConfig: ChannelConfig
-  ): Promise<void> {
-    const existing = await this.getServerConfig(guildId);
-    const channelConfigs = existing?.channelConfigs || {};
-    channelConfigs[channelId] = channelConfig;
-
-    await this.setServerConfig({
-      guildId,
-      channelConfigs
-    });
-  }
-
   // Alerts Channel (stored in guild_registry.warning_channel_id)
   async getAlertsChannel(guildId: string): Promise<string | null> {
     const result = await this.pool.query(
@@ -255,6 +350,7 @@ export class AdminAdapter {
     guildId: string,
     forVoice = false
   ): Promise<{ prompt: string | null; enabled: boolean }> {
+    if (isManagedGuildCustomPromptDisabled(guildId)) return { prompt: null, enabled: false };
     const promptState = await this.getStoredSystemPromptState(guildId);
 
     return {
@@ -274,6 +370,8 @@ export class AdminAdapter {
     prompt: string | null,
     options: { forVoice?: boolean; enabled?: boolean; actorUserId?: string } = {}
   ): Promise<void> {
+    if (isManagedGuildCustomPromptDisabled(guildId))
+      throw new Error('This guild uses a managed prompt policy');
     const { forVoice = false, enabled, actorUserId } = options;
     const column = forVoice ? 'voice_system_prompt' : 'system_prompt';
     const previousPromptState = await this.getStoredSystemPromptState(guildId);
@@ -349,6 +447,8 @@ export class AdminAdapter {
     enabled: boolean,
     options: { actorUserId?: string; promptType?: 'text' | 'voice' } = {}
   ): Promise<void> {
+    if (isManagedGuildCustomPromptDisabled(guildId))
+      throw new Error('This guild uses a managed prompt policy');
     const forVoice = options.promptType === 'voice';
     const previousPromptState = await this.getStoredSystemPromptState(guildId);
     const previousStoredPrompt = forVoice
@@ -414,9 +514,9 @@ export class AdminAdapter {
     reason: string;
     metadata?: Record<string, unknown>;
   }): Promise<void> {
-    const normalizedUrl = normalizeUrlForStorage(event.url);
+    const normalizedUrl = redactUrlForTelemetry(event.url);
     const urlHash = hashUrl(normalizedUrl);
-    const metadata = event.metadata ? { ...event.metadata } : {};
+    const metadata = redactUrlSecurityMetadata(event.metadata, event.url);
 
     try {
       await this.pool.query(
@@ -827,15 +927,14 @@ export class AdminAdapter {
     context: string | null;
   }): Promise<void> {
     await this.pool.query(
-      `INSERT INTO user_feedback (guild_id, user_id, username, feedback_type, content, context)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
+      `INSERT INTO user_feedback (guild_id, user_id, feedback_type, message, metadata)
+       VALUES ($1, $2, $3, $4, $5::jsonb)`,
       [
         feedback.guildId,
         feedback.userId,
-        feedback.username,
         feedback.feedbackType,
         feedback.content,
-        feedback.context
+        JSON.stringify({ username: feedback.username, context: feedback.context })
       ]
     );
   }
@@ -1221,6 +1320,105 @@ export class AdminAdapter {
       success: row.success ?? false,
       newTotal: row.new_total ?? 0,
       remaining: row.remaining ?? 0
+    };
+  }
+
+  /**
+   * Atomically reserves quota before billable provider work. Limits and the
+   * quota date are resolved inside PostgreSQL so concurrent callers share one
+   * authoritative decision.
+   */
+  async reserveQuotaUsage(params: {
+    idempotencyKey: string;
+    guildId: string;
+    userId: string;
+    roleTier: 'admin' | 'moderator' | 'trusted' | 'member' | 'restricted';
+    resource: QuotaUsageResource;
+    requestedAmount: number;
+    minimumAmount: number;
+  }): Promise<QuotaReservationRow> {
+    const result = await this.pool.query(
+      `SELECT * FROM reserve_quota_usage($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        params.idempotencyKey,
+        params.guildId,
+        params.userId,
+        params.roleTier,
+        params.resource,
+        params.requestedAmount,
+        params.minimumAmount
+      ]
+    );
+
+    if (!result.rows[0]) {
+      throw new Error('Quota reservation returned no result');
+    }
+    return mapQuotaReservationRow(result.rows[0]);
+  }
+
+  async markQuotaUsageAttempted(idempotencyKey: string): Promise<QuotaReservationLifecycleRow> {
+    const result = await this.pool.query(`SELECT * FROM mark_quota_usage_attempted($1)`, [
+      idempotencyKey
+    ]);
+    if (!result.rows[0]) {
+      throw new Error('Quota attempt transition returned no result');
+    }
+    return mapQuotaLifecycleRow(result.rows[0]);
+  }
+
+  async commitQuotaUsage(
+    idempotencyKey: string,
+    actualAmount: number
+  ): Promise<QuotaReservationLifecycleRow> {
+    const result = await this.pool.query(`SELECT * FROM commit_quota_usage($1, $2)`, [
+      idempotencyKey,
+      actualAmount
+    ]);
+    if (!result.rows[0]) {
+      throw new Error('Quota commit returned no result');
+    }
+    return mapQuotaLifecycleRow(result.rows[0]);
+  }
+
+  async recordQuotaUsageActual(idempotencyKey: string, actualAmount: number): Promise<void> {
+    const result = await this.pool.query(
+      `SELECT record_quota_usage_actual($1, $2) AS actual_amount`,
+      [idempotencyKey, actualAmount]
+    );
+    if (asFiniteQuotaNumber(result.rows[0]?.actual_amount, -1) !== actualAmount) {
+      throw new Error('Quota actual-usage transition returned an unexpected amount');
+    }
+  }
+
+  async releaseQuotaUsage(
+    idempotencyKey: string,
+    reason: string
+  ): Promise<QuotaReservationLifecycleRow> {
+    const result = await this.pool.query(`SELECT * FROM release_quota_usage($1, $2)`, [
+      idempotencyKey,
+      reason
+    ]);
+    if (!result.rows[0]) {
+      throw new Error('Quota release returned no result');
+    }
+    return mapQuotaLifecycleRow(result.rows[0]);
+  }
+
+  async reconcileQuotaUsageReservations(limit = 100): Promise<{
+    released: number;
+    committed: number;
+    processed: number;
+    failed: number;
+  }> {
+    const result = await this.pool.query(`SELECT * FROM reconcile_expired_quota_reservations($1)`, [
+      limit
+    ]);
+    const row = result.rows[0] ?? {};
+    return {
+      released: asFiniteQuotaNumber(row.released),
+      committed: asFiniteQuotaNumber(row.committed),
+      processed: asFiniteQuotaNumber(row.processed),
+      failed: asFiniteQuotaNumber(row.failed)
     };
   }
 

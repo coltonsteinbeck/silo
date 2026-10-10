@@ -1,5 +1,7 @@
+import { toLangfuseUsage } from '../telemetry/langfuse-usage';
 import {
   ChatInputCommandInteraction,
+  GuildMember,
   SlashCommandBuilder,
   ChannelType,
   ThreadAutoArchiveDuration
@@ -9,8 +11,9 @@ import { buildLangfuseTags, buildLangfuseTraceMetadata } from '../telemetry/lang
 import { Command } from './types';
 import { DatabaseAdapter } from '@silo/core';
 import { ProviderRegistry } from '../providers/registry';
-import { AdminAdapter } from '../database/admin-adapter';
 import { sanitizeDiscordMassMentions } from '../security/output-sanitizer';
+import { evaluateSafetyDecision } from '../security/safety-decision';
+import type { QuotaMiddleware } from '../middleware/quota';
 
 export class ThreadCommand implements Command {
   data = new SlashCommandBuilder()
@@ -26,13 +29,24 @@ export class ThreadCommand implements Command {
   constructor(
     private db: DatabaseAdapter,
     private registry: ProviderRegistry,
-    private adminDb?: AdminAdapter
+    private quota?: QuotaMiddleware,
+    private shutdownSignal?: AbortSignal,
+    private resolvePromptHash?: (guildId: string) => Promise<string>
   ) {}
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
+    const signal = AbortSignal.any([
+      AbortSignal.timeout(60_000),
+      ...(this.shutdownSignal ? [this.shutdownSignal] : [])
+    ]);
+    signal.throwIfAborted();
     await interaction.deferReply();
 
-    if (!interaction.channel || interaction.channel.type !== ChannelType.GuildText) {
+    if (
+      !interaction.guildId ||
+      !interaction.channel ||
+      interaction.channel.type !== ChannelType.GuildText
+    ) {
       await interaction.editReply('This command can only be used in text channels.');
       return;
     }
@@ -43,19 +57,43 @@ export class ThreadCommand implements Command {
 
     // AI-generate thread name if not provided
     if (!threadName) {
-      // For thread naming, we just need recent messages from this channel
-      const history = await this.db.getConversationHistory(interaction.channelId, 'default', 5);
+      if (!this.resolvePromptHash) throw new Error('Thread prompt resolution is unavailable');
+      const promptHash = await this.resolvePromptHash(interaction.guildId);
+      signal.throwIfAborted();
+      // Reuse only eligible context scoped to the requester and channel.
+      const { messages: history } = await this.db.getPromptContext({
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        requesterUserId: interaction.user.id,
+        promptHash,
+        maxTurns: 5
+      });
+      signal.throwIfAborted();
       if (history.length > 0) {
-        // Get guild's preferred provider
-        let preferredProvider: string | undefined;
-        if (this.adminDb && interaction.guildId) {
-          const serverConfig = await this.adminDb.getServerConfig(interaction.guildId);
-          preferredProvider = serverConfig?.defaultProvider || undefined;
+        if (
+          !this.quota ||
+          !(interaction.member instanceof GuildMember) ||
+          interaction.member.id !== interaction.user.id ||
+          interaction.member.guild.id !== interaction.guildId
+        ) {
+          throw new Error('Summary quota admission is unavailable');
         }
-
-        const provider = this.registry.getTextProvider(preferredProvider);
-        const requestedModel = this.registry.getConfiguredTextModel(provider.name);
-        const context = history.map(m => m.content).join('\n');
+        signal.throwIfAborted();
+        const textRoute = this.registry.getTextRoute('summary', undefined, {
+          middleware: this.quota,
+          operationKey: `discord:${interaction.id}:thread`,
+          guildId: interaction.guildId!,
+          userId: interaction.user.id,
+          member: interaction.member,
+          usageType: 'text_tokens'
+        });
+        textRoute.options.signal = signal;
+        const provider = textRoute.provider;
+        const requestedModel = textRoute.options.model;
+        const context = history
+          .map(m => m.content)
+          .join('\n')
+          .slice(0, 4000);
         const generationMetadataInput = {
           guildId: interaction.guildId,
           channelId: interaction.channelId,
@@ -101,12 +139,12 @@ export class ThreadCommand implements Command {
                   content: `Context:\n${context}`
                 }
               ],
-              { maxTokens: 20 }
+              { ...textRoute.options, maxTokens: 20 }
             );
 
             generation?.update({
               model: providerResponse.model || requestedModel || provider.name,
-              usageDetails: providerResponse.usage,
+              usageDetails: toLangfuseUsage(providerResponse.usage),
               output: {
                 outputCharacters: providerResponse.content.length,
                 hasContent: Boolean(providerResponse.content.trim())
@@ -122,6 +160,26 @@ export class ThreadCommand implements Command {
         );
 
         threadName = sanitizeDiscordMassMentions(response.content).trim().slice(0, 100);
+        signal.throwIfAborted();
+        if (threadName) {
+          const safety = await evaluateSafetyDecision(threadName, {
+            stage: 'assistant_output',
+            source: 'thread_name',
+            guildId: interaction.guildId,
+            userId: interaction.user.id,
+            failurePolicy: 'fail_closed',
+            signal
+          });
+          signal.throwIfAborted();
+          if (safety.failed || safety.action !== 'allow') {
+            await interaction.editReply(
+              safety.failed
+                ? 'Thread name generation is temporarily unavailable. Please provide a name or try again shortly.'
+                : 'I could not safely generate a thread name. Please provide a name.'
+            );
+            return;
+          }
+        }
         if (!threadName) {
           threadName = fallbackThreadName;
         }
@@ -130,6 +188,7 @@ export class ThreadCommand implements Command {
       }
     }
 
+    signal.throwIfAborted();
     // Create thread
     const thread = await interaction.channel.threads.create({
       name: threadName,
@@ -137,7 +196,13 @@ export class ThreadCommand implements Command {
       reason: `Created by ${interaction.user.tag}`
     });
 
-    await interaction.editReply(`Created thread: ${thread.toString()}`);
+    // An in-flight create may complete after cancellation; suppress subsequent sends.
+    signal.throwIfAborted();
+    await interaction.editReply({
+      content: `Created thread: ${thread.toString()}`,
+      allowedMentions: { parse: [] }
+    });
+    signal.throwIfAborted();
     await thread.send(
       `Thread created! I'll respond to all messages here automatically (no need to @ me).`
     );

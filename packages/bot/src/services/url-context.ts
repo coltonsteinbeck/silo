@@ -1,5 +1,7 @@
 import { logger } from '@silo/core';
+import { redactUrlForTelemetry, redactUrlSecurityMetadata } from '../security/url-telemetry';
 import { isIP } from 'node:net';
+import { fetchPublicUrl, isPublicAddress, readBoundedResponseBody } from './public-fetch';
 import { hasPromptInjectionPattern } from '../security/content-sanitizer';
 
 export interface UrlContextItem {
@@ -48,6 +50,13 @@ interface FetchUrlContextOptions {
 }
 
 const URL_PATTERN = /https?:\/\/[^\s<>()]+/gi;
+
+export function hasUrlContextCandidate(text: string): boolean {
+  URL_PATTERN.lastIndex = 0;
+  const hasCandidate = URL_PATTERN.test(text);
+  URL_PATTERN.lastIndex = 0;
+  return hasCandidate;
+}
 
 const SUSPICIOUS_FILE_EXTENSION_PATTERN =
   /\.(?:exe|dll|dmg|pkg|msi|apk|bat|cmd|ps1|scr|jar|js|vbs|hta|iso|img)(?:$|[?#])/i;
@@ -174,24 +183,8 @@ function isPrivateHostname(hostname: string): boolean {
     return true;
   }
 
-  const ipType = isIP(hostname);
-  if (!ipType) {
-    return false;
-  }
-
-  if (ipType === 4) {
-    if (hostname.startsWith('10.')) return true;
-    if (hostname.startsWith('127.')) return true;
-    if (hostname.startsWith('169.254.')) return true;
-    if (hostname.startsWith('192.168.')) return true;
-    if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname)) return true;
-    return false;
-  }
-
-  const normalized = hostname.toLowerCase();
-  return (
-    normalized.startsWith('fc') || normalized.startsWith('fd') || normalized.startsWith('fe80')
-  );
+  const address = hostname.replace(/^\[|\]$/g, '');
+  return Boolean(isIP(address)) && !isPublicAddress(address);
 }
 
 function decodeEntities(value: string): string {
@@ -228,12 +221,17 @@ async function emitSecurityEvent(
   event: UrlSecurityEvent,
   onSecurityEvent?: (event: UrlSecurityEvent) => void | Promise<void>
 ): Promise<void> {
+  const safeEvent: UrlSecurityEvent = {
+    ...event,
+    url: redactUrlForTelemetry(event.url),
+    ...(event.metadata ? { metadata: redactUrlSecurityMetadata(event.metadata, event.url) } : {})
+  };
   const payload = {
-    action: event.action,
+    action: safeEvent.action,
     reason: event.reason,
     domain: event.domain,
-    url: event.url,
-    ...(event.metadata ? { metadata: event.metadata } : {})
+    url: safeEvent.url,
+    ...(safeEvent.metadata ? { metadata: safeEvent.metadata } : {})
   };
 
   if (event.action === 'blocked') {
@@ -249,12 +247,12 @@ async function emitSecurityEvent(
   }
 
   try {
-    await onSecurityEvent(event);
+    await onSecurityEvent(safeEvent);
   } catch (error) {
     logger.warn('Failed to emit URL security callback', {
       reason: event.reason,
       domain: event.domain,
-      error
+      errorType: error instanceof Error ? error.name : 'unknown'
     });
   }
 }
@@ -421,8 +419,9 @@ async function fetchUrlItem(
   const controller = new globalThis.AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
+  let response: Response | undefined;
   try {
-    const response = await fetch(parsed.toString(), {
+    response = await fetchPublicUrl(parsed, {
       signal: controller.signal,
       redirect: 'manual',
       headers: {
@@ -493,7 +492,7 @@ async function fetchUrlItem(
       return null;
     }
 
-    const raw = await response.text();
+    const raw = (await readBoundedResponseBody(response, 1_000_000)).toString('utf8');
     const trimmedRaw = raw.slice(0, Math.max(300, maxCharsPerUrl * 2));
 
     if (contentType.includes('text/html')) {
@@ -596,6 +595,7 @@ async function fetchUrlItem(
     );
     return null;
   } finally {
+    await response?.body?.cancel().catch(() => {});
     clearTimeout(timeout);
   }
 }

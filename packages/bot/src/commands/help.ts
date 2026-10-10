@@ -17,6 +17,7 @@ const HELP_LINES = [
   '**Media Commands**',
   '/draw - Generate an image.',
   '/video - Generate or transform a video.',
+  '/radio - Play YouTube audio or a Spotify track in a voice channel.',
   '/speak - Start voice mode in a voice channel.',
   '/stopspeaking - Stop voice mode.',
   '',
@@ -28,13 +29,17 @@ const HELP_LINES = [
 ].join('\n');
 
 export class HelpCommand implements Command {
+  constructor(private searchAvailable = false) {}
+
   public readonly data = new SlashCommandBuilder()
     .setName('help')
     .setDescription('Show available commands and what they do');
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     await interaction.reply({
-      content: HELP_LINES,
+      content: this.searchAvailable
+        ? HELP_LINES.replace('/help -', '/search - Search the web for a sourced answer.\n/help -')
+        : HELP_LINES,
       ephemeral: true
     });
   }

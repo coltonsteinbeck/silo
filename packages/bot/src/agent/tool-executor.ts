@@ -1,5 +1,7 @@
+import { calculateVideoQuotaCost } from '../services/media-quota';
+import type { GuildMember } from 'discord.js';
+import type { QuotaMiddleware } from '../middleware/quota';
 import {
-  logger,
   ImageGenerationResponse,
   TextGenerationResponse,
   VideoGenerationResponse,
@@ -21,9 +23,16 @@ export interface AgentMediaResult {
 export interface AgentToolExecutionContext {
   registry: ProviderRegistry;
   preferredProviderName: string;
-  searchFallbackProviderName?: string;
-  textModel?: string;
   referenceImages?: string[];
+  signal?: AbortSignal;
+  quota?: {
+    middleware: Pick<QuotaMiddleware, 'executeReserved'>;
+    operationKey: string;
+    guildId: string;
+    userId: string;
+    member: GuildMember | null;
+    referenceImageCount: number;
+  };
 }
 
 export type AgentToolExecutor = (request: AgentToolRequest) => Promise<AgentToolExecutionResult>;
@@ -64,95 +73,15 @@ function numberInput(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
-function isConfiguredSearchProvider(
-  provider: ReturnType<ProviderRegistry['getWebSearchProvider']>
-): provider is NonNullable<ReturnType<ProviderRegistry['getWebSearchProvider']>> {
-  return Boolean(provider);
-}
-
-function shouldPreferXaiSearch(query: string): boolean {
-  const lower = query.toLowerCase();
-  const asksForLiveResult =
-    /\b(who(?:'s| is) winning|winner|score|scores|live|right now|rn|current|standings|series)\b/i.test(
-      lower
-    );
-  const sportsTopic =
-    /\b(nba|nfl|mlb|nhl|wnba|ufc|finals?|playoffs?|game|match|team|season)\b/i.test(lower);
-
-  return asksForLiveResult && sportsTopic;
-}
-
 export function createProviderToolExecutor(context: AgentToolExecutionContext): AgentToolExecutor {
-  return async request => {
+  const execute: AgentToolExecutor = async request => {
     try {
+      context.signal?.throwIfAborted();
       if (request.name === 'web_search') {
-        const query = stringInput(request.input?.query, '');
-        if (!query) {
-          return {
-            name: request.name,
-            status: 'error',
-            message: 'Web search requires a non-empty query.'
-          };
-        }
-
-        const providers = [
-          ...(shouldPreferXaiSearch(query) ? [context.registry.getWebSearchProvider('xai')] : []),
-          context.registry.getWebSearchProvider(context.preferredProviderName),
-          context.registry.getWebSearchProvider(context.searchFallbackProviderName),
-          context.registry.getWebSearchProvider()
-        ]
-          .filter(isConfiguredSearchProvider)
-          .filter(
-            (provider, index, candidates) =>
-              candidates.findIndex(candidate => candidate.name === provider.name) === index
-          );
-
-        if (providers.length === 0) {
-          return {
-            name: request.name,
-            status: 'unsupported',
-            message: `Tool ${request.name} is not supported by the selected provider/model.`
-          };
-        }
-
-        const failedProviders: string[] = [];
-        for (const provider of providers) {
-          try {
-            const result = await provider.searchWeb(query, {
-              model:
-                provider.name === context.preferredProviderName
-                  ? context.textModel
-                  : context.registry.getConfiguredTextModel(provider.name),
-              maxResults: numberInput(request.input?.maxResults, 5)
-            });
-
-            return {
-              name: 'web_search',
-              status: 'success',
-              message:
-                failedProviders.length > 0
-                  ? `Web search completed with ${provider.name} after fallback.`
-                  : 'Web search completed.',
-              content: result.content,
-              citations: result.citations,
-              provider: provider.name,
-              model: result.model,
-              usage: result.usage,
-              query
-            };
-          } catch (error) {
-            logger.warn('Web search provider failed during fallback', {
-              provider: provider.name,
-              error
-            });
-            failedProviders.push(provider.name);
-          }
-        }
-
         return {
-          name: 'web_search',
-          status: 'error',
-          message: `Web search failed for configured providers: ${failedProviders.join(', ')}.`
+          name: request.name,
+          status: 'unsupported',
+          message: 'Web search requires an explicit search command.'
         };
       }
 
@@ -180,8 +109,18 @@ export function createProviderToolExecutor(context: AgentToolExecutionContext): 
           model: model || undefined,
           referenceImages: context.referenceImages || [],
           action,
-          inputFidelity: action === 'edit' ? 'high' : 'low'
+          inputFidelity: action === 'edit' ? 'high' : 'low',
+          signal: context.signal
         });
+        context.signal?.throwIfAborted();
+
+        if (result.moderationPassed === false) {
+          return {
+            name: 'image_generation',
+            status: 'error',
+            message: 'Media generation was blocked by safety checks.'
+          };
+        }
 
         return {
           name: 'image_generation',
@@ -230,8 +169,19 @@ export function createProviderToolExecutor(context: AgentToolExecutionContext): 
         const result = await provider.generateVideo(prompt, {
           model: model || undefined,
           duration: numberInput(request.input?.duration, 8),
-          referenceImages: context.referenceImages || []
+          resolution: '480p',
+          referenceImages: context.referenceImages || [],
+          signal: context.signal
         });
+        context.signal?.throwIfAborted();
+
+        if (result.moderationPassed === false) {
+          return {
+            name: 'video_generation',
+            status: 'error',
+            message: 'Media generation was blocked by safety checks.'
+          };
+        }
 
         return {
           name: 'video_generation',
@@ -260,5 +210,48 @@ export function createProviderToolExecutor(context: AgentToolExecutionContext): 
         message: error instanceof Error ? error.message : 'Tool execution failed.'
       };
     }
+  };
+
+  return async request => {
+    context.signal?.throwIfAborted();
+    const quota = context.quota;
+    if (!quota || (request.name !== 'image_generation' && request.name !== 'video_generation')) {
+      return execute(request);
+    }
+    if (!quota.member) {
+      return {
+        name: request.name,
+        status: 'error',
+        message: 'Media generation requires a guild member context for quota checks.'
+      };
+    }
+    let cost: number;
+    try {
+      cost =
+        request.name === 'image_generation'
+          ? 1 + quota.referenceImageCount
+          : calculateVideoQuotaCost(
+              numberInput(request.input?.duration, 8),
+              '480p',
+              quota.referenceImageCount
+            );
+    } catch (error) {
+      return { name: request.name, status: 'error', message: (error as Error).message };
+    }
+    const result = await quota.middleware.executeReserved({
+      operationKey: `${quota.operationKey}:${request.name}`,
+      guildId: quota.guildId,
+      userId: quota.userId,
+      member: quota.member,
+      usageType: request.name === 'image_generation' ? 'images' : 'video_tokens',
+      requestedAmount: cost,
+      beforeAttempt: () => context.signal?.throwIfAborted(),
+      execute: () => execute(request),
+      // A returned error may follow billable work; retain the fixed reservation.
+      getActualAmount: () => cost
+    });
+    return result.allowed
+      ? result.value
+      : { name: request.name, status: 'error', message: result.reason };
   };
 }

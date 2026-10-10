@@ -24,7 +24,9 @@ describe('media delivery', () => {
       { fetchImpl, now: () => 123 }
     );
 
-    expect(fetchImpl).toHaveBeenCalledWith('https://cdn.example.com/generated.png');
+    expect(fetchImpl).toHaveBeenCalledWith('https://cdn.example.com/generated.png', {
+      signal: undefined
+    });
     expect(payload.uploaded).toBe(true);
     expect(payload.files).toHaveLength(1);
     expect(payload.content).toBeUndefined();
@@ -69,7 +71,9 @@ describe('media delivery', () => {
       { fetchImpl, now: () => 123 }
     );
 
-    expect(fetchImpl).toHaveBeenCalledWith('https://cdn.example.com/generated.mp4');
+    expect(fetchImpl).toHaveBeenCalledWith('https://cdn.example.com/generated.mp4', {
+      signal: undefined
+    });
     expect(payload.uploaded).toBe(true);
     expect(payload.files).toHaveLength(1);
     expect(payload.content).toBeUndefined();
@@ -133,3 +137,23 @@ describe('media delivery', () => {
     expect(resolveDeliverableMediaResult(media, false)).toBe(media);
   });
 });
+
+for (const kind of ['image', 'video'] as const) {
+  test(`${kind} provider moderation failure blocks selection and download`, async () => {
+    const media = {
+      kind,
+      url: 'https://cdn.example.com/rejected',
+      prompt: 'scene',
+      moderationPassed: false
+    };
+    const fetchImpl = mock(async () => new Response(new Uint8Array([1])));
+    expect(resolveDeliverableMediaResult(media, false)).toBeNull();
+    const payload = await buildMediaReplyPayload(media, {
+      fetchImpl: fetchImpl as unknown as typeof fetch
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(payload.uploaded).toBe(false);
+    expect(payload.files).toEqual([]);
+    expect(payload.content).not.toContain(media.url);
+  });
+}
