@@ -26,6 +26,55 @@ describe('openai-guardrails adapter', () => {
     resetPromptSafetyRuntimeForTests();
   });
 
+  test('adapts structured guardrail requests to explicit reasoning without sampling or SDK retries', async () => {
+    cleanup = withEnv({
+      OPENAI_GUARDRAILS_ENABLED: 'true',
+      OPENAI_API_KEY: 'test-key',
+      OPENAI_GUARDRAILS_REASONING_EFFORT: 'low'
+    });
+    const originalFetch = globalThis.fetch;
+    const forwarded = mock(async (_input: unknown, init?: Parameters<typeof fetch>[1]) => {
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        reasoning_effort: 'low',
+        max_completion_tokens: 4096
+      });
+      expect(JSON.parse(String(init?.body)).temperature).toBeUndefined();
+      return new Response('{}');
+    });
+    globalThis.fetch = forwarded as unknown as typeof fetch;
+    const client = {
+      withOptions: (options: any) => {
+        expect(options.maxRetries).toBe(0);
+        return { fetch: options.fetch };
+      }
+    };
+    setGuardrailsRuntimeForTests({
+      guardrailLlmClient: client as any,
+      module: {
+        runGuardrails: async (_text: unknown, _bundle: unknown, context: any) => {
+          await context.guardrailLlm.fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            body: JSON.stringify({
+              model: 'text-model',
+              temperature: 0,
+              response_format: { type: 'json_object' }
+            })
+          });
+          return [];
+        }
+      } as any
+    });
+    try {
+      const result = await evaluateCustomSystemPromptGuardrails('You are a helpful assistant.', {
+        failClosedOnError: true
+      });
+      expect(result.allowed).toBe(true);
+      expect(forwarded).toHaveBeenCalledTimes(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test('reports disabled when env flag is not set', () => {
     cleanup = withEnv({ OPENAI_GUARDRAILS_ENABLED: undefined });
 
@@ -49,7 +98,11 @@ describe('openai-guardrails adapter', () => {
   });
 
   test('fails open for benign prompts when moderation is unavailable', async () => {
-    cleanup = withEnv({ OPENAI_GUARDRAILS_ENABLED: 'true', OPENAI_API_KEY: undefined });
+    cleanup = withEnv({
+      OPENAI_GUARDRAILS_ENABLED: 'true',
+      OPENAI_MODERATION_ENABLED: 'true',
+      OPENAI_API_KEY: undefined
+    });
 
     const result = await evaluateUserPromptGuardrails('hello world');
 

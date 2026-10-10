@@ -2,11 +2,13 @@ version: 2
 updates:
   - package-ecosystem: "npm"
     directory: "/"
+    target-branch: "release/silo-2.0"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
     versioning-strategy: widen
   - package-ecosystem: "github-actions"
     directory: "/"
+    target-branch: "release/silo-2.0"
     schedule:
       interval: "weekly"

@@ -6,8 +6,13 @@
 
 reviews:
   auto_review:
-    enabled: true
-    drafts: false
+    # The metadata-only scope workflow opts same-repository release/* -> main PRs in.
+    enabled: false
+    labels: ['coderabbit-release']
+    description_keyword: ''
+    drafts: true
+    auto_incremental_review: true
+    base_branches: []
   path_filters:
     - packages/**/*.ts
     - packages/**/*.tsx

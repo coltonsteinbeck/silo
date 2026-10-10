@@ -77,7 +77,7 @@ export class FeedbackCommand implements Command {
     guildId: string | null;
     user: { id: string; username: string };
     fields: { getTextInputValue: (id: string) => string };
-    reply: (options: { content: string; ephemeral: boolean }) => Promise<void>;
+    reply: (options: { content: string; ephemeral: boolean }) => Promise<unknown>;
   }): Promise<void> {
     const feedbackType = interaction.customId.replace('feedback_modal_', '');
     const content = interaction.fields.getTextInputValue('feedback_content');

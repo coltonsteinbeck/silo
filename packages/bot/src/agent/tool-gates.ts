@@ -7,7 +7,7 @@ export function filterRequestedAgentTools(
 ): AgentToolRequest[] {
   return requestedTools.filter(tool => {
     if (tool.name === 'web_search') {
-      return config.searchEnabled;
+      return false;
     }
 
     if (tool.name === 'image_generation' || tool.name === 'video_generation') {

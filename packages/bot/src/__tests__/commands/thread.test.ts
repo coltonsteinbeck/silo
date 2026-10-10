@@ -4,9 +4,26 @@
  * Tests AI conversation thread creation.
  */
 
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
-import { createMockInteraction, createMockDatabaseAdapter } from '@silo/core/test-setup';
+import { describe, test, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import { GuildMember } from 'discord.js';
+import {
+  createMockInteraction as createBaseInteraction,
+  createMockDatabaseAdapter
+} from '@silo/core/test-setup';
 import { ThreadCommand } from '../../commands/thread';
+import * as safety from '../../security/safety-decision';
+
+function createMockInteraction(options?: Parameters<typeof createBaseInteraction>[0]) {
+  const interaction = createBaseInteraction(options);
+  Object.assign(interaction, {
+    id: 'interaction',
+    member: Object.assign(Object.create(GuildMember.prototype), {
+      user: interaction.user,
+      guild: { id: interaction.guildId }
+    })
+  });
+  return interaction;
+}
 
 describe('ThreadCommand', () => {
   let command: ThreadCommand;
@@ -15,7 +32,13 @@ describe('ThreadCommand', () => {
 
   let mockRegistry: any;
 
+  afterEach(() => mock.restore());
+
   beforeEach(() => {
+    spyOn(safety, 'evaluateSafetyDecision').mockResolvedValue({
+      action: 'allow',
+      failed: false
+    } as any);
     mockDb = createMockDatabaseAdapter();
     mockRegistry = {
       getTextProvider: mock(() => ({
@@ -29,9 +52,19 @@ describe('ThreadCommand', () => {
         generateText: mock(async () => ({ content: 'AI Generated Name', model: 'test-model' }))
       })),
       getConfiguredTextModel: mock(() => 'test-model'),
+      getTextRoute: mock(() => ({
+        provider: mockRegistry.getTextProvider(),
+        options: { model: 'test-model', reasoning: { effort: 'none' } }
+      })),
       isConfigured: mock(() => true)
     };
-    command = new ThreadCommand(mockDb, mockRegistry);
+    command = new ThreadCommand(
+      mockDb,
+      mockRegistry,
+      {} as any,
+      undefined,
+      async () => 'active-hash'
+    );
   });
 
   describe('data', () => {
@@ -94,13 +127,15 @@ describe('ThreadCommand', () => {
     });
 
     test('neutralizes mass mentions in generated thread names', async () => {
-      mockDb.getConversationHistory = mock(async () => [
-        {
-          role: 'user',
-          content: 'Plan the launch update',
-          createdAt: new Date()
-        }
-      ]);
+      mockDb.getPromptContext = mock(async () => ({
+        messages: [
+          {
+            role: 'user',
+            content: 'Plan the launch update',
+            createdAt: new Date()
+          }
+        ]
+      }));
       mockRegistry.getTextProvider = mock(() => ({
         name: 'openai',
         capabilities: {},
@@ -139,13 +174,15 @@ describe('ThreadCommand', () => {
     });
 
     test('falls back to a valid default when the generated thread name is empty', async () => {
-      mockDb.getConversationHistory = mock(async () => [
-        {
-          role: 'user',
-          content: 'Need a name',
-          createdAt: new Date()
-        }
-      ]);
+      mockDb.getPromptContext = mock(async () => ({
+        messages: [
+          {
+            role: 'user',
+            content: 'Need a name',
+            createdAt: new Date()
+          }
+        ]
+      }));
       mockRegistry.getTextProvider = mock(() => ({
         name: 'openai',
         capabilities: {},
@@ -184,7 +221,7 @@ describe('ThreadCommand', () => {
     });
 
     test('falls back to the default thread name when there is no conversation history', async () => {
-      mockDb.getConversationHistory = mock(async () => []);
+      mockDb.getPromptContext = mock(async () => ({ messages: [] }));
 
       const createThread = mock(async ({ name }: { name: string }) => ({
         id: 'thread123',

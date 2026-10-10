@@ -27,7 +27,7 @@ By participating in this project, you agree to maintain a respectful and inclusi
 - PostgreSQL >= 14
 - Redis >= 7.0
 - Discord Bot Application
-- OpenAI API Key (or Anthropic/xAI)
+- OpenAI API Key (or xAI)
 
 ### Development Setup
 

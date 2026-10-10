@@ -11,6 +11,14 @@ import { RateLimiter } from '../../utils/rate-limiter';
 describe('RateLimiter', () => {
   let limiter: RateLimiter;
 
+  test('role limits deny zero and override the default without resetting usage', () => {
+    const limiter = new RateLimiter(10);
+    expect(limiter.check('restricted', 0).allowed).toBe(false);
+    expect(limiter.check('invalid', Number.NaN).allowed).toBe(false);
+    expect(limiter.check('member', 2).allowed).toBe(true);
+    expect(limiter.check('member', 1).allowed).toBe(false);
+  });
+
   describe('basic functionality', () => {
     beforeEach(() => {
       limiter = new RateLimiter(5, 60000); // 5 requests per minute

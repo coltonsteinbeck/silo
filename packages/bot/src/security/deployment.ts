@@ -150,45 +150,6 @@ class DeploymentDetector {
   }
 
   /**
-   * Check if a new guild can be added based on current capacity
-   * For self-hosted, always returns true
-   * For hosted, checks against MAX_HOSTED_GUILDS
-   */
-  async canAddGuild(currentActiveGuilds: number): Promise<boolean> {
-    const config = this.getConfig();
-    if (config.isSelfHosted) {
-      return true;
-    }
-    return currentActiveGuilds < config.maxGuilds;
-  }
-
-  /**
-   * Get capacity info for display
-   */
-  getCapacityInfo(currentActiveGuilds: number): {
-    current: number;
-    max: number;
-    available: number;
-    atCapacity: boolean;
-    displayString: string;
-  } {
-    const config = this.getConfig();
-    const max = config.maxGuilds;
-    const available = Math.max(0, max - currentActiveGuilds);
-    const atCapacity = config.isHosted && currentActiveGuilds >= max;
-
-    return {
-      current: currentActiveGuilds,
-      max,
-      available,
-      atCapacity,
-      displayString: config.isHosted
-        ? `${currentActiveGuilds}/${max} guilds`
-        : `${currentActiveGuilds} guilds (unlimited)`
-    };
-  }
-
-  /**
    * Get deployment mode string for logging
    */
   getModeString(): string {

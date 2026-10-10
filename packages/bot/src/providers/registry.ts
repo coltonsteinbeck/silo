@@ -1,18 +1,17 @@
 import type {
   TextProvider,
+  TextGenerationOptions,
   ImageProvider,
   VideoProvider,
   WebSearchProvider,
   EmbeddingProvider,
   Config
 } from '@silo/core';
-import { logger } from '@silo/core';
+import type { QuotaMiddleware, QuotaReservationRequest } from '../middleware/quota';
 import { OpenAIProvider } from './openai';
-import { AnthropicProvider } from './anthropic';
 import { XAIProvider } from './xai';
-import { LocalOpenAIProvider } from './local-openai';
+import { withLangfuseSpan } from '../telemetry/langfuse-client';
 import { OpenAIEmbeddingsProvider } from './openai-embeddings';
-import { GoogleImageProvider, GoogleTextProvider } from './google';
 
 export class ProviderRegistry {
   private textProviders: TextProvider[] = [];
@@ -33,14 +32,6 @@ export class ProviderRegistry {
       this.webSearchProviders.push(provider);
     }
 
-    if (config.providers.anthropic?.apiKey) {
-      const provider = new AnthropicProvider(
-        config.providers.anthropic.apiKey,
-        config.providers.anthropic.model
-      );
-      this.textProviders.push(provider);
-    }
-
     if (config.providers.xai?.apiKey) {
       const provider = new XAIProvider(
         config.providers.xai.apiKey,
@@ -55,27 +46,9 @@ export class ProviderRegistry {
       this.webSearchProviders.push(provider);
     }
 
-    if (config.providers.google?.apiKey) {
-      // Add Google text provider for text generation
-      // Use textModel if specified, otherwise fall back to default (gemini-3.1-flash-lite)
-      const textModel = config.providers.google.textModel || config.providers.google.model;
-      const textProvider = new GoogleTextProvider(config.providers.google.apiKey, textModel);
-      this.textProviders.push(textProvider);
-
-      // Also add Google image provider for image generation
-      // Use imageModel if specified, otherwise fall back to default (gemini-3.1-flash-image)
-      const imageModel = config.providers.google.imageModel || config.providers.google.model;
-      const imageProvider = new GoogleImageProvider(config.providers.google.apiKey, imageModel);
-      this.imageProviders.push(imageProvider);
-    }
-
-    if (config.features.enableLocalModels && config.providers.local?.baseURL) {
-      const provider = new LocalOpenAIProvider(
-        config.providers.local.apiKey,
-        config.providers.local.model,
-        config.providers.local.baseURL
-      );
-      this.textProviders.push(provider);
+    // Fail at startup instead of silently substituting a configured workload.
+    for (const route of Object.values(config.textRouting || {})) {
+      if (route) this.getTextProvider(route.provider);
     }
 
     // Initialize embeddings provider if OpenAI is configured and RAG is enabled
@@ -89,11 +62,7 @@ export class ProviderRegistry {
       const provider = this.textProviders.find(p => p.name === name);
       if (provider) return provider;
 
-      // Log that requested provider wasn't found
-      const availableText = this.textProviders.filter(p => p.isConfigured()).map(p => p.name);
-      logger.warn(
-        `[PROVIDER] Requested text provider "${name}" not available. Available: ${availableText.join(', ')}. Falling back to first available.`
-      );
+      throw new Error(`No text provider configured for requested provider: ${name}`);
     }
 
     const configured = this.textProviders.find(p => p.isConfigured());
@@ -103,18 +72,125 @@ export class ProviderRegistry {
     return configured;
   }
 
+  getTextRoute(
+    workload: 'routine' | 'analysis' | 'complex' | 'summary' | 'extraction',
+    persona?: { textProvider?: string; textModel?: string },
+    quota?: Omit<QuotaReservationRequest, 'requestedAmount' | 'minimumAmount'> & {
+      middleware: QuotaMiddleware;
+    }
+  ): { provider: TextProvider; options: TextGenerationOptions } {
+    const roles = this.config.textRouting;
+    const usePersona = Boolean(persona?.textProvider) && workload !== 'complex';
+    const route = usePersona ? roles?.persona : roles?.[workload];
+    const provider = this.getTextProvider(route?.provider || persona?.textProvider);
+    const options: TextGenerationOptions = {
+      model: route?.model || persona?.textModel || this.getConfiguredTextModel(provider.name),
+      ...(route?.maxTokens ? { maxTokens: route.maxTokens } : {}),
+      ...(route?.effort ? { reasoning: { effort: route.effort } } : {}),
+      signal: AbortSignal.timeout(60_000)
+    };
+    const fallbackRoute =
+      workload === 'routine' || workload === 'analysis'
+        ? usePersona
+          ? roles?.routine
+          : roles?.fallback
+        : undefined;
+    const fallback =
+      fallbackRoute && fallbackRoute.provider !== provider.name
+        ? this.getTextProvider(fallbackRoute.provider)
+        : undefined;
+    let generationIndex = 0;
+    return {
+      options,
+      provider: {
+        name: provider.name,
+        capabilities: provider.capabilities,
+        isConfigured: () => provider.isConfigured(),
+        generateText: async (messages, supplied = {}) => {
+          const request = { ...options, ...supplied };
+          const generationSequence = ++generationIndex;
+          const attempt = async (
+            target: TextProvider,
+            params: TextGenerationOptions,
+            index: number
+          ) => {
+            params.signal?.throwIfAborted();
+            return withLangfuseSpan(
+              {
+                name: 'text.provider-attempt',
+                metadata: {
+                  provider: target.name,
+                  requestedModel: params.model,
+                  workload,
+                  attempt: index,
+                  usageKnown: false
+                }
+              },
+              async generation => {
+                const reservedAmount = params.maxTokens || 400;
+                const reserved = quota
+                  ? await quota.middleware.executeReserved({
+                      ...quota,
+                      operationKey: `${quota.operationKey}:${generationSequence}:${index}`,
+                      requestedAmount: reservedAmount,
+                      beforeAttempt: () => params.signal?.throwIfAborted(),
+                      execute: () =>
+                        target.generateText(messages, { ...params, maxTokens: reservedAmount }),
+                      getActualAmount: value => value.usage?.completionTokens ?? reservedAmount
+                    })
+                  : undefined;
+                if (reserved && !reserved.allowed) throw new Error('Text quota reservation denied');
+                const response = reserved?.allowed
+                  ? reserved.value
+                  : await target.generateText(messages, params);
+                params.signal?.throwIfAborted();
+                generation?.update({
+                  metadata: {
+                    provider: target.name,
+                    requestedModel: params.model,
+                    returnedModel: response.model,
+                    workload,
+                    attempt: index,
+                    usageKnown: Boolean(response.usage)
+                  }
+                });
+                return response;
+              }
+            );
+          };
+          try {
+            return await attempt(provider, request, 1);
+          } catch (error) {
+            if (
+              !quota ||
+              !fallback ||
+              !fallbackRoute ||
+              request.signal?.aborted ||
+              !isTransientTextError(error)
+            )
+              throw error;
+            return attempt(
+              fallback,
+              {
+                ...request,
+                model: fallbackRoute.model,
+                maxTokens: Math.min(request.maxTokens || 400, fallbackRoute.maxTokens || 400),
+                reasoning: fallbackRoute.effort ? { effort: fallbackRoute.effort } : undefined
+              },
+              2
+            );
+          }
+        }
+      }
+    };
+  }
+
   getConfiguredTextModel(name: string): string | undefined {
     switch (name) {
       case 'openai':
         return this.config.providers.openai?.model;
-      case 'anthropic':
-        return this.config.providers.anthropic?.model;
       case 'xai':
         return this.config.providers.xai?.model;
-      case 'google':
-        return this.config.providers.google?.textModel || this.config.providers.google?.model;
-      case 'local':
-        return this.config.providers.local?.model;
       default:
         return undefined;
     }
@@ -126,8 +202,6 @@ export class ProviderRegistry {
         return this.config.providers.openai?.imageModel;
       case 'xai':
         return this.config.providers.xai?.imageModel;
-      case 'google':
-        return this.config.providers.google?.imageModel || this.config.providers.google?.model;
       default:
         return undefined;
     }
@@ -217,4 +291,29 @@ export class ProviderRegistry {
 
     return this.webSearchProviders.find(p => p.isConfigured()) || null;
   }
+}
+
+export function classifyTextWorkload(text: string): 'routine' | 'analysis' | 'complex' {
+  if (
+    /\b(long[- ]form|deep dive|detailed discussion|comprehensive|thorough|essay|walk me through|prove|architecture|multi[- ]step)\b/i.test(
+      text
+    ) ||
+    /^(?:please\s+)?(?:draft|write|compose)\b.{0,80}\b(?:proposal|report)\b/i.test(text.trim())
+  )
+    return 'complex';
+  if (/\b(analy[sz]e|compare|evaluate|explain why|trade[- ]offs|debug|calculate)\b/i.test(text))
+    return 'analysis';
+  return 'routine';
+}
+
+function isTransientTextError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const detail = error as Error & { status?: number; refused?: boolean };
+  return (
+    !detail.refused &&
+    (detail.status === 408 ||
+      detail.status === 429 ||
+      (typeof detail.status === 'number' && detail.status >= 500 && detail.status <= 599) ||
+      ['APIConnectionError', 'APIConnectionTimeoutError', 'TimeoutError'].includes(error.name))
+  );
 }
