@@ -1,185 +1,26 @@
 import { describe, expect, mock, test } from 'bun:test';
+import { QuotaMiddleware } from '../../middleware/quota';
 import { createProviderToolExecutor } from '../../agent/tool-executor';
 
 describe('createProviderToolExecutor', () => {
-  test('falls back to a configured web search provider when the preferred text provider cannot search', async () => {
-    const searchWeb = mock(async () => ({
-      content: 'The Finals are live.',
-      citations: [{ url: 'https://example.com/finals', title: 'Finals live' }],
-      model: 'gpt-search',
-      usage: {
-        promptTokens: 3,
-        completionTokens: 4,
-        totalTokens: 7
-      }
-    }));
-    const webSearchProvider = {
-      name: 'openai',
-      isConfigured: () => true,
-      searchWeb
-    };
-    const getWebSearchProvider = mock((name?: string) => {
-      if (name === 'anthropic') {
-        return null;
-      }
-
-      if (name === 'openai' || !name) {
-        return webSearchProvider as any;
-      }
-
-      return null;
-    });
-    const registry = {
-      getWebSearchProvider,
-      getConfiguredTextModel: mock((name: string) => (name === 'openai' ? 'gpt-search' : undefined))
-    } as any;
-
+  test.each([
+    { query: 'latest news' },
+    { query: '', searchAuthorized: true },
+    { query: 'search now', origin: 'slash-command', command: 'search', authorized: true }
+  ])('rejects graph search before looking up or calling providers', async input => {
+    const searchWeb = mock(async () => ({ content: 'unused', citations: [] }));
+    const getWebSearchProvider = mock(() => ({ searchWeb }));
     const executor = createProviderToolExecutor({
-      registry,
-      preferredProviderName: 'anthropic',
-      searchFallbackProviderName: 'openai',
-      textModel: 'claude-test'
+      registry: { getWebSearchProvider } as any,
+      preferredProviderName: 'openai'
     });
-    const result = await executor({
+    expect(await executor({ name: 'web_search', input })).toEqual({
       name: 'web_search',
-      input: { query: 'who is winning the NBA finals rn?', maxResults: 3 }
+      status: 'unsupported',
+      message: 'Web search requires an explicit search command.'
     });
-
-    expect(getWebSearchProvider).toHaveBeenCalledWith('anthropic');
-    expect(getWebSearchProvider).toHaveBeenCalledWith('openai');
-    expect(searchWeb).toHaveBeenCalledWith('who is winning the NBA finals rn?', {
-      model: 'gpt-search',
-      maxResults: 3
-    });
-    expect(result).toMatchObject({
-      name: 'web_search',
-      status: 'success',
-      content: 'The Finals are live.',
-      provider: 'openai',
-      query: 'who is winning the NBA finals rn?'
-    });
-  });
-
-  test('tries the configured fallback web search provider when preferred search fails', async () => {
-    const failingSearchWeb = mock(async () => {
-      throw new Error('upstream search unavailable');
-    });
-    const fallbackSearchWeb = mock(async () => ({
-      content: 'Oklahoma City leads Indiana in the Finals.',
-      citations: [{ url: 'https://example.com/nba-finals', title: 'NBA Finals live' }],
-      model: 'gpt-search',
-      usage: {
-        promptTokens: 5,
-        completionTokens: 8,
-        totalTokens: 13
-      }
-    }));
-    const xaiProvider = {
-      name: 'xai',
-      isConfigured: () => true,
-      searchWeb: failingSearchWeb
-    };
-    const openaiProvider = {
-      name: 'openai',
-      isConfigured: () => true,
-      searchWeb: fallbackSearchWeb
-    };
-    const registry = {
-      getWebSearchProvider: mock((name?: string) => {
-        if (name === 'xai') {
-          return xaiProvider as any;
-        }
-        if (name === 'openai' || !name) {
-          return openaiProvider as any;
-        }
-        return null;
-      }),
-      getConfiguredTextModel: mock((name: string) => (name === 'openai' ? 'gpt-search' : 'grok'))
-    } as any;
-
-    const executor = createProviderToolExecutor({
-      registry,
-      preferredProviderName: 'xai',
-      searchFallbackProviderName: 'openai',
-      textModel: 'grok'
-    });
-    const result = await executor({
-      name: 'web_search',
-      input: { query: 'who is winning the NBA finals?', maxResults: 5 }
-    });
-
-    expect(failingSearchWeb).toHaveBeenCalledTimes(1);
-    expect(fallbackSearchWeb).toHaveBeenCalledWith('who is winning the NBA finals?', {
-      model: 'gpt-search',
-      maxResults: 5
-    });
-    expect(result).toMatchObject({
-      name: 'web_search',
-      status: 'success',
-      provider: 'openai',
-      message: 'Web search completed with openai after fallback.',
-      content: 'Oklahoma City leads Indiana in the Finals.'
-    });
-  });
-
-  test('prefers xAI for live sports searches when configured', async () => {
-    const openaiSearchWeb = mock(async () => ({
-      content: 'OpenAI schedule data is inconclusive.',
-      citations: [],
-      model: 'gpt-search'
-    }));
-    const xaiSearchWeb = mock(async () => ({
-      content: 'The Knicks lead the Spurs 1-0 in the NBA Finals.',
-      citations: [{ url: 'https://example.com/nba-finals', title: 'NBA Finals live' }],
-      model: 'grok-search'
-    }));
-    const openaiProvider = {
-      name: 'openai',
-      isConfigured: () => true,
-      searchWeb: openaiSearchWeb
-    };
-    const xaiProvider = {
-      name: 'xai',
-      isConfigured: () => true,
-      searchWeb: xaiSearchWeb
-    };
-    const registry = {
-      getWebSearchProvider: mock((name?: string) => {
-        if (name === 'xai') {
-          return xaiProvider as any;
-        }
-        if (name === 'openai' || !name) {
-          return openaiProvider as any;
-        }
-        return null;
-      }),
-      getConfiguredTextModel: mock((name: string) =>
-        name === 'xai' ? 'grok-search' : 'gpt-search'
-      )
-    } as any;
-
-    const executor = createProviderToolExecutor({
-      registry,
-      preferredProviderName: 'openai',
-      searchFallbackProviderName: 'openai',
-      textModel: 'gpt-search'
-    });
-    const result = await executor({
-      name: 'web_search',
-      input: { query: 'who is winning the NBA finals?', maxResults: 5 }
-    });
-
-    expect(xaiSearchWeb).toHaveBeenCalledWith('who is winning the NBA finals?', {
-      model: 'grok-search',
-      maxResults: 5
-    });
-    expect(openaiSearchWeb).not.toHaveBeenCalled();
-    expect(result).toMatchObject({
-      name: 'web_search',
-      status: 'success',
-      provider: 'xai',
-      content: 'The Knicks lead the Spurs 1-0 in the NBA Finals.'
-    });
+    expect(getWebSearchProvider).not.toHaveBeenCalled();
+    expect(searchWeb).not.toHaveBeenCalled();
   });
 
   test('falls back to the registry default video provider when the preferred provider has no video support', async () => {
@@ -269,3 +110,180 @@ describe('createProviderToolExecutor', () => {
     expect(result.status).toBe('success');
   });
 });
+
+for (const name of ['image_generation', 'video_generation'] as const) {
+  test(`${name} propagates cancellation and discards a late media result`, async () => {
+    const controller = new AbortController();
+    const generate = mock(async (_prompt: string, options: { signal?: AbortSignal }) => {
+      expect(options.signal).toBe(controller.signal);
+      controller.abort(new Error('cancelled media'));
+      return { url: 'https://cdn.example.com/late', moderationPassed: true };
+    });
+    const provider = { name: 'xai', generateImage: generate, generateVideo: generate };
+    const registry = {
+      getImageProvider: () => provider,
+      getVideoProvider: () => provider,
+      getConfiguredImageModel: () => 'image-model',
+      getConfiguredVideoModel: () => 'video-model'
+    } as any;
+    const executor = createProviderToolExecutor({
+      registry,
+      preferredProviderName: 'xai',
+      signal: controller.signal
+    });
+    const result = await executor({ name, input: { prompt: 'a scene' } });
+    expect(result.status).toBe('error');
+    expect(result).not.toHaveProperty('media');
+    expect(result).not.toHaveProperty('raw');
+    await expect(executor({ name, input: { prompt: 'another scene' } })).rejects.toThrow(
+      'cancelled media'
+    );
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  test(`${name} rechecks cancellation after quota admission before paid I/O`, async () => {
+    const controller = new AbortController();
+    const executeReserved = mock(async (params: any) => {
+      controller.abort(new Error('cancelled during quota admission'));
+      await params.beforeAttempt();
+      return { allowed: true, value: await params.execute() };
+    });
+    const getImageProvider = mock(() => {
+      throw new Error('must not reach provider');
+    });
+    const executor = createProviderToolExecutor({
+      registry: { getImageProvider, getVideoProvider: getImageProvider } as any,
+      preferredProviderName: 'xai',
+      signal: controller.signal,
+      quota: {
+        middleware: { executeReserved } as any,
+        operationKey: 'turn',
+        guildId: 'guild',
+        userId: 'user',
+        member: {} as any,
+        referenceImageCount: 0
+      }
+    });
+    await expect(executor({ name, input: { prompt: 'a scene' } })).rejects.toThrow(
+      'cancelled during quota admission'
+    );
+    expect(getImageProvider).not.toHaveBeenCalled();
+  });
+
+  test(`${name} rejects provider moderation failure without retaining an asset`, async () => {
+    const generate = mock(async () => ({
+      url: 'https://cdn.example.com/rejected',
+      moderationPassed: false
+    }));
+    const provider = { name: 'xai', generateImage: generate, generateVideo: generate };
+    const executor = createProviderToolExecutor({
+      preferredProviderName: 'xai',
+      registry: {
+        getImageProvider: () => provider,
+        getVideoProvider: () => provider,
+        getConfiguredImageModel: () => 'image-model',
+        getConfiguredVideoModel: () => 'video-model'
+      } as any
+    });
+    const result = await executor({ name, input: { prompt: 'a scene' } });
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe('error');
+    expect(result).not.toHaveProperty('media');
+    expect(result).not.toHaveProperty('raw');
+    expect(JSON.stringify(result)).not.toContain('cdn.example.com');
+  });
+
+  test(`${name} reserves before I/O and denies concurrent and duplicate requests`, async () => {
+    const cost = name === 'image_generation' ? 3 : 330;
+    const reservations = new Map<string, any>();
+    let used = 0;
+    const admin = {
+      reserveQuotaUsage: mock(async (request: any) => {
+        const previous = reservations.get(request.idempotencyKey);
+        if (previous) return { ...previous, idempotent: true };
+        const allowed = used + request.requestedAmount <= cost;
+        const row = {
+          idempotencyKey: request.idempotencyKey,
+          allowed,
+          status: allowed ? 'reserved' : 'denied',
+          reason: allowed ? null : 'user_quota_exceeded',
+          reservedAmount: request.requestedAmount,
+          remaining: allowed ? 0 : cost - used,
+          userLimit: cost,
+          guildLimit: cost,
+          quotaExempt: false
+        };
+        if (allowed) {
+          used += request.requestedAmount;
+          reservations.set(request.idempotencyKey, row);
+        }
+        return row;
+      }),
+      markQuotaUsageAttempted: mock(async (key: string) => {
+        const row = reservations.get(key);
+        row.status = 'attempted';
+        return row;
+      }),
+      recordQuotaUsageActual: mock(async () => {}),
+      commitQuotaUsage: mock(async (key: string, amount: number) => {
+        const row = reservations.get(key);
+        row.status = 'committed';
+        row.actualAmount = amount;
+        return row;
+      })
+    };
+    const middleware = new QuotaMiddleware(
+      admin as any,
+      {
+        getUserRoleTier: async () => 'member'
+      } as any
+    );
+    let finish!: () => void;
+    const held = new Promise<void>(resolve => {
+      finish = resolve;
+    });
+    let started!: () => void;
+    const ready = new Promise<void>(resolve => {
+      started = resolve;
+    });
+    const generate = mock(async () => {
+      expect(reservations.get(`discord:first:${name}`)?.status).toBe('attempted');
+      started();
+      await held;
+      return { url: 'https://cdn.example.com/allowed', moderationPassed: true };
+    });
+    const provider = { name: 'xai', generateImage: generate, generateVideo: generate };
+    const executor = (operationKey: string) =>
+      createProviderToolExecutor({
+        preferredProviderName: 'xai',
+        registry: {
+          getImageProvider: () => provider,
+          getVideoProvider: () => provider,
+          getConfiguredImageModel: () => 'image-model',
+          getConfiguredVideoModel: () => 'video-model'
+        },
+        quota: {
+          middleware,
+          operationKey,
+          guildId: 'guild',
+          userId: 'user',
+          member: {},
+          referenceImageCount: 2
+        }
+      } as any);
+    const request = { name, input: { prompt: 'a scene' } };
+    const first = executor('discord:first')(request);
+    await ready;
+    // Release the first request after starting the contenders, so the test also
+    // terminates against an executor that incorrectly bypasses reservations.
+    const second = executor('discord:second')(request);
+    const duplicate = executor('discord:first')(request);
+    finish();
+    const results = await Promise.all([first, second, duplicate]);
+    expect(results.map(r => r.status)).toEqual(['success', 'error', 'error']);
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(admin.markQuotaUsageAttempted).toHaveBeenCalledTimes(1);
+    expect(admin.commitQuotaUsage).toHaveBeenCalledWith(`discord:first:${name}`, cost);
+    expect(used).toBe(cost);
+  });
+}
