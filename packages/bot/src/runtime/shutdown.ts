@@ -15,6 +15,7 @@ export async function shutdownApplication({
   db,
   healthServer,
   releaseProcessLock,
+  releaseRuntimeLease,
   shutdownTracing,
   stopRadio,
   log,
@@ -26,6 +27,7 @@ export async function shutdownApplication({
   db: PostgresAdapter;
   healthServer: HealthServer;
   releaseProcessLock: ReleaseProcessLock | null;
+  releaseRuntimeLease?: () => Promise<void>;
   shutdownTracing: () => Promise<void>;
   stopRadio?: () => Promise<void>;
   log: Logger;
@@ -66,7 +68,7 @@ export async function shutdownApplication({
   }
 
   try {
-    client.destroy();
+    await client.destroy();
   } catch (error) {
     log.error('Failed to destroy Discord client:', error);
   }
@@ -75,6 +77,12 @@ export async function shutdownApplication({
     await db.disconnect();
   } catch (error) {
     log.error('Failed to disconnect database:', error);
+  }
+
+  try {
+    await releaseRuntimeLease?.();
+  } catch (error) {
+    log.warn('Failed to release runtime leader lease during shutdown', error);
   }
 
   try {

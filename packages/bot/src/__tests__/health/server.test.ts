@@ -54,6 +54,30 @@ async function runDiscordCheck(server: HealthServer): Promise<void> {
 }
 
 describe('HealthServer Discord health notifications', () => {
+  test('health requires a held runtime lease in addition to Discord and database readiness', async () => {
+    let held = true;
+    const client = { isReady: () => true, ws: { ping: 25 }, guilds: { cache: new Map() } };
+    const db = { pool: {}, healthCheck: async () => true };
+    const server = new HealthServer(client as never, db as never, 3000, () => held);
+    const status = () =>
+      (
+        server as unknown as {
+          getHealthStatus: () => Promise<{
+            status: string;
+            leader: { held: boolean };
+            database: { connected: boolean };
+          }>;
+        }
+      ).getHealthStatus();
+    expect(await status()).toMatchObject({ status: 'healthy', leader: { held: true } });
+    held = false;
+    expect(await status()).toMatchObject({
+      status: 'unhealthy',
+      leader: { held: false },
+      database: { connected: true }
+    });
+  });
+
   test('does not notify routine healthy checks', async () => {
     const { server, notifyDiscordChannels } = createHealthServer(['healthy']);
 

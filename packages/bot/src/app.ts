@@ -131,6 +131,8 @@ import {
 import { installProcessErrorHandlers } from './runtime/process-errors';
 import { acquireProcessLock } from './runtime/process-lock';
 import { shutdownApplication } from './runtime/shutdown';
+import { Client as PostgresClient } from 'pg';
+import { RuntimeLeaderLease } from './runtime/leader-lease';
 import { executeCommandWithAnalytics } from './runtime/command-execution';
 import { handleReactionFeedback } from './runtime/reaction-feedback';
 
@@ -514,10 +516,34 @@ export async function startBot(): Promise<void> {
   }
 
   // Initialize database
+  const databaseTarget = new URL(config.database.url);
+  if (
+    databaseTarget.port === '6543' &&
+    (databaseTarget.hostname.endsWith('.supabase.co') ||
+      databaseTarget.hostname.endsWith('.pooler.supabase.com'))
+  ) {
+    throw new Error('Runtime leader lease requires a direct connection or session-mode pooler');
+  }
   const db = new PostgresAdapter(config.database.url, {
     ssl: config.database.ssl,
     maxConnections: config.database.maxConnections
   });
+  const commandShutdown = new AbortController();
+  const runtimeLease = await RuntimeLeaderLease.acquire(
+    new PostgresClient({
+      ...db.pool.options,
+      connectionTimeoutMillis: 5000,
+      application_name: 'silo-runtime-leader'
+    }),
+    config.discord.clientId,
+    () => {
+      commandShutdown.abort();
+      logger.error('Runtime leader lease lost; terminating to prevent duplicate bot activity');
+      // Exit immediately: pending handlers must not deliver after session ownership is lost.
+      process.exit(1);
+    }
+  );
+  logger.info('Runtime leader lease acquired');
   await db.connect();
   await initializeManagedGuildPolicyRegistry(db.pool, [
     ...(config.providers.openai?.apiKey ? ['openai'] : []),
@@ -551,7 +577,6 @@ export async function startBot(): Promise<void> {
   });
 
   // Create commands
-  const commandShutdown = new AbortController();
   const commandLimiter = new RateLimiter(config.rateLimits.commandsPerUser);
   const commands = createCommands(
     db,
@@ -589,7 +614,7 @@ export async function startBot(): Promise<void> {
   });
 
   // Initialize health server
-  const healthServer = new HealthServer(client, db);
+  const healthServer = new HealthServer(client, db, 3000, () => runtimeLease.isHeld());
   await healthServer.start();
 
   process.on('SIGTERM', () => {
@@ -600,6 +625,7 @@ export async function startBot(): Promise<void> {
       db,
       healthServer,
       releaseProcessLock,
+      releaseRuntimeLease: () => runtimeLease.release(),
       shutdownTracing: shutdownLangfuseTracing,
       stopRadio:
         radioCommand instanceof RadioCommand ? () => radioCommand.stopAll('shutdown') : undefined,
@@ -614,6 +640,7 @@ export async function startBot(): Promise<void> {
       db,
       healthServer,
       releaseProcessLock,
+      releaseRuntimeLease: () => runtimeLease.release(),
       shutdownTracing: shutdownLangfuseTracing,
       stopRadio:
         radioCommand instanceof RadioCommand ? () => radioCommand.stopAll('shutdown') : undefined,
@@ -632,6 +659,11 @@ export async function startBot(): Promise<void> {
   costAggregator.start();
 
   client.once(Events.ClientReady, async readyClient => {
+    if (commandShutdown.signal.aborted || !(await runtimeLease.verify())) return;
+    if (readyClient.user.id !== config.discord.clientId) {
+      logger.error('Discord application identity does not match the runtime lease');
+      process.exit(1);
+    }
     logger.info(`Bot ready! Logged in as ${readyClient.user.tag}`);
     logger.info(`Serving ${readyClient.guilds.cache.size} guilds`);
     const joinedGuildIds = readyClient.guilds.cache.map(guild => guild.id);
@@ -740,6 +772,7 @@ export async function startBot(): Promise<void> {
 
   // Handle slash command interactions
   client.on(Events.InteractionCreate, async interaction => {
+    if (commandShutdown.signal.aborted || !(await runtimeLease.verify())) return;
     const withInteractionRootTrace = async <T>(
       options: {
         name: string;
@@ -954,6 +987,7 @@ export async function startBot(): Promise<void> {
 
   // Handle guild join
   client.on(Events.GuildCreate, async guild => {
+    if (commandShutdown.signal.aborted || !(await runtimeLease.verify())) return;
     const metadataInput = {
       guildId: guild.id,
       messageType: 'system-event' as const,
@@ -1003,6 +1037,7 @@ export async function startBot(): Promise<void> {
 
   // Handle guild leave/kick
   client.on(Events.GuildDelete, async guild => {
+    if (commandShutdown.signal.aborted || !(await runtimeLease.verify())) return;
     const metadataInput = {
       guildId: guild.id,
       messageType: 'system-event' as const,
@@ -1052,6 +1087,7 @@ export async function startBot(): Promise<void> {
   client.on(Events.MessageCreate, async message => {
     if (message.author.bot) return;
     if (!message.guildId) return;
+    if (commandShutdown.signal.aborted || !(await runtimeLease.verify())) return;
     const botUserId = client.user?.id;
     if (!botUserId) return;
     if (!(await shouldHandleAssistantMessage(message, botUserId))) return;

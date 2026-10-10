@@ -62,6 +62,10 @@ bun run setup  # Installs deps, starts Docker, runs migrations
 
 ### Setup with Supabase (or any Postgres)
 
+The bot holds one PostgreSQL session advisory lock per Discord application before migrations or login. Use a direct connection or session-mode pooler; transaction-mode pooling cannot preserve the runtime lease. Every instance of the same application must use the same database. The lease uses one dedicated connection in addition to the application pool, checks ownership every five seconds, and terminates the process on connection loss, a failed ownership check, or an expired ten-second heartbeat window. `/health` includes `leader.held` and requires it for healthy status. Stop the previous instance before starting its replacement.
+
+Build with `bun run build` before using the PM2 example, which runs `packages/bot/dist/index.js`.
+
 ```bash
 git clone <your-repo>
 cd silo
