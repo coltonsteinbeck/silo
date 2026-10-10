@@ -46,6 +46,6 @@
     "@types/bun": "latest",
     "@types/pg": "^8.11.10",
     "@types/ws": "^8.5.13",
-    "typescript": "^7.0.2"
+    "typescript": "^6.0.2"
   }
 }
