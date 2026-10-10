@@ -2,19 +2,42 @@ import type {
   Message,
   ProviderCapabilities,
   TextGenerationResponse,
-  TextProvider
+  TextProvider,
+  TextGenerationOptions
 } from '@silo/core';
 import type { AgentGraphLimits } from './config';
 import type { AgentIntent } from './intent-router';
 import type { AgentMediaResult, AgentToolExecutor } from './tool-executor';
 import type { LangfuseMetadataInput } from '../telemetry/langfuse-metadata';
+import type { SafetyDecision } from '../security/safety-decision';
+import type { ResponseQualityResult } from '../services/response-quality';
 
 export type AgentToolName =
   'web_search' | 'image_generation' | 'video_generation' | 'vision_analysis';
 
 export type AgentSafetyState =
-  'allowed' | 'input_blocked' | 'output_blocked' | 'output_repaired' | 'bounded_failure';
+  | 'allowed'
+  | 'input_blocked'
+  | 'output_blocked'
+  | 'quality_blocked'
+  | 'output_repaired'
+  | 'bounded_failure';
 export type AgentGraphOutcome = 'success' | 'blocked' | 'repaired' | 'bounded_failure' | 'error';
+export interface AgentOutputSafetyResult {
+  decision: SafetyDecision;
+  quality: ResponseQualityResult;
+  blocked: boolean;
+  normalized: boolean;
+  repaired: boolean;
+  categories: string[];
+  reasons: string[];
+  outputWasReplaced: boolean;
+  candidateHash: string;
+  candidatePreview: string;
+  candidateCategories: string[];
+  deliveredCategories: string[];
+  repairStrategy: 'deterministic_slur_mask' | null;
+}
 
 export interface AgentToolRequest {
   name: AgentToolName;
@@ -45,11 +68,7 @@ export interface AgentProviderCapabilities {
 export interface AgentGraphInput {
   messages: Message[];
   textProvider: TextProvider;
-  generationOptions?: {
-    model?: string;
-    maxTokens?: number;
-    temperature?: number;
-  };
+  generationOptions?: TextGenerationOptions;
   provider: AgentProviderCapabilities;
   limits: AgentGraphLimits;
   intent?: AgentIntent;
@@ -59,6 +78,13 @@ export interface AgentGraphInput {
   falsePositiveGuard?: string;
   outputBlockedMessage?: string;
   allowMildAssistantProfanity?: boolean;
+  assistantSafetyPolicy?: import('../security/persona-state').AssistantSafetyPolicy;
+  personaState?: import('../security/persona-state').PersonaState;
+  personaAliases?: readonly string[];
+  responseIntent?: import('../security/persona-state').ResponseIntent;
+  inheritedSafetyRisk?: boolean;
+  recentAssistantMessages?: string[];
+  latestUserText?: string;
   requestedTools?: AgentToolRequest[];
   toolExecutor?: AgentToolExecutor;
   metadata: LangfuseMetadataInput;
@@ -73,6 +99,7 @@ export interface AgentGraphResult {
   toolResults: AgentToolResult[];
   citations: Array<{ url: string; title?: string }>;
   mediaResult?: AgentMediaResult;
+  outputSafety?: AgentOutputSafetyResult;
   stepCount: number;
 }
 
@@ -84,6 +111,7 @@ export interface AgentGraphState extends AgentGraphInput {
   toolResults: AgentToolResult[];
   citations: Array<{ url: string; title?: string }>;
   mediaResult?: AgentMediaResult;
+  outputSafety?: AgentOutputSafetyResult;
   modelResponse?: TextGenerationResponse;
   outcome?: AgentGraphOutcome;
 }

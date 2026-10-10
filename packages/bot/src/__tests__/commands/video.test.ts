@@ -1,14 +1,46 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
-import { createMockInteraction, createMockProviderRegistry } from '@silo/core/test-setup';
+import { GuildMember } from 'discord.js';
+import * as mediaDownload from '../../services/media-download';
+import { afterEach, beforeEach, describe, expect, mock, test, spyOn } from 'bun:test';
+import {
+  createMockInteraction as createBaseInteraction,
+  createMockProviderRegistry
+} from '@silo/core/test-setup';
 import { VideoCommand } from '../../commands/video';
 import type { PromptModerationGuard } from '../../security/command-prompt-moderation';
+
+function createMockInteraction(options?: Parameters<typeof createBaseInteraction>[0]) {
+  const interaction = createBaseInteraction(options);
+  Object.assign(interaction, {
+    id: 'interaction',
+    member: Object.assign(Object.create(GuildMember.prototype), {
+      user: interaction.user,
+      guild: { id: interaction.guildId }
+    })
+  });
+  return interaction;
+}
+const testQuota = {
+  executeReserved: async (p: any) => {
+    await p.beforeAttempt();
+    return { allowed: true, value: await p.execute(p.requestedAmount) };
+  }
+};
 
 describe('VideoCommand', () => {
   let registry: any;
   let command: VideoCommand;
   const originalFetch = globalThis.fetch;
+  let downloadSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
+    downloadSpy = spyOn(mediaDownload, 'downloadMedia').mockImplementation(async url => {
+      const response = await globalThis.fetch(url);
+      if (!response.ok) throw new Error('Download failed');
+      return {
+        bytes: Buffer.from(await response.arrayBuffer()),
+        contentType: response.headers.get('content-type') || ''
+      };
+    });
     globalThis.fetch = mock(async () => {
       return new Response(new Uint8Array([1, 2, 3, 4]), {
         headers: {
@@ -18,10 +50,11 @@ describe('VideoCommand', () => {
       });
     }) as unknown as typeof fetch;
     registry = createMockProviderRegistry();
-    command = new VideoCommand(registry);
+    command = new VideoCommand(registry, testQuota as any);
   });
 
   afterEach(() => {
+    downloadSpy.mockRestore();
     globalThis.fetch = originalFetch;
   });
 
@@ -74,7 +107,7 @@ describe('VideoCommand', () => {
       }
     };
 
-    command = new VideoCommand(registry, undefined, security as any);
+    command = new VideoCommand(registry, testQuota as any, security as any);
 
     const interaction = createMockInteraction({
       options: {
@@ -103,7 +136,7 @@ describe('VideoCommand', () => {
     const event = calls[0]?.[0] as { action?: string; reason?: string };
     expect(event.action).toBe('blocked');
     expect(event.reason).toContain('shortener');
-    expect(interaction.reply).toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalled();
   });
 
   test('blocks video prompt via moderation preflight before provider call', async () => {
@@ -125,7 +158,7 @@ describe('VideoCommand', () => {
       userMessage: '⚠️ Prompt blocked by content policy. Please rephrase with safer wording.'
     }));
 
-    command = new VideoCommand(registry, undefined, undefined, blockedGuard as any);
+    command = new VideoCommand(registry, testQuota as any, undefined, blockedGuard as any);
 
     const interaction = createMockInteraction({
       options: {
@@ -138,7 +171,7 @@ describe('VideoCommand', () => {
     await command.execute(interaction);
 
     expect(generateVideo).not.toHaveBeenCalled();
-    expect(interaction.reply).toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalled();
   });
 
   test('uses moderation processedPrompt when invoking video provider', async () => {
@@ -159,7 +192,7 @@ describe('VideoCommand', () => {
       processedPrompt: 'processed text'
     })) as unknown as PromptModerationGuard;
 
-    command = new VideoCommand(registry, undefined, undefined, promptGuard);
+    command = new VideoCommand(registry, testQuota as any, undefined, promptGuard);
 
     const interaction = createMockInteraction({
       options: {
@@ -201,7 +234,7 @@ describe('VideoCommand', () => {
       processedPrompt: '@everyone cinematic update'
     })) as unknown as PromptModerationGuard;
 
-    command = new VideoCommand(registry, undefined, undefined, promptGuard);
+    command = new VideoCommand(registry, testQuota as any, undefined, promptGuard);
 
     const interaction = createMockInteraction({
       options: {
@@ -225,14 +258,7 @@ describe('VideoCommand', () => {
   });
 
   test('returns short no-link failure when inline video upload fails', async () => {
-    globalThis.fetch = mock(async () => {
-      return new Response(new Uint8Array([1]), {
-        headers: {
-          'content-type': 'video/mp4',
-          'content-length': `${25 * 1024 * 1024}`
-        }
-      });
-    }) as unknown as typeof fetch;
+    downloadSpy.mockRejectedValue(new Error('Media exceeds size limit'));
 
     const generateVideo = mock(async () => ({
       url: 'https://example.com/video.mp4',

@@ -28,7 +28,7 @@ AGENT_SEARCH_FALLBACK_PROVIDER=disabled
 
 `AGENT_GRAPH_MODE` accepts `off`, `shadow`, `staging`, `on`, or the legacy alias `active`. If graph env vars are omitted, the runtime defaults to enabled/on.
 
-`AGENT_SEARCH_FALLBACK_PROVIDER` accepts `disabled`, `openai`, or `xai`. Use a configured OpenAI or xAI fallback during staging/production so current-information prompts can search consistently even when the selected text provider is Anthropic, Google, or local.
+`AGENT_SEARCH_FALLBACK_PROVIDER` accepts `disabled`, `openai`, or `xai`. A fallback must have a configured API key.
 
 ## Graph Shape
 
@@ -63,7 +63,7 @@ The message handler still owns Discord-specific concerns: mention routing, quota
 
 ## Provider Support
 
-The graph does not replace provider implementations. It calls the existing `ProviderRegistry` text provider for generation, so configured model strings continue through the same OpenAI, Anthropic, xAI, Google, and local OpenAI-compatible adapters as the direct path.
+The graph does not replace provider implementations. It calls the existing `ProviderRegistry` text provider for generation, so configured model strings continue through the same OpenAI and xAI adapters as the direct path.
 
 | Capability       | Graph v2 behavior                                                                            |
 | ---------------- | -------------------------------------------------------------------------------------------- |
@@ -71,19 +71,17 @@ The graph does not replace provider implementations. It calls the existing `Prov
 | Vision analysis  | Capability-detected and budgeted; current image summaries still use existing message routing |
 | Image generation | Executes explicit natural-language image generation when `AGENT_MEDIA_NL_ENABLED=true`       |
 | Video generation | Executes explicit natural-language video generation when `AGENT_MEDIA_NL_ENABLED=true`       |
-| Web search       | Executes provider-native OpenAI/xAI search when `AGENT_SEARCH_ENABLED=true`                  |
+| Web search       | Rejected by graph execution; available only through the enabled `/search` command |
 
 Unsupported tools produce deterministic `unsupported` results. Budget excess produces deterministic `budget_exceeded` results. Graph v2 does not let the model discover and call arbitrary tools.
 
-When `AGENT_SEARCH_FALLBACK_PROVIDER=openai` or `xai`, web search also retries that provider if the preferred provider exposes search but the upstream search call fails. This keeps a configured model/provider choice from making current-information questions silently degrade into plain chat.
+Web search is a separate explicit command. `/search query` accepts one trimmed query of 1–2,000 characters, reserves quota atomically by interaction ID, and returns a cited answer after final output safety. It works with graph mode off. The primary configured provider is OpenAI, otherwise xAI. `AGENT_SEARCH_FALLBACK_PROVIDER=openai` or `xai` permits at most one distinct fallback for transient failures or missing evidence; refusals do not trigger fallback. SDK retries are disabled. Deadlines are 30 seconds per command, 20 seconds for provider work, and 10 seconds per attempt, with cancellation propagated to the underlying requests.
 
-Live sports/current-score queries prefer xAI search when xAI is configured, then fall back through the normal provider order. This avoids low-quality schedule-only results from providers that do not reliably return live sports context.
+Prerequisite and failure replies are private. Successful answers are public with mention parsing disabled. Missing usage remains conservatively reserved. Search outcome, attempt count, elapsed time, and available provider usage are recorded in Langfuse.
 
 ## Intent Routing
 
-Intent routing is deterministic first and fail-closed for media. Search triggers include latest/current/recent/news, patch notes, release notes, changelog, version/update, scores, schedules, prices, and law/regulation questions. The router marks questions as `conversational`, `searchable`, or `mixed` so a turn like "How are you? Who is winning the NBA finals right now?" can preserve the conversational context while searching only the time-sensitive question.
-
-Multi-question search is bounded. The router can split multiple searchable question clauses and plan up to two web-search requests for one user turn, subject to the graph's global tool budgets. This avoids treating search as a single-keyword path while still preventing autonomous search expansion.
+Intent routing is deterministic first and fail-closed for media. Ordinary chat, current-information questions, quoted command text, and model-generated tool proposals cannot authorize web search. The graph tool filter and production executor both reject search, including forged authorization metadata. Query decomposition and automatic current-information routing are removed.
 
 Image/video generation only runs when the user explicitly asks to create, generate, draw, render, edit, or animate media. Informational prompts such as "describe this image", "find a video", "what image model do you use", and "search image results" do not generate media.
 
@@ -130,10 +128,6 @@ Graph metadata fields include:
 - `intent`
 - `intentConfidence`
 - `intentReason`
-- `questionType`
-- `questionCount`
-- `searchableQuestionCount`
-- `conversationalQuestionCount`
 - `requestedTools`
 - `searchProvider`
 - `searchQuery`
@@ -170,12 +164,15 @@ Routine `/health` checks and Healthchecks.io success heartbeats remain active. D
 
 ## Rollout
 
-1. Keep graph limits explicit in deployed environments.
-2. Use `AGENT_GRAPH_ENABLED=false` or `AGENT_GRAPH_MODE=off` only as an emergency rollback.
-3. Use `AGENT_GRAPH_MODE=shadow` only when comparing graph wiring against the direct response path.
-4. Verify no generated `@everyone` or `@here` pings are active.
-5. Verify the graph trace includes node spans, guardrails, generation, tool budgets, and `graphOutcome`.
-6. Verify one turn terminates within the configured recursion and tool budgets.
+1. Apply `025_conversation_turn_integrity.sql`; existing rows remain auditable and become prompt-ineligible by default.
+2. Keep graph limits explicit and enable the graph globally for every guild/provider.
+3. Use `AGENT_GRAPH_ENABLED=false` or `AGENT_GRAPH_MODE=off` only as an emergency rollback.
+4. Verify context traces report reply-chain/same-user scope, selected and excluded turns, and exclusion reasons.
+5. Verify blocked/redirected/fallback turns are stored for audit with `prompt_eligible=false`.
+6. Verify no generated `@everyone` or `@here` pings are active.
+7. Verify the graph trace includes node spans, guardrails, one model-token usage record, recovery outcome, tool budgets, and `graphOutcome`.
+8. Verify one turn performs at most one context-free recovery and terminates within the configured recursion and tool budgets.
+9. Monitor false-block rate, retry rate, context exclusions, model-context circuit activity, and p95 latency for 24 hours.
 
 Acceptance criteria:
 
@@ -183,4 +180,7 @@ Acceptance criteria:
 - Routine Discord health pings are silent.
 - Serious outage, shutdown, and post-outage recovery alerts still post.
 - Langfuse shows root message trace plus graph node observations.
+- Standalone mentions reuse only recent completed safe turns from the same requester; direct replies may follow at most three eligible multi-user turns.
+- Assistant output failures cannot activate a guild-wide kill switch.
+- Unsafe or repetitive candidates perform at most one context-free retry.
 - The graph always reaches `END` or the bounded failure fallback within the configured recursion limit.

@@ -29,15 +29,6 @@ export function resolveAllowedAgentTools(provider: AgentProviderCapabilities): A
   return Array.from(allowed);
 }
 
-export function executeBoundedToolPlan(params: {
-  requestedTools: AgentToolRequest[];
-  toolsAllowed: AgentToolName[];
-  limits: AgentGraphLimits;
-  executor?: AgentToolExecutor;
-}): Promise<{ toolsCalled: AgentToolName[]; toolResults: AgentToolResult[] }> {
-  return executeBoundedToolPlanAsync(params);
-}
-
 function toAgentToolResult(result: AgentToolExecutionResult): AgentToolResult {
   return {
     name: result.name,
@@ -52,7 +43,7 @@ function toAgentToolResult(result: AgentToolExecutionResult): AgentToolResult {
   };
 }
 
-async function executeBoundedToolPlanAsync(params: {
+export async function executeBoundedToolPlan(params: {
   requestedTools: AgentToolRequest[];
   toolsAllowed: AgentToolName[];
   limits: AgentGraphLimits;

@@ -270,69 +270,6 @@ describe('Deployment Detector', () => {
       expect(config1).toEqual(config2); // Same values
     });
 
-    describe('canAddGuild', () => {
-      test('always returns true for self-hosted', async () => {
-        cleanup = withEnv({ DEPLOYMENT_MODE: 'self-hosted' });
-        deploymentDetector.clearCache();
-
-        expect(await deploymentDetector.canAddGuild(0)).toBe(true);
-        expect(await deploymentDetector.canAddGuild(100)).toBe(true);
-        expect(await deploymentDetector.canAddGuild(1000000)).toBe(true);
-      });
-
-      test('respects limit for hosted mode', async () => {
-        cleanup = withEnv({ DEPLOYMENT_MODE: 'production' });
-        deploymentDetector.clearCache();
-
-        const config = deploymentDetector.getConfig();
-        const maxGuilds = config.maxGuilds;
-
-        expect(await deploymentDetector.canAddGuild(0)).toBe(true);
-        expect(await deploymentDetector.canAddGuild(maxGuilds - 1)).toBe(true);
-        expect(await deploymentDetector.canAddGuild(maxGuilds)).toBe(false);
-        expect(await deploymentDetector.canAddGuild(maxGuilds + 1)).toBe(false);
-      });
-    });
-
-    describe('getCapacityInfo', () => {
-      test('returns unlimited display for self-hosted', () => {
-        cleanup = withEnv({ DEPLOYMENT_MODE: 'self-hosted' });
-        deploymentDetector.clearCache();
-
-        const info = deploymentDetector.getCapacityInfo(10);
-
-        expect(info.current).toBe(10);
-        expect(info.max).toBe(Number.MAX_SAFE_INTEGER);
-        expect(info.atCapacity).toBe(false);
-        expect(info.displayString).toContain('unlimited');
-      });
-
-      test('returns correct capacity for hosted mode', () => {
-        cleanup = withEnv({ DEPLOYMENT_MODE: 'production' });
-        deploymentDetector.clearCache();
-
-        const config = deploymentDetector.getConfig();
-        const info = deploymentDetector.getCapacityInfo(3);
-
-        expect(info.current).toBe(3);
-        expect(info.max).toBe(config.maxGuilds);
-        expect(info.available).toBe(config.maxGuilds - 3);
-        expect(info.atCapacity).toBe(false);
-        expect(info.displayString).toContain('/');
-      });
-
-      test('shows at capacity when full', () => {
-        cleanup = withEnv({ DEPLOYMENT_MODE: 'production' });
-        deploymentDetector.clearCache();
-
-        const config = deploymentDetector.getConfig();
-        const info = deploymentDetector.getCapacityInfo(config.maxGuilds);
-
-        expect(info.atCapacity).toBe(true);
-        expect(info.available).toBe(0);
-      });
-    });
-
     describe('getModeString', () => {
       test('returns hosted string for production', () => {
         cleanup = withEnv({ DEPLOYMENT_MODE: 'production' });
