@@ -40,7 +40,7 @@ export async function resolveReplyContext(
       break;
     }
 
-    let referenced: Message<boolean> | null = null;
+    let referenced: Message<boolean>;
     try {
       referenced = await cursor.fetchReference();
     } catch {

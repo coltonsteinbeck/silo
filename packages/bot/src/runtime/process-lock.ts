@@ -70,8 +70,6 @@ function replaceStaleLock({
     return null;
   }
 
-  let stalePid = existingPid;
-
   for (let attempt = 0; attempt < 3; attempt += 1) {
     removeLockFile(lockFile);
 
@@ -86,7 +84,7 @@ function replaceStaleLock({
       return null;
     }
 
-    stalePid = currentPid;
+    const stalePid = currentPid;
     if (stalePid !== null && isProcessAlive(stalePid)) {
       log.error(`Another bot instance (PID ${stalePid}) is already running.`);
       return null;

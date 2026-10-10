@@ -4,15 +4,20 @@ export interface Message {
 }
 
 export interface TextGenerationOptions {
+  signal?: AbortSignal;
   model?: string;
   temperature?: number;
   maxTokens?: number;
   stream?: boolean;
   reasoning?: {
+    effort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh';
     type?: 'enabled' | 'budgeted';
     budget?: number; // reasoning tokens budget for faster responses
   };
 }
+
+export type TextGenerationFinishReason =
+  'stop' | 'length' | 'content_filter' | 'tool_calls' | 'other';
 
 export interface TextGenerationResponse {
   content: string;
@@ -25,10 +30,13 @@ export interface TextGenerationResponse {
     cacheReadTokens?: number; // Tokens read from cache
   };
   model: string;
+  finishReason?: TextGenerationFinishReason;
+  providerFinishReason?: string;
   thinking?: string; // Internal reasoning for models with extended thinking
 }
 
 export interface ImageGenerationOptions {
+  signal?: AbortSignal;
   model?: string;
   size?: string;
   quality?: string;
@@ -48,6 +56,7 @@ export interface ImageGenerationResponse {
 }
 
 export interface VideoGenerationOptions {
+  signal?: AbortSignal;
   model?: string;
   duration?: number;
   aspectRatio?: string;
@@ -92,11 +101,14 @@ export interface WebSearchCitation {
 }
 
 export interface WebSearchOptions {
+  signal?: AbortSignal;
   model?: string;
   maxResults?: number;
 }
 
 export interface WebSearchResponse {
+  refused?: boolean;
+  searchCalls?: number;
   content: string;
   citations: WebSearchCitation[];
   model?: string;

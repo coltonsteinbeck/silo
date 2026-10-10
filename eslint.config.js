@@ -1,11 +1,17 @@
 import js from '@eslint/js';
 import tsPlugin from '@typescript-eslint/eslint-plugin';
 import tsParser from '@typescript-eslint/parser';
-import prettierPlugin from 'eslint-plugin-prettier/recommended';
 
 export default [
   {
-    ignores: ['**/dist/**', '**/node_modules/**', '**/*.js', '**/coverage/**', '**/.next/**', '**/out/**']
+    ignores: [
+      '**/dist/**',
+      '**/node_modules/**',
+      '**/*.js',
+      '**/coverage/**',
+      '**/.next/**',
+      '**/out/**'
+    ]
   },
   js.configs.recommended,
   {
@@ -20,6 +26,9 @@ export default [
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
         fetch: 'readonly',
+        AbortController: 'readonly',
+        AbortSignal: 'readonly',
+        queueMicrotask: 'readonly',
         URL: 'readonly',
         Response: 'readonly',
         Timer: 'readonly',
@@ -29,7 +38,7 @@ export default [
         __filename: 'readonly',
         global: 'readonly',
         module: 'readonly',
-        require: 'readonly',
+        require: 'readonly'
       },
       parserOptions: {
         ecmaVersion: 2022,
@@ -38,12 +47,10 @@ export default [
       }
     },
     plugins: {
-      '@typescript-eslint': tsPlugin,
-      prettier: prettierPlugin.plugins.prettier
+      '@typescript-eslint': tsPlugin
     },
     rules: {
       ...tsPlugin.configs.recommended.rules,
-      'prettier/prettier': 'warn',
       '@typescript-eslint/no-explicit-any': 'off',
       '@typescript-eslint/no-unused-vars': [
         'warn',
@@ -54,6 +61,5 @@ export default [
       ],
       '@typescript-eslint/ban-ts-comment': 'off'
     }
-  },
-  prettierPlugin
+  }
 ];

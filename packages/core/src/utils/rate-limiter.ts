@@ -12,12 +12,18 @@ export class RateLimiter {
     this.maxRequests = maxRequests;
     this.windowMs = windowMs;
 
-    setInterval(() => this.cleanup(), windowMs);
+    setInterval(() => this.cleanup(), windowMs).unref();
   }
 
-  check(key: string): { allowed: boolean; remaining: number; resetAt: number } {
+  check(
+    key: string,
+    maxRequests = this.maxRequests
+  ): { allowed: boolean; remaining: number; resetAt: number } {
     const now = Date.now();
     const entry = this.store.get(key);
+    if (!Number.isFinite(maxRequests) || maxRequests < 1) {
+      return { allowed: false, remaining: 0, resetAt: now + this.windowMs };
+    }
 
     if (!entry || now > entry.resetAt) {
       const newEntry: RateLimitEntry = {
@@ -27,12 +33,12 @@ export class RateLimiter {
       this.store.set(key, newEntry);
       return {
         allowed: true,
-        remaining: this.maxRequests - 1,
+        remaining: maxRequests - 1,
         resetAt: newEntry.resetAt
       };
     }
 
-    if (entry.count >= this.maxRequests) {
+    if (entry.count >= maxRequests) {
       return {
         allowed: false,
         remaining: 0,
@@ -43,7 +49,7 @@ export class RateLimiter {
     entry.count++;
     return {
       allowed: true,
-      remaining: this.maxRequests - entry.count,
+      remaining: maxRequests - entry.count,
       resetAt: entry.resetAt
     };
   }

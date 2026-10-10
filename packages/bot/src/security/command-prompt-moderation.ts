@@ -4,6 +4,7 @@ import { buildPromptSafetyWarningMessage, evaluatePromptSafety } from './prompt-
 
 export interface CommandPromptModerationDecision {
   allowed: boolean;
+  failed?: boolean;
   processedPrompt: string;
   userMessage?: string;
 }
@@ -15,6 +16,7 @@ export type PromptModerationGuard = (params: {
   command: string;
   phase: string;
   contentType?: ContentType;
+  signal?: AbortSignal;
 }) => Promise<CommandPromptModerationDecision>;
 
 export const moderateCommandPrompt: PromptModerationGuard = async ({
@@ -23,6 +25,7 @@ export const moderateCommandPrompt: PromptModerationGuard = async ({
   userId,
   command,
   phase,
+  signal,
   contentType: _contentType = 'prompt'
 }) => {
   const trimmed = prompt.trim();
@@ -45,7 +48,9 @@ export const moderateCommandPrompt: PromptModerationGuard = async ({
     const safetyResult = await evaluatePromptSafety(trimmed, {
       profile: 'strict_tool_input',
       source: `${command}:${phase}`,
-      userId
+      guildId,
+      userId,
+      signal
     });
 
     if (safetyResult.moderationError) {
@@ -56,6 +61,7 @@ export const moderateCommandPrompt: PromptModerationGuard = async ({
       });
       return {
         allowed: false,
+        failed: true,
         processedPrompt: '',
         userMessage:
           '⚠️ Prompt moderation is temporarily unavailable. Please try again in a moment.'
@@ -79,7 +85,10 @@ export const moderateCommandPrompt: PromptModerationGuard = async ({
 
     return {
       allowed: true,
-      processedPrompt: contentSanitizer.sanitizePrompt(trimmed)
+      processedPrompt: contentSanitizer.sanitizePrompt(
+        trimmed,
+        safetyResult.safeguardsEnabled !== false
+      )
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -99,6 +108,7 @@ export const moderateCommandPrompt: PromptModerationGuard = async ({
 
     return {
       allowed: false,
+      failed: true,
       processedPrompt: '',
       userMessage: '⚠️ Prompt moderation is temporarily unavailable. Please try again in a moment.'
     };
