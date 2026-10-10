@@ -23,7 +23,7 @@ What actually happens?
 - OS: 
 - Bun version: 
 - Deployment mode: (self-hosted / development / production)
-- Provider(s): (openai / anthropic / xai / local)
+- Provider(s): (openai / xai)
 
 ## Logs
 ```

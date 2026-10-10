@@ -7,8 +7,13 @@ import {
 import type { Command } from './types';
 import { logger } from '@silo/core';
 import { voiceSessionManager } from '../voice';
+import { areGuildSafeguardsEnabled } from '../security/guild-safeguards';
 import { AdminAdapter } from '../database/admin-adapter';
-import { systemPromptManager } from '../security';
+import {
+  systemPromptManager,
+  resolveManagedGuildPersonaPolicy,
+  composeSystemPromptWithSafety
+} from '../security';
 import { QuotaMiddleware } from '../middleware/quota';
 
 export class SpeakCommand implements Command {
@@ -120,6 +125,8 @@ export class SpeakCommand implements Command {
 
     await interaction.deferReply();
 
+    const hadExistingGuildSession = voiceSessionManager.hasSession(guildId);
+
     try {
       // Get OpenAI API key from environment
       const apiKey = process.env.OPENAI_API_KEY;
@@ -136,9 +143,16 @@ export class SpeakCommand implements Command {
         true
       );
       const promptConfig = systemPromptManager.getEffectivePrompt(dbPrompt, promptEnabled, true);
-      const instructions =
-        promptConfig.prompt ||
-        'You are a helpful AI assistant in a Discord voice channel. Keep responses concise and conversational.';
+      const managedPersona = resolveManagedGuildPersonaPolicy(guildId);
+      const safeguardsEnabled = await areGuildSafeguardsEnabled(guildId);
+      const instructions = composeSystemPromptWithSafety(
+        (safeguardsEnabled
+          ? managedPersona?.prompt
+          : managedPersona?.promptWithoutContentSafeguards || managedPersona?.prompt) ||
+          promptConfig.prompt ||
+          'You are a helpful AI assistant in a Discord voice channel. Keep responses concise and conversational.',
+        safeguardsEnabled
+      );
 
       // Join the voice channel if not already connected
       const connection = await voiceSessionManager.joinChannel(voiceChannel);
@@ -147,6 +161,7 @@ export class SpeakCommand implements Command {
       const voice = interaction.options.getString('voice') || 'alloy';
       const session = await voiceSessionManager.startSpeaking(guildId, userId, apiKey, {
         voice,
+        assistantSafetyPolicy: resolveManagedGuildPersonaPolicy(guildId)?.assistantSafetyPolicy,
         instructions
       });
 
@@ -173,6 +188,19 @@ export class SpeakCommand implements Command {
       });
     } catch (error) {
       logger.error('[SpeakCommand] Error:', error);
+
+      if (
+        !hadExistingGuildSession &&
+        voiceSessionManager.hasSession(guildId) &&
+        voiceSessionManager.getActiveSpeakerCount(guildId) === 0
+      ) {
+        await voiceSessionManager.leaveGuild(guildId).catch(cleanupError => {
+          logger.warn(
+            '[SpeakCommand] Failed to roll back an unused voice connection',
+            cleanupError
+          );
+        });
+      }
 
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       await interaction.editReply({

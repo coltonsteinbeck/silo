@@ -96,6 +96,7 @@ describe('createCommands', () => {
       'analytics',
       'speak',
       'stopspeaking',
+      'radio',
       'feedback',
       'help'
     ];

@@ -1,4 +1,5 @@
 interface AssistantMessageTrigger {
+  channel?: { isThread(): boolean; ownerId?: string | null };
   mentions: {
     has(userId: string): boolean;
   };
@@ -16,6 +17,8 @@ export async function shouldHandleAssistantMessage(
   message: AssistantMessageTrigger,
   botUserId: string
 ): Promise<boolean> {
+  if (message.channel?.isThread() && message.channel.ownerId === botUserId) return true;
+
   if (message.mentions.has(botUserId)) {
     return true;
   }

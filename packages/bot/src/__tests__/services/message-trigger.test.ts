@@ -52,3 +52,16 @@ describe('shouldHandleAssistantMessage', () => {
     ).resolves.toBe(false);
   });
 });
+
+test('responds without mention only in threads owned by this bot', async () => {
+  for (const [isThread, ownerId, expected] of [
+    [true, 'bot-1', true],
+    [true, 'bot-2', false],
+    [true, null, false],
+    [false, 'bot-1', false]
+  ] as const) {
+    const message = { ...createMessage({}), channel: { isThread: () => isThread, ownerId } };
+    await expect(shouldHandleAssistantMessage(message, 'bot-1')).resolves.toBe(expected);
+    expect(message.fetchReference).not.toHaveBeenCalled();
+  }
+});

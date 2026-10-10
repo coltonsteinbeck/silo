@@ -44,10 +44,14 @@ describe('XAIProvider.searchWeb', () => {
       model: 'grok-4.20-non-reasoning',
       input: [{ role: 'user', content: 'space news' }],
       tools: [{ type: 'web_search' }],
+      max_output_tokens: 1200,
+      store: false,
       stream: false
     });
     expect(result).toEqual({
       content: 'Fresh answer',
+      refused: false,
+      searchCalls: undefined,
       citations: [],
       model: 'grok-search',
       usage: {
@@ -110,6 +114,8 @@ describe('XAIProvider.searchWeb', () => {
       model: 'grok-search-beta',
       input: [{ role: 'user', content: 'topic' }],
       tools: [{ type: 'web_search' }],
+      max_output_tokens: 1200,
+      store: false,
       stream: false
     });
     expect(result.content).toBe('Search summary');
@@ -129,7 +135,7 @@ describe('XAIProvider.searchWeb', () => {
     });
   });
 
-  test('throws when no answer text is returned', async () => {
+  test('retains empty answers for typed no-evidence handling', async () => {
     globalThis.fetch = mock(async () =>
       jsonResponse({
         output: [
@@ -151,8 +157,47 @@ describe('XAIProvider.searchWeb', () => {
     ) as unknown as typeof globalThis.fetch;
 
     const provider = new XAIProvider('xai-key');
-    await expect(provider.searchWeb('topic')).rejects.toThrow(
-      'xAI web search returned no answer text'
-    );
+    expect((await provider.searchWeb('topic')).content).toBe('');
+  });
+
+  test('does not report zero usage for a partial provider response', async () => {
+    globalThis.fetch = mock(async () =>
+      jsonResponse({
+        output_text: 'Answer',
+        usage: { input_tokens: 32, total_tokens: 151 }
+      })
+    ) as unknown as typeof globalThis.fetch;
+    expect((await new XAIProvider('xai-key').searchWeb('topic')).usage).toBeUndefined();
+  });
+
+  test('includes separate reasoning in legacy Responses usage without double-counting modern output', async () => {
+    const payloads = [
+      {
+        prompt_tokens: 32,
+        completion_tokens: 9,
+        total_tokens: 151,
+        completion_tokens_details: { reasoning_tokens: 110 }
+      },
+      {
+        input_tokens: 32,
+        output_tokens: 119,
+        total_tokens: 151,
+        output_tokens_details: { reasoning_tokens: 110 }
+      }
+    ];
+    globalThis.fetch = mock(async () =>
+      jsonResponse({
+        output_text: 'Answer',
+        usage: payloads.shift()
+      })
+    ) as unknown as typeof globalThis.fetch;
+    const provider = new XAIProvider('xai-key');
+    for (let i = 0; i < 2; i++) {
+      expect((await provider.searchWeb('topic')).usage).toMatchObject({
+        promptTokens: 32,
+        completionTokens: 119,
+        totalTokens: 151
+      });
+    }
   });
 });
