@@ -56,6 +56,20 @@ describe('Langfuse trace text privacy', () => {
     expect(preview).toContain('[discord-id]');
   });
 
+  test('redacts hyphenated provider credentials from free text', () => {
+    const openAiKey = ['sk', 'proj', 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef'].join('-');
+    const xaiKey = ['xai', 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef'].join('-');
+    const anthropicKey = ['sk', 'ant', 'api03', 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef'].join('-');
+    const metadata = sanitizeMetadata({
+      error: `OpenAI ${openAiKey}; xAI ${xaiKey}; Anthropic ${anthropicKey}`
+    });
+
+    expect(metadata?.error).toContain('[redacted]');
+    expect(metadata?.error).not.toContain(openAiKey);
+    expect(metadata?.error).not.toContain(xaiKey);
+    expect(metadata?.error).not.toContain(anthropicKey);
+  });
+
   test('redacts identifiers before truncation can split them into an unmatchable fragment', () => {
     const preview = summarizeTextForTrace(
       `${'x'.repeat(3900)} contact late.identifier@example.com for the rest`,

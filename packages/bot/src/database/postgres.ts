@@ -82,6 +82,15 @@ type MigrationSummary = {
   succeeded: boolean;
 };
 
+type ControlTableSecurity = {
+  row_security: boolean;
+  api_roles_blocked: boolean;
+  backend_select: boolean;
+  backend_insert: boolean;
+  backend_delete: boolean;
+  acl_policy: boolean;
+};
+
 export class PostgresAdapter implements DatabaseAdapter {
   public readonly pool: Pool;
 
@@ -247,6 +256,112 @@ export class PostgresAdapter implements DatabaseAdapter {
     }
   }
 
+  private async assertControlTableSecurity(
+    client: PoolClient,
+    tableName: 'schema_migrations' | 'assistant_message_ingress',
+    requiredPrivileges: Array<'backend_select' | 'backend_insert' | 'backend_delete'>
+  ): Promise<void> {
+    const policyName = `${tableName}_backend_acl`;
+    const result = await client.query<ControlTableSecurity>(
+      `SELECT
+         c.relrowsecurity AS row_security,
+         NOT EXISTS (
+           SELECT 1
+           FROM pg_roles role
+           WHERE role.rolname IN ('anon', 'authenticated', 'service_role', 'authenticator')
+             AND (
+               has_table_privilege(role.oid, c.oid, 'SELECT')
+               OR has_table_privilege(role.oid, c.oid, 'INSERT')
+               OR has_table_privilege(role.oid, c.oid, 'UPDATE')
+               OR has_table_privilege(role.oid, c.oid, 'DELETE')
+             )
+         ) AS api_roles_blocked,
+         has_table_privilege(current_user, c.oid, 'SELECT') AS backend_select,
+         has_table_privilege(current_user, c.oid, 'INSERT') AS backend_insert,
+         has_table_privilege(current_user, c.oid, 'DELETE') AS backend_delete,
+         EXISTS (
+           SELECT 1
+           FROM pg_policy policy
+           WHERE policy.polrelid = c.oid
+             AND policy.polname = $2
+             AND policy.polpermissive
+             AND policy.polcmd = '*'
+             AND 0 = ANY(policy.polroles)
+             AND pg_get_expr(policy.polqual, policy.polrelid) = 'true'
+             AND pg_get_expr(policy.polwithcheck, policy.polrelid) = 'true'
+         ) AS acl_policy
+       FROM pg_class c
+       JOIN pg_namespace namespace ON namespace.oid = c.relnamespace
+       WHERE namespace.nspname = 'public' AND c.relname = $1`,
+      [tableName, policyName]
+    );
+    const security = result.rows[0];
+    if (
+      !security?.row_security ||
+      !security.api_roles_blocked ||
+      !security.acl_policy ||
+      requiredPrivileges.some(privilege => !security[privilege])
+    ) {
+      throw new Error(`Backend-only control table boundary is not installed for ${tableName}`);
+    }
+  }
+
+  private async prepareMigrationTracker(client: PoolClient): Promise<boolean> {
+    const ownership = await client.query<{ can_alter: boolean }>(`
+      SELECT pg_has_role(c.relowner, 'USAGE') OR active_role.rolsuper AS can_alter
+      FROM pg_class c
+      JOIN pg_namespace namespace ON namespace.oid = c.relnamespace
+      JOIN pg_roles active_role ON active_role.rolname = current_user
+      WHERE namespace.nspname = 'public' AND c.relname = 'schema_migrations'
+    `);
+
+    let canAlter = ownership.rows[0]?.can_alter;
+    if (canAlter === undefined) {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS public.schema_migrations (
+          filename TEXT PRIMARY KEY,
+          applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `);
+      canAlter = true;
+    }
+
+    if (canAlter) {
+      await client.query(`
+        ALTER TABLE public.schema_migrations ENABLE ROW LEVEL SECURITY;
+        REVOKE ALL ON TABLE public.schema_migrations FROM PUBLIC;
+
+        DO $$
+        DECLARE role_name TEXT;
+        BEGIN
+          FOR role_name IN SELECT rolname FROM pg_roles
+            WHERE rolname IN ('anon', 'authenticated', 'service_role', 'authenticator')
+          LOOP
+            EXECUTE format(
+              'REVOKE ALL ON TABLE public.schema_migrations FROM %I',
+              role_name
+            );
+          END LOOP;
+
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_policy
+            WHERE polrelid = 'public.schema_migrations'::regclass
+              AND polname = 'schema_migrations_backend_acl'
+          ) THEN
+            EXECUTE 'CREATE POLICY schema_migrations_backend_acl ON public.schema_migrations FOR ALL TO PUBLIC USING (true) WITH CHECK (true)';
+          END IF;
+        END
+        $$;
+      `);
+    }
+
+    await this.assertControlTableSecurity(client, 'schema_migrations', [
+      'backend_select',
+      'backend_insert'
+    ]);
+    return canAlter;
+  }
+
   // New migrations must be replay-safe: schema can exist before its ledger row.
   // Any other SQL failure rolls back and must never be recorded as applied.
   private async runMigrations(): Promise<void> {
@@ -277,17 +392,16 @@ export class PostgresAdapter implements DatabaseAdapter {
       await client.query('SET statement_timeout TO 120000');
       await client.query('SELECT pg_advisory_lock($1)', [PostgresAdapter.MIGRATION_LOCK_ID]);
 
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS public.schema_migrations (
-          filename TEXT PRIMARY KEY,
-          applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )
-      `);
+      const canAlterTracker = await this.prepareMigrationTracker(client);
 
       const appliedResult = await client.query<{ filename: string }>(
         'SELECT filename FROM public.schema_migrations'
       );
       const appliedMigrations = new Set(appliedResult.rows.map(row => row.filename));
+
+      if (!canAlterTracker && migrationFiles.some(file => !appliedMigrations.has(file))) {
+        throw new Error('Database has pending migrations that must be applied by the schema owner');
+      }
 
       let appliedCount = 0;
       let skippedCount = 0;
@@ -344,6 +458,12 @@ export class PostgresAdapter implements DatabaseAdapter {
           throw error;
         }
       }
+
+      await this.assertControlTableSecurity(client, 'assistant_message_ingress', [
+        'backend_select',
+        'backend_insert',
+        'backend_delete'
+      ]);
 
       logger.info('Migration step completed', {
         totalFiles: migrationFiles.length,

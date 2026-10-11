@@ -76,6 +76,8 @@ describe('XAIProvider.searchWeb', () => {
       input: [{ role: 'user', content: 'space news' }],
       tools: [{ type: 'web_search' }],
       max_output_tokens: 1200,
+      max_tool_calls: 2,
+      max_turns: 2,
       store: false,
       stream: false
     });
@@ -146,6 +148,8 @@ describe('XAIProvider.searchWeb', () => {
       input: [{ role: 'user', content: 'topic' }],
       tools: [{ type: 'web_search' }],
       max_output_tokens: 1200,
+      max_tool_calls: 2,
+      max_turns: 2,
       store: false,
       stream: false
     });

@@ -392,6 +392,31 @@ CREATE TABLE IF NOT EXISTS public.schema_migrations (
     filename TEXT PRIMARY KEY,
     applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE public.schema_migrations ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE public.schema_migrations FROM PUBLIC;
+
+DO $$
+DECLARE role_name TEXT;
+BEGIN
+    FOR role_name IN SELECT rolname FROM pg_roles
+      WHERE rolname IN ('anon', 'authenticated', 'service_role', 'authenticator')
+    LOOP
+        EXECUTE format(
+            'REVOKE ALL ON TABLE public.schema_migrations FROM %I',
+            role_name
+        );
+    END LOOP;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policy
+        WHERE polrelid = 'public.schema_migrations'::regclass
+          AND polname = 'schema_migrations_backend_acl'
+    ) THEN
+        EXECUTE 'CREATE POLICY schema_migrations_backend_acl ON public.schema_migrations FOR ALL TO PUBLIC USING (true) WITH CHECK (true)';
+    END IF;
+END
+$$;
 SQL
     TABLE_COUNT="1"
 fi

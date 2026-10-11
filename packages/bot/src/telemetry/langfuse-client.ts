@@ -103,6 +103,7 @@ function sanitizeTraceString(value: string): string {
   const sanitized = compact
     .replace(/\b(Bearer\s+)[A-Za-z0-9._~-]+/gi, `$1${REDACTED_VALUE}`)
     .replace(/\b(sk|pk)_[A-Za-z0-9_-]+/g, `$1_${REDACTED_VALUE}`)
+    .replace(/\b(?:sk|pk|xai)-[A-Za-z0-9_-]+\b/gi, REDACTED_VALUE)
     .replace(/<@!?\d{15,22}>|<@&\d{15,22}>|<#\d{15,22}>/g, '[discord-id]')
     .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[email]')
     .replace(/(?<![\w@])@[A-Za-z0-9._-]{2,32}\b/g, '[user-handle]')

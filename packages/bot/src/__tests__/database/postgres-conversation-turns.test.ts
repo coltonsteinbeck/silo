@@ -81,7 +81,7 @@ function conversationTurn(overrides: Partial<ConversationTurn> = {}): Conversati
 }
 
 function adapterWithPool(pool: object): PostgresAdapter {
-  const adapter = new PostgresAdapter('postgresql://user:pass@localhost:5432/test_db');
+  const adapter = new PostgresAdapter('postgresql://fixture:fixture@example.invalid/test_db');
   Object.defineProperty(adapter, 'pool', { value: pool });
   return adapter;
 }
@@ -453,6 +453,10 @@ describe('conversation turn integrity migration', () => {
     expect(compatibilityInit).toContain('CREATE FUNCTION auth.uid()');
     expect(migrationScript).toContain('Initializing public.schema_migrations for a fresh database');
     expect(migrationScript).toContain('CREATE TABLE IF NOT EXISTS public.schema_migrations');
+    expect(migrationScript).toContain(
+      'ALTER TABLE public.schema_migrations ENABLE ROW LEVEL SECURITY'
+    );
+    expect(migrationScript).toContain('REVOKE ALL ON TABLE public.schema_migrations FROM PUBLIC');
     expect(migrationScript).toContain('--single-transaction');
     expect(migrationScript).toContain('apply_migration_with_tracking');
   });

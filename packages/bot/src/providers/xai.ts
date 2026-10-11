@@ -70,6 +70,8 @@ interface XAIResponsesOutputItem {
 
 interface XAIResponsesRequest {
   max_output_tokens: number;
+  max_tool_calls: number;
+  max_turns: number;
   store: false;
   model: string;
   input: Array<{
@@ -448,6 +450,8 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider, 
       input: [{ role: 'user', content: query }],
       tools: [{ type: 'web_search' }],
       max_output_tokens: 1200,
+      max_tool_calls: 2,
+      max_turns: 2,
       store: false,
       stream: false
     };

@@ -833,6 +833,80 @@ test.skipIf(!RUN_DATABASE_TESTS)(
 const RUN_INGRESS_DATABASE_TESTS = process.env.RUN_INGRESS_DB_TESTS === 'true';
 
 describe.skipIf(!RUN_INGRESS_DATABASE_TESTS)('PostgreSQL ingress concurrency and restart', () => {
+  test('keeps migration and ingress control tables backend-only', async () => {
+    const adapter = new PostgresAdapter(localConnectionString(), { ssl: false });
+    try {
+      await adapter.connect();
+      const result = await adapter.pool.query<{
+        table_name: string;
+        row_security: boolean;
+        api_roles_blocked: boolean;
+        backend_select: boolean;
+        backend_insert: boolean;
+        backend_delete: boolean;
+        acl_policy: boolean;
+      }>(
+        `SELECT
+           table_name,
+           c.relrowsecurity AS row_security,
+           NOT EXISTS (
+             SELECT 1
+             FROM pg_roles role
+             WHERE role.rolname IN ('anon', 'authenticated', 'service_role', 'authenticator')
+               AND (
+                 has_table_privilege(role.oid, c.oid, 'SELECT')
+                 OR has_table_privilege(role.oid, c.oid, 'INSERT')
+                 OR has_table_privilege(role.oid, c.oid, 'UPDATE')
+                 OR has_table_privilege(role.oid, c.oid, 'DELETE')
+               )
+           ) AS api_roles_blocked,
+           has_table_privilege(current_user, format('public.%I', table_name), 'SELECT')
+             AS backend_select,
+           has_table_privilege(current_user, format('public.%I', table_name), 'INSERT')
+             AS backend_insert,
+           has_table_privilege(current_user, format('public.%I', table_name), 'DELETE')
+             AS backend_delete,
+           EXISTS (
+             SELECT 1
+             FROM pg_policy policy
+             WHERE policy.polrelid = c.oid
+               AND policy.polname = table_name || '_backend_acl'
+               AND policy.polpermissive
+               AND policy.polcmd = '*'
+               AND 0 = ANY(policy.polroles)
+               AND pg_get_expr(policy.polqual, policy.polrelid) = 'true'
+               AND pg_get_expr(policy.polwithcheck, policy.polrelid) = 'true'
+           ) AS acl_policy
+         FROM unnest(ARRAY['schema_migrations', 'assistant_message_ingress']) AS table_name
+         JOIN pg_class c ON c.oid = format('public.%I', table_name)::regclass
+         ORDER BY table_name`
+      );
+
+      expect(result.rows).toEqual([
+        {
+          table_name: 'assistant_message_ingress',
+          row_security: true,
+          api_roles_blocked: true,
+          backend_select: true,
+          backend_insert: true,
+          backend_delete: true,
+          acl_policy: true
+        },
+        {
+          table_name: 'schema_migrations',
+          row_security: true,
+          api_roles_blocked: true,
+          backend_select: true,
+          backend_insert: true,
+          backend_delete: true,
+          acl_policy: true
+        }
+      ]);
+    } finally {
+      await adapter.disconnect();
+    }
+  });
+
   test('concurrent adapters and a fresh connection cannot replay claimed ingress', async () => {
     const first = new PostgresAdapter(localConnectionString(), { ssl: false });
     const second = new PostgresAdapter(localConnectionString(), { ssl: false });
