@@ -130,6 +130,7 @@ import {
 } from './telemetry/langfuse-metadata';
 import { installProcessErrorHandlers } from './runtime/process-errors';
 import { acquireProcessLock } from './runtime/process-lock';
+import { combineAbortSignals } from './runtime/abort-signals';
 import { shutdownApplication } from './runtime/shutdown';
 import { Client as PostgresClient } from 'pg';
 import { RuntimeLeaderLease } from './runtime/leader-lease';
@@ -1401,10 +1402,10 @@ export async function startBot(): Promise<void> {
             member,
             usageType: 'text_tokens'
           });
-          textRoute.options.signal = AbortSignal.any([
-            textRoute.options.signal!,
+          textRoute.options.signal = combineAbortSignals(
+            textRoute.options.signal,
             commandShutdown.signal
-          ]);
+          );
           const textProvider = textRoute.provider;
           const visionProvider = providers.getVisionProvider(preferredProvider || undefined);
           const visionRouting = decideVisionRouting(conversationContext, visionProvider);
