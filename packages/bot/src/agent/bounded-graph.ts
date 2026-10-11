@@ -560,7 +560,11 @@ async function outputSafetyNode(state: State): Promise<StateUpdate> {
       const decision = repair.decision;
       const quality = detectResponseRepetition({
         candidate: deliveredContent,
-        recentAssistantMessages: state.recentAssistantMessages || [],
+        // Fixed clarification/media acknowledgements may legitimately repeat.
+        recentAssistantMessages:
+          state.intent === 'clarify' || state.mediaResult
+            ? []
+            : state.recentAssistantMessages || [],
         latestUserText: state.latestUserText || ''
       });
       const safetyBlocked = decision.action === 'block';

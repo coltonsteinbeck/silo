@@ -1,6 +1,7 @@
 import {
   ChannelType,
   MessageFlags,
+  PermissionFlagsBits,
   SlashCommandBuilder,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
@@ -42,10 +43,26 @@ export class RadioCommand implements Command {
       return;
     }
 
-    const channel = await interaction.guild.channels.fetch(selectedChannel.id);
+    const channel = await interaction.guild.channels.fetch(selectedChannel.id).catch(() => null);
     if (!channel || channel.type !== ChannelType.GuildVoice) {
       await interaction.reply({
         content: 'Could not find that voice channel.',
+        flags: MessageFlags.Ephemeral,
+        allowedMentions: { parse: [] }
+      });
+      return;
+    }
+
+    const permissions = channel.permissionsFor(interaction.user);
+    if (
+      !permissions?.has([
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.Connect,
+        PermissionFlagsBits.Speak
+      ])
+    ) {
+      await interaction.reply({
+        content: 'You need View Channel, Connect, and Speak permissions in that voice channel.',
         flags: MessageFlags.Ephemeral,
         allowedMentions: { parse: [] }
       });

@@ -107,7 +107,10 @@ function dataImageToAttachment(
       content: failureMessage(media.kind),
       files: [],
       uploaded: false,
-      failureReason: 'media data URL decoded to empty content'
+      failureReason:
+        buffer.byteLength > maxBytes
+          ? 'media exceeds size limit'
+          : 'media data URL decoded to empty content'
     };
   }
 
@@ -156,7 +159,8 @@ export async function buildMediaReplyPayload(
         ],
         uploaded: true
       };
-    } catch {
+    } catch (error) {
+      if (options.signal?.aborted) throw error;
       return {
         content: failureMessage(media.kind),
         files: [],

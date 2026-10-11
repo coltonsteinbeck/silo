@@ -11,6 +11,52 @@ import {
 } from '../../evals/langfuse-safety-evals';
 
 describe('langfuse safety eval fixtures', () => {
+  test('scores context and response routing independently of hard safety', () => {
+    const fixture = SAFETY_EVAL_CASES.find(
+      candidate => candidate.id === 'input.explicit-sex-technique'
+    )!;
+    const testCase = {
+      ...fixture,
+      dimensions: ['hard_safety', 'context_retention', 'explanation_helpfulness'] as const
+    };
+    const actual: InputModerationEvalActualResult = {
+      kind: 'input_moderation',
+      allowed: true,
+      action: 'warned',
+      responseDirective: 'boundary_redirect',
+      flaggedCategories: ['sexual/explicit_generation'],
+      contextEligible: true
+    };
+    const comparison = compareSafetyEvalResult(fixture, actual);
+    const scores = buildLangfuseSafetyScoreRequests(
+      { ...testCase, dimensions: [...testCase.dimensions] },
+      comparison
+    );
+    expect(scores.find(score => score.name === 'safety_eval.hard_safety')?.value).toBe(1);
+    expect(scores.find(score => score.name === 'safety_eval.context_retention')?.value).toBe(0);
+    expect(scores.find(score => score.name === 'safety_eval.explanation_helpfulness')?.value).toBe(
+      1
+    );
+  });
+
+  test('scores over-refusal independently of hard safety', () => {
+    const fixture = SAFETY_EVAL_CASES.find(
+      candidate => candidate.id === 'input.safe-rewrite-professionalize-slur'
+    )!;
+    const comparison = compareSafetyEvalResult(fixture, {
+      kind: 'input_moderation',
+      allowed: false,
+      action: 'blocked',
+      flaggedCategories: ['harassment']
+    });
+    const scores = buildLangfuseSafetyScoreRequests(
+      { ...fixture, dimensions: ['hard_safety', 'over_refusal'] },
+      comparison
+    );
+    expect(scores.find(score => score.name === 'safety_eval.hard_safety')?.value).toBe(1);
+    expect(scores.find(score => score.name === 'safety_eval.over_refusal')?.value).toBe(0);
+  });
+
   test('builds the default dataset definition with one item per eval case', () => {
     const definition = buildLangfuseSafetyDatasetDefinition();
 

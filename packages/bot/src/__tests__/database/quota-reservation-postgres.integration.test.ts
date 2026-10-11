@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { PostgresAdapter } from '../../database/postgres';
 import { Pool, type PoolClient } from 'pg';
+import { readFileSync } from 'node:fs';
 
 const RUN_DATABASE_TESTS = process.env.RUN_QUOTA_DB_TESTS === 'true';
 
@@ -223,6 +224,93 @@ async function lifecycle(
 }
 
 describe.skipIf(!RUN_DATABASE_TESTS)('atomic quota reservations on local Postgres', () => {
+  test('replays pre-existing quota and managed-policy schema without losing data', async () => {
+    const pool = await openPool();
+    const guildId = '5'.repeat(18);
+    const key = randomUUID();
+    const filenames = [
+      '027_atomic_quota_reservations.sql',
+      '20261002232142_managed_guild_policies.sql'
+    ];
+    const adapter = new PostgresAdapter(localConnectionString(), {
+      maxConnections: 2,
+      ssl: false
+    });
+    try {
+      await assertMigrationInstalled(pool);
+      await installFixture(pool, guildId, generousLimits);
+      await reserve(pool, {
+        key,
+        guildId,
+        userId: 'replay-user',
+        resource: 'text_tokens',
+        requested: 10,
+        minimum: 10
+      });
+      await pool.query(
+        "INSERT INTO app_private.guild_persona_policies (guild_id, policy, revision) VALUES ($1, $2, 'replay-fixture')",
+        [guildId, { safeguardsEnabled: false }]
+      );
+      const snapshot = async () => {
+        const quota = await pool.query(
+          'SELECT to_jsonb(r) AS state FROM public.quota_usage_reservations r WHERE idempotency_key = $1',
+          [key]
+        );
+        const policy = await pool.query(
+          'SELECT to_jsonb(p) AS state FROM app_private.guild_persona_policies p WHERE guild_id = $1',
+          [guildId]
+        );
+        const pricing = await pool.query(
+          "SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY to_jsonb(p)::text), '[]'::jsonb) AS state FROM public.provider_pricing p"
+        );
+        return [quota.rows, policy.rows, pricing.rows];
+      };
+      const before = await snapshot();
+      for (const filename of filenames) {
+        const sql = readFileSync(
+          new URL(`../../../../../supabase/migrations/${filename}`, import.meta.url),
+          'utf8'
+        );
+        await pool.query(sql);
+        await pool.query(sql);
+      }
+      expect(await snapshot()).toEqual(before);
+      // Simulate schema applied out of band before its migration ledger entry.
+      const history = await pool.query(
+        'SELECT to_jsonb(m) AS row FROM public.schema_migrations m WHERE filename = ANY($1::text[])',
+        [filenames]
+      );
+      await pool.query('DELETE FROM public.schema_migrations WHERE filename = ANY($1::text[])', [
+        filenames
+      ]);
+      await adapter.connect();
+      expect(
+        (
+          await pool.query(
+            'SELECT filename FROM public.schema_migrations WHERE filename = ANY($1::text[])',
+            [filenames]
+          )
+        ).rowCount
+      ).toBe(2);
+      expect(await snapshot()).toEqual(before);
+      // Restore the fixture's original ledger timestamps and any runner metadata.
+      await pool.query('DELETE FROM public.schema_migrations WHERE filename = ANY($1::text[])', [
+        filenames
+      ]);
+      await pool.query(
+        'INSERT INTO public.schema_migrations SELECT * FROM jsonb_populate_recordset(NULL::public.schema_migrations, $1::jsonb)',
+        [JSON.stringify(history.rows.map(row => row.row))]
+      );
+    } finally {
+      await adapter.disconnect();
+      await pool.query('DELETE FROM app_private.guild_persona_policies WHERE guild_id = $1', [
+        guildId
+      ]);
+      await cleanupFixtures(pool, [guildId]);
+      await pool.end();
+    }
+  });
+
   test('serializes guild capacity and globally idempotent keys', async () => {
     const pool = await openPool();
     const runId = randomUUID();

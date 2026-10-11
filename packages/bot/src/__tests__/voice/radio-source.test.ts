@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { describe, expect, mock, test } from 'bun:test';
+import { describe, expect, mock, spyOn, test } from 'bun:test';
 import {
   MAX_RADIO_QUEUE_TRACKS,
   RadioSourceResolver,
@@ -13,6 +13,31 @@ const PLAYLIST_ID = 'PL1234567890';
 const SPOTIFY_ID = '4cOdK2wGLETKBW3PvgPWqT';
 
 describe('radio source validation', () => {
+  test.each(['caller', 'deadline'])(
+    'bounds Spotify metadata and stops fallback after %s cancellation',
+    async reason => {
+      const caller = new AbortController();
+      const deadline = new AbortController();
+      const timeout = spyOn(AbortSignal, 'timeout').mockReturnValue(deadline.signal);
+    const fetchImpl = mock(async (_url: unknown, init?: Parameters<typeof fetch>[1]) => {
+        expect(init?.signal).not.toBe(caller.signal);
+        (reason === 'caller' ? caller : deadline).abort(new Error('metadata cancelled'));
+        init?.signal?.throwIfAborted();
+        throw new Error('expected combined abort');
+      });
+      try {
+        const resolver = new RadioSourceResolver({ fetchImpl: fetchImpl as never });
+        await expect(
+          resolver.resolve(`https://open.spotify.com/track/${SPOTIFY_ID}`, caller.signal)
+        ).rejects.toThrow('metadata cancelled');
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+        expect(timeout).toHaveBeenCalledWith(10_000);
+      } finally {
+        timeout.mockRestore();
+      }
+    }
+  );
+
   test.each([
     [`https://www.youtube.com/watch?v=${VIDEO_ID}`, 'video'],
     [`https://youtu.be/${VIDEO_ID}`, 'video'],

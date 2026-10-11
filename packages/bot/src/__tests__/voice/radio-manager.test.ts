@@ -166,6 +166,59 @@ function createHarness({
 }
 
 describe('RadioManager', () => {
+  test('skip advances even when repeat-one is selected', async () => {
+    const harness = createHarness({
+      sourceResults: new Map([['playlist', resolution(track('first'), track('second'))]])
+    });
+    await harness.manager.play(
+      harness.makeInteraction() as never,
+      'playlist',
+      harness.channel as never
+    );
+    const queue = harness.manager.getQueue('guild')!;
+    queue.repeatMode = 1;
+    await harness.manager.handleButtonInteraction(harness.makeButton('radio:skip') as never);
+    await (harness.manager as any).handleTrackEnd(queue);
+    expect(queue.currentIndex).toBe(1);
+    await harness.manager.stopAll();
+  });
+
+  test('replays an idle event received while the previous advance refreshes its message', async () => {
+    const harness = createHarness({
+      sourceResults: new Map([
+        ['playlist', resolution(track('first'), track('second'), track('third'))]
+      ])
+    });
+    await harness.manager.play(
+      harness.makeInteraction() as never,
+      'playlist',
+      harness.channel as never
+    );
+    const queue = harness.manager.getQueue('guild')!;
+    let entered!: () => void;
+    const editing = new Promise<void>(resolve => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const held = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    harness.message.edit.mockImplementationOnce(async () => {
+      entered();
+      await held;
+      return harness.message;
+    });
+    const advancing = (harness.manager as any).handleTrackEnd(queue);
+    await editing;
+    harness.player.state = { status: AudioPlayerStatus.Idle };
+    harness.player.emit(AudioPlayerStatus.Idle);
+    release();
+    await advancing;
+    expect(queue.currentIndex).toBe(2);
+    expect(harness.source.preparePlayback).toHaveBeenCalledTimes(3);
+    await harness.manager.stopAll();
+  });
+
   test('prepares audio before joining voice and commits a persistent queue', async () => {
     const harness = createHarness();
     const interaction = harness.makeInteraction();

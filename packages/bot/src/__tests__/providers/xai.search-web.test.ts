@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { XAIProvider } from '../../providers/xai';
 
 type FetchInit = Parameters<typeof globalThis.fetch>[1];
@@ -11,6 +11,37 @@ function jsonResponse(payload: unknown, status = 200): Response {
 }
 
 describe('XAIProvider.searchWeb', () => {
+  test.each(['search', 'image'])(
+    'preserves the %s deadline with a supplied cancellation signal',
+    async kind => {
+      const caller = new AbortController();
+      const deadline = new AbortController();
+      let signal: AbortSignal | undefined;
+      const timeout = spyOn(AbortSignal, 'timeout').mockReturnValue(deadline.signal);
+      const previous = globalThis.fetch;
+      globalThis.fetch = mock(async (_input: unknown, init?: FetchInit) => {
+        signal = init?.signal ?? undefined;
+        return jsonResponse(
+          kind === 'image'
+            ? { data: [{ url: 'https://example.com/image.png' }] }
+            : { output_text: 'answer', model: 'test' }
+        );
+      }) as unknown as typeof fetch;
+      try {
+        const provider = new XAIProvider('test');
+        if (kind === 'image') await provider.generateImage('scene', { signal: caller.signal });
+        else await provider.searchWeb('query', { signal: caller.signal });
+        expect(timeout).toHaveBeenCalledWith(kind === 'image' ? 180_000 : 30_000);
+        expect(signal).not.toBe(caller.signal);
+        deadline.abort();
+        expect(signal?.aborted).toBe(true);
+      } finally {
+        globalThis.fetch = previous;
+        timeout.mockRestore();
+      }
+    }
+  );
+
   let originalFetch: typeof globalThis.fetch;
 
   beforeEach(() => {

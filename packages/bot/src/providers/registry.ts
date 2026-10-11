@@ -86,8 +86,7 @@ export class ProviderRegistry {
     const options: TextGenerationOptions = {
       model: route?.model || persona?.textModel || this.getConfiguredTextModel(provider.name),
       ...(route?.maxTokens ? { maxTokens: route.maxTokens } : {}),
-      ...(route?.effort ? { reasoning: { effort: route.effort } } : {}),
-      signal: AbortSignal.timeout(60_000)
+      ...(route?.effort ? { reasoning: { effort: route.effort } } : {})
     };
     const fallbackRoute =
       workload === 'routine' || workload === 'analysis'
@@ -107,7 +106,14 @@ export class ProviderRegistry {
         capabilities: provider.capabilities,
         isConfigured: () => provider.isConfigured(),
         generateText: async (messages, supplied = {}) => {
-          const request = { ...options, ...supplied };
+          const request = {
+            ...options,
+            ...supplied,
+            signal: AbortSignal.any([
+              AbortSignal.timeout(60_000),
+              ...(supplied.signal ? [supplied.signal] : [])
+            ])
+          };
           const generationSequence = ++generationIndex;
           const attempt = async (
             target: TextProvider,

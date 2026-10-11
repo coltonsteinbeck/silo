@@ -23,6 +23,19 @@ function setup(approve = async () => true) {
 }
 
 describe('Realtime GA session', () => {
+  test.each(['stale', 'empty'])('deletes %s unapproved input from provider history', async kind => {
+    const { session, internal, sent, event } = setup();
+    internal.latestInputItemId = 'current';
+    const id = kind === 'stale' ? 'previous' : 'current';
+    event({
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: id,
+      transcript: kind === 'empty' ? '' : 'old utterance'
+    });
+    expect(sent.at(-1)).toEqual({ type: 'conversation.item.delete', item_id: id });
+    await session.disconnect();
+  });
+
   test('delivers trailing silence when Discord ends a captured utterance', async () => {
     const { session, internal, sent } = setup();
     const stream = new PassThrough();

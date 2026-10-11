@@ -121,6 +121,7 @@ const stableFailureCode = (error: unknown): string => {
 
 export class RadioManager {
   private readonly queues = new Map<string, RadioQueue>();
+  private readonly idleDuringAdvance = new WeakSet<RadioQueue>();
   private readonly mutationLanes = new Map<string, Promise<unknown>>();
   private readonly pendingStartups = new Map<string, PendingStartup>();
   private readonly pendingSourceResolutions = new Set<AbortController>();
@@ -851,7 +852,10 @@ export class RadioManager {
   }
 
   private async handleTrackEnd(queue: RadioQueue): Promise<void> {
-    if (queue.isAdvancing) return;
+    if (queue.isAdvancing) {
+      this.idleDuringAdvance.add(queue);
+      return;
+    }
     queue.isAdvancing = true;
     let resolveAdvance!: () => void;
     const completion = new Promise<void>(resolve => {
@@ -888,6 +892,15 @@ export class RadioManager {
       queue.isAdvancing = false;
       if (queue.advanceCompletion === completion) queue.advanceCompletion = null;
       resolveAdvance();
+      if (
+        this.idleDuringAdvance.delete(queue) &&
+        this.queues.get(queue.guildId) === queue &&
+        !queue.stopRequested &&
+        !queue.isFinished &&
+        queue.player.state.status === AudioPlayerStatus.Idle
+      ) {
+        await this.handleTrackEnd(queue);
+      }
     }
   }
 
@@ -1091,6 +1104,7 @@ export class RadioManager {
             case 'skip':
               if (queue.currentIndex < queue.songs.length - 1) {
                 queue.mutationGeneration += 1;
+                queue.pendingTrackIndex = queue.currentIndex + 1;
                 queue.player.stop();
                 return undefined;
               }

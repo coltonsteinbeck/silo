@@ -424,12 +424,17 @@ export class RadioSourceResolver {
 
     const canonicalSpotifyUrl = `https://open.spotify.com/track/${spotify.id}`;
     const oEmbedUrl = `https://open.spotify.com/oembed?url=${encodeURIComponent(canonicalSpotifyUrl)}`;
+    const metadataSignal = AbortSignal.any([
+      AbortSignal.timeout(10_000),
+      ...(signal ? [signal] : [])
+    ]);
+    metadataSignal.throwIfAborted();
     let title = '';
     let artist = '';
     let thumbnail: string | null = null;
 
     try {
-      const response = await this.dependencies.fetchImpl(oEmbedUrl, { signal });
+      const response = await this.dependencies.fetchImpl(oEmbedUrl, { signal: metadataSignal });
       if (response.ok) {
         const data = (await response.json()) as { title?: unknown; thumbnail_url?: unknown };
         const rawTitle = cleanText(data.title, '');
@@ -443,13 +448,14 @@ export class RadioSourceResolver {
         }
       }
     } catch {
+      metadataSignal.throwIfAborted();
       logger.warn('[RadioSourceResolver] Spotify oEmbed lookup failed');
     }
 
     if (!artist || !title) {
       try {
         const response = await this.dependencies.fetchImpl(canonicalSpotifyUrl, {
-          signal,
+          signal: metadataSignal,
           headers: { 'User-Agent': 'Mozilla/5.0 SiloRadio/1.0' }
         });
         if (response.ok) {
@@ -464,10 +470,12 @@ export class RadioSourceResolver {
           }
         }
       } catch {
+        metadataSignal.throwIfAborted();
         logger.warn('[RadioSourceResolver] Spotify page metadata fallback failed');
       }
     }
 
+    metadataSignal.throwIfAborted();
     if (!title) {
       throw new RadioError('INVALID_MEDIA_URL', 'Spotify could not provide track metadata.');
     }

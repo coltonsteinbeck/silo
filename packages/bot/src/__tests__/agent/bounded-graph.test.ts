@@ -190,6 +190,22 @@ describe('bounded agent graph', () => {
     });
   });
 
+  test('repeated deterministic clarification remains deliverable without model work', async () => {
+    const clarification = 'Which picture would you like me to draw for this request?';
+    const provider = createProvider();
+    const result = await runBoundedAgentGraph(
+      createInput(provider, {
+        intent: 'clarify',
+        clarificationReason: clarification,
+        recentAssistantMessages: [clarification],
+        latestUserText: 'Draw something'
+      })
+    );
+    expect(result.response.content).toBe(clarification);
+    expect(result.outputSafety?.quality.repetitive).toBe(false);
+    expect(provider.generateText).not.toHaveBeenCalled();
+  });
+
   test('reports repetition as a quality block without changing the safety decision', async () => {
     const repeated = 'The third egg belongs to the screaming worm council forever.';
     const provider = createProvider(repeated);

@@ -627,14 +627,14 @@ export class DrawCommand implements Command {
   }
 
   async handleButtonInteraction(interaction: ButtonInteraction): Promise<boolean> {
+    if (!interaction.customId.startsWith('draw_')) {
+      return false;
+    }
     const signal = AbortSignal.any([
       AbortSignal.timeout(180_000),
       ...(this.shutdownSignal ? [this.shutdownSignal] : [])
     ]);
     signal.throwIfAborted();
-    if (!interaction.customId.startsWith('draw_')) {
-      return false;
-    }
 
     this.cleanupSessions();
 
@@ -776,14 +776,14 @@ export class DrawCommand implements Command {
   }
 
   async handleModalSubmit(interaction: ModalSubmitInteraction): Promise<boolean> {
+    if (!interaction.customId.startsWith('draw_modal:')) {
+      return false;
+    }
     const signal = AbortSignal.any([
       AbortSignal.timeout(180_000),
       ...(this.shutdownSignal ? [this.shutdownSignal] : [])
     ]);
     signal.throwIfAborted();
-    if (!interaction.customId.startsWith('draw_modal:')) {
-      return false;
-    }
 
     this.cleanupSessions();
 

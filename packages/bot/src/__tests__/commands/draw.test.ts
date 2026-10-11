@@ -35,6 +35,28 @@ const testQuota = {
 };
 
 describe('DrawCommand', () => {
+  test('shutdown does not intercept unrelated buttons or modals', async () => {
+    const controller = new AbortController();
+    controller.abort(new Error('shutdown'));
+    const command = new DrawCommand(
+      createMockProviderRegistry() as any,
+      undefined,
+      undefined,
+      undefined,
+      controller.signal
+    );
+    expect(await command.handleButtonInteraction({ customId: 'radio_skip:guild' } as never)).toBe(
+      false
+    );
+    expect(await command.handleModalSubmit({ customId: 'other_modal:id' } as never)).toBe(false);
+    await expect(
+      command.handleButtonInteraction({ customId: 'draw_retry:id' } as never)
+    ).rejects.toThrow('shutdown');
+    await expect(command.handleModalSubmit({ customId: 'draw_modal:id' } as never)).rejects.toThrow(
+      'shutdown'
+    );
+  });
+
   let command: DrawCommand;
 
   let mockRegistry: any;

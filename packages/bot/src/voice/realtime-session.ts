@@ -273,11 +273,9 @@ export class RealtimeSession {
           logger.debug('[RealtimeSession] User transcript received', {
             characters: String(message.transcript || '').length
           });
-          if (message.transcript) {
-            this.handleVoiceTranscript(message.transcript, message.item_id).catch(error => {
-              this.handleVoiceSafetyError('Failed to handle voice transcript', error);
-            });
-          }
+          this.handleVoiceTranscript(message.transcript || '', message.item_id).catch(error => {
+            this.handleVoiceSafetyError('Failed to handle voice transcript', error);
+          });
           break;
 
         case 'error': {
@@ -435,8 +433,11 @@ export class RealtimeSession {
   }
 
   private async handleVoiceTranscript(transcript: string, itemId: string): Promise<void> {
-    if (!itemId || itemId !== this.latestInputItemId || itemId === this.lastTranscriptItemId)
+    if (!itemId || itemId === this.lastTranscriptItemId) return;
+    if (itemId !== this.latestInputItemId || !transcript.trim()) {
+      this.send({ type: 'conversation.item.delete', item_id: itemId });
       return;
+    }
     this.lastTranscriptItemId = itemId;
     const version = this.turnVersion;
     let safetyResult;

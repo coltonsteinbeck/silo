@@ -20,7 +20,7 @@ function functionBody(tag: string): string {
 
 describe('atomic quota reservation migration contract', () => {
   test('defines a constrained active ledger with minimal indexes', () => {
-    expect(normalized).toContain('CREATE TABLE public.quota_usage_reservations');
+    expect(normalized).toContain('CREATE TABLE IF NOT EXISTS public.quota_usage_reservations');
     expect(normalized).toContain("status IN ('reserved', 'attempted', 'committed', 'released')");
     expect(normalized).toContain('requested_amount > 0');
     expect(normalized).toContain('minimum_amount > 0 AND minimum_amount <= requested_amount');
@@ -32,8 +32,10 @@ describe('atomic quota reservation migration contract', () => {
     expect(normalized).toContain('AND actual_amount > 0');
     expect(normalized).toContain('reported_actual_amount INTEGER');
     expect(normalized).toContain("status <> 'committed' OR reported_actual_amount = actual_amount");
-    expect(normalized).toContain('CREATE INDEX idx_quota_usage_reservations_active_scope');
-    expect(normalized).toContain('CREATE INDEX idx_quota_usage_reservations_expiry');
+    expect(normalized).toContain(
+      'CREATE INDEX IF NOT EXISTS idx_quota_usage_reservations_active_scope'
+    );
+    expect(normalized).toContain('CREATE INDEX IF NOT EXISTS idx_quota_usage_reservations_expiry');
   });
 
   test('exposes stable reserve and lifecycle row shapes', () => {

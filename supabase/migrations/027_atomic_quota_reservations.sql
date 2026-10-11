@@ -5,7 +5,7 @@
 -- exactly once. A reservation can only be released before it is attempted.
 -- Expired attempted work is conservatively committed at the reserved amount.
 
-CREATE TABLE public.quota_usage_reservations (
+CREATE TABLE IF NOT EXISTS public.quota_usage_reservations (
   idempotency_key TEXT PRIMARY KEY,
   guild_id TEXT NOT NULL,
   user_id TEXT NOT NULL,
@@ -114,16 +114,18 @@ CREATE TABLE public.quota_usage_reservations (
 
 -- One index serves both guild and per-user active-capacity sums. Expiry gets a
 -- separate narrow index for bounded reconciliation scans.
-CREATE INDEX idx_quota_usage_reservations_active_scope
+CREATE INDEX IF NOT EXISTS idx_quota_usage_reservations_active_scope
   ON public.quota_usage_reservations (guild_id, usage_date, resource, user_id)
   WHERE status IN ('reserved', 'attempted');
 
-CREATE INDEX idx_quota_usage_reservations_expiry
+CREATE INDEX IF NOT EXISTS idx_quota_usage_reservations_expiry
   ON public.quota_usage_reservations (expires_at, idempotency_key)
   WHERE status IN ('reserved', 'attempted');
 
 ALTER TABLE public.quota_usage_reservations ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Service role full access to quota_usage_reservations"
+  ON public.quota_usage_reservations;
 CREATE POLICY "Service role full access to quota_usage_reservations"
   ON public.quota_usage_reservations
   FOR ALL

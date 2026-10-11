@@ -247,6 +247,8 @@ export class PostgresAdapter implements DatabaseAdapter {
     }
   }
 
+  // New migrations must be replay-safe: schema can exist before its ledger row.
+  // Any other SQL failure rolls back and must never be recorded as applied.
   private async runMigrations(): Promise<void> {
     let client: PoolClient | undefined;
 

@@ -1,10 +1,42 @@
-import { describe, expect, mock, test } from 'bun:test';
+import { describe, expect, mock, spyOn, test } from 'bun:test';
+import * as mediaDownload from '../../services/media-download';
 import {
   buildMediaReplyPayload,
   resolveDeliverableMediaResult
 } from '../../services/media-delivery';
 
 describe('media delivery', () => {
+  test('propagates cancellation from the guarded downloader', async () => {
+    const controller = new AbortController();
+    const download = spyOn(mediaDownload, 'downloadMedia').mockImplementation(async () => {
+      controller.abort(new Error('cancelled download'));
+      throw controller.signal.reason;
+    });
+    try {
+      await expect(
+        buildMediaReplyPayload(
+          { kind: 'image', url: 'https://cdn.example.com/image.png', prompt: 'a scene' },
+          { signal: controller.signal }
+        )
+      ).rejects.toThrow('cancelled download');
+    } finally {
+      download.mockRestore();
+    }
+  });
+
+  test('reports decoded oversize data separately from empty content', async () => {
+    const payload = await buildMediaReplyPayload(
+      {
+        kind: 'image',
+        url: `data:image/png;base64,${Buffer.from('ab').toString('base64')}`,
+        prompt: 'a scene'
+      },
+      { maxBytes: 1 }
+    );
+    expect(payload.failureReason).toBe('media exceeds size limit');
+    expect(payload.uploaded).toBe(false);
+  });
+
   test('fetches remote image URL server-side and returns an attachment without URL content', async () => {
     const fetchImpl = mock(async () => {
       return new Response(new Uint8Array([1, 2, 3]), {

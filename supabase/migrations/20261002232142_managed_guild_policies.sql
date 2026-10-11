@@ -1,7 +1,9 @@
 -- Only the schema is distributed. Policy rows are administrator-owned data migrations.
+-- Replay preserves policy rows. Rollback normally retains this additive schema;
+-- dropping it requires an administrator-reviewed backup of its policy data.
 CREATE SCHEMA IF NOT EXISTS app_private;
 REVOKE ALL ON SCHEMA app_private FROM PUBLIC;
-CREATE TABLE app_private.guild_persona_policies (
+CREATE TABLE IF NOT EXISTS app_private.guild_persona_policies (
   guild_id TEXT PRIMARY KEY CHECK (guild_id ~ '^[0-9]{15,22}$'),
   policy JSONB NOT NULL CHECK (jsonb_typeof(policy) = 'object'),
   revision TEXT NOT NULL CHECK (length(revision) BETWEEN 1 AND 100),

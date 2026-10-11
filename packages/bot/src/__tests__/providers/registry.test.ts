@@ -4,7 +4,7 @@
  * Tests provider initialization, selection, and availability checking.
  */
 
-import { describe, test, expect, mock } from 'bun:test';
+import { describe, test, expect, mock, spyOn } from 'bun:test';
 import { QuotaMiddleware } from '../../middleware/quota';
 import { ProviderRegistry, classifyTextWorkload } from '../../providers/registry';
 
@@ -379,6 +379,36 @@ describe('bounded text availability fallback', () => {
     registry.getTextProvider('xai').generateText = fallback;
     return { registry, primary, fallback };
   }
+  test('starts a fresh deadline for each invocation and composes caller cancellation', async () => {
+    const deadlines: AbortController[] = [];
+    const timeout = spyOn(AbortSignal, 'timeout').mockImplementation(() => {
+      const controller = new AbortController();
+      deadlines.push(controller);
+      return controller.signal;
+    });
+    try {
+      const { registry, primary } = setup();
+      const route = registry.getTextRoute('routine');
+      expect(deadlines).toHaveLength(0);
+      const caller = new AbortController();
+      await route.provider.generateText([], { signal: caller.signal });
+      const first = (primary.mock.calls[0] as unknown as [unknown, { signal: AbortSignal }])[1]
+        .signal;
+      expect(first).not.toBe(caller.signal);
+      caller.abort();
+      expect(first.aborted).toBe(true);
+      await route.provider.generateText([]);
+      const second = (primary.mock.calls[1] as unknown as [unknown, { signal: AbortSignal }])[1]
+        .signal;
+      expect(second).not.toBe(first);
+      expect(second.aborted).toBe(false);
+      deadlines[1]!.abort();
+      expect(second.aborted).toBe(true);
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
   test('performs one explicit fallback for an availability failure', async () => {
     const { registry, primary, fallback } = setup(
       Object.assign(new Error('Unavailable'), { status: 503 })

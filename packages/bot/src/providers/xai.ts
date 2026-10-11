@@ -214,7 +214,8 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider, 
 
   private async requestJson<T>(
     path: string,
-    init: NonNullable<Parameters<typeof fetch>[1]>
+    init: NonNullable<Parameters<typeof fetch>[1]>,
+    timeoutMs = 30_000
   ): Promise<T> {
     if (!this.apiKey) {
       throw new Error('xAI provider not configured');
@@ -222,7 +223,10 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider, 
 
     const response = await fetch(`${this.baseUrl}${path}`, {
       ...init,
-      signal: init.signal || AbortSignal.timeout(30_000),
+      signal: AbortSignal.any([
+        AbortSignal.timeout(timeoutMs),
+        ...(init.signal ? [init.signal] : [])
+      ]),
       redirect: 'error',
       headers: {
         'Content-Type': 'application/json',
@@ -312,10 +316,11 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider, 
     const response = await this.requestJson<XAIImageResponse>(
       references.length ? '/images/edits' : '/images/generations',
       {
-        signal: options?.signal || AbortSignal.timeout(180_000),
+        signal: options?.signal,
         method: 'POST',
         body: JSON.stringify(payload)
-      }
+      },
+      180_000
     );
 
     const imageEntry: XAIImageEntry | undefined =
