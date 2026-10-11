@@ -41,9 +41,7 @@ describe('PostgresAdapter migrations', () => {
       'utf8'
     );
     for (const source of [adapterSource, migrationScript]) {
-      expect(source).toContain(
-        'ALTER TABLE public.schema_migrations ENABLE ROW LEVEL SECURITY'
-      );
+      expect(source).toContain('ALTER TABLE public.schema_migrations ENABLE ROW LEVEL SECURITY');
       expect(source).toContain('REVOKE ALL ON TABLE public.schema_migrations FROM PUBLIC');
       expect(source).toContain('schema_migrations_backend_acl');
       for (const role of ['anon', 'authenticated', 'service_role', 'authenticator']) {
