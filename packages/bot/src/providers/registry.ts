@@ -80,11 +80,13 @@ export class ProviderRegistry {
     }
   ): { provider: TextProvider; options: TextGenerationOptions } {
     const roles = this.config.textRouting;
-    const usePersona = Boolean(persona?.textProvider) && workload !== 'complex';
+    const personaOptions = workload === 'complex' ? undefined : persona;
+    const usePersona = Boolean(personaOptions?.textProvider);
     const route = usePersona ? roles?.persona : roles?.[workload];
-    const provider = this.getTextProvider(route?.provider || persona?.textProvider);
+    const provider = this.getTextProvider(route?.provider || personaOptions?.textProvider);
     const options: TextGenerationOptions = {
-      model: route?.model || persona?.textModel || this.getConfiguredTextModel(provider.name),
+      model:
+        route?.model || personaOptions?.textModel || this.getConfiguredTextModel(provider.name),
       ...(route?.maxTokens ? { maxTokens: route.maxTokens } : {}),
       ...(route?.effort ? { reasoning: { effort: route.effort } } : {})
     };

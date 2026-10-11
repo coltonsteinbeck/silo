@@ -244,6 +244,43 @@ describe('ProviderRegistry', () => {
 });
 
 describe('automatic text workloads', () => {
+  test('complex defaults exclude persona routing when workload routes are absent', () => {
+    const registry = new ProviderRegistry({
+      providers: {
+        openai: { apiKey: 'test', model: 'default' },
+        xai: { apiKey: 'test', model: 'xai-default' }
+      },
+      features: { enableRAG: false }
+    } as any);
+    const persona = { textProvider: 'xai', textModel: 'persona-model' };
+    const complex = registry.getTextRoute('complex', persona);
+    expect(complex.provider.name).toBe('openai');
+    expect(complex.options.model).toBe('default');
+    const routine = registry.getTextRoute('routine', persona);
+    expect(routine.provider.name).toBe('xai');
+    expect(routine.options.model).toBe('persona-model');
+  });
+
+  test('preserves ordinary model-only persona and explicit request overrides', async () => {
+    const registry = new ProviderRegistry({
+      providers: { openai: { apiKey: 'test', model: 'default' } },
+      features: { enableRAG: false }
+    } as any);
+    expect(registry.getTextRoute('routine', { textModel: 'persona-model' }).options.model).toBe(
+      'persona-model'
+    );
+    const generate = mock(async (_messages: unknown, options: any) => ({
+      content: 'answer',
+      model: options.model
+    }));
+    registry.getTextProvider('openai').generateText = generate;
+    const complex = registry.getTextRoute('complex', { textModel: 'persona-model' });
+    expect(complex.options.model).toBe('default');
+    expect((await complex.provider.generateText([], { model: 'explicit-request' })).model).toBe(
+      'explicit-request'
+    );
+  });
+
   const route = (model: string, effort = 'none') => ({ provider: 'openai', model, effort });
   const config = {
     providers: {
