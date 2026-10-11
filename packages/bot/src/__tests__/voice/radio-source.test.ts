@@ -19,7 +19,7 @@ describe('radio source validation', () => {
       const caller = new AbortController();
       const deadline = new AbortController();
       const timeout = spyOn(AbortSignal, 'timeout').mockReturnValue(deadline.signal);
-    const fetchImpl = mock(async (_url: unknown, init?: Parameters<typeof fetch>[1]) => {
+      const fetchImpl = mock(async (_url: unknown, init?: Parameters<typeof fetch>[1]) => {
         expect(init?.signal).not.toBe(caller.signal);
         (reason === 'caller' ? caller : deadline).abort(new Error('metadata cancelled'));
         init?.signal?.throwIfAborted();
