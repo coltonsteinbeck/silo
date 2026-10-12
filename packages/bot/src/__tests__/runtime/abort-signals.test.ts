@@ -1,5 +1,5 @@
-import {describe, expect, test} from 'bun:test';
-import {combineAbortSignals} from '../../runtime/abort-signals';
+import { describe, expect, test } from 'bun:test';
+import { combineAbortSignals } from '../../runtime/abort-signals';
 
 describe('combineAbortSignals', () => {
   test('uses the required signal when no optional signal is provided', () => {
