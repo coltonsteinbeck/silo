@@ -15,6 +15,85 @@ describe('AdminAdapter cost helpers', () => {
     adapter = new AdminAdapter(pool as any);
   });
 
+  test.each([false, true])(
+    'redacts URL events before persistence (legacy schema: %s)',
+    async legacy => {
+      if (legacy) pool.query.mockRejectedValueOnce({ code: '42703' });
+      const target = new URL(
+        'https://example.com/private-key?signature=query-secret#fragment-secret'
+      );
+      target.username = 'user-secret';
+      target.password = 'password-secret';
+      await adapter.logUrlSecurityEvent({
+        guildId: 'guild-a',
+        userId: 'user-a',
+        action: 'blocked',
+        reason: 'redirect_response_blocked',
+        domain: 'example.com',
+        url: target.toString(),
+        metadata: {
+          location: '../other-key?signature=redirect-secret#fragment-secret',
+          contentLength: 42
+        }
+      });
+      expect(pool.query).toHaveBeenCalledTimes(legacy ? 2 : 1);
+      for (const call of pool.query.mock.calls) {
+        const values = call[1] as unknown[];
+        expect(values[3]).toBe('https://example.com');
+        const metadata = JSON.parse(values.at(-1) as string);
+        expect(metadata.location).toBe('https://example.com');
+        expect(metadata.contentLength).toBe(42);
+        const recorded = JSON.stringify(values);
+        for (const secret of [
+          'user-secret',
+          'password-secret',
+          'private-key',
+          'query-secret',
+          'fragment-secret',
+          'other-key',
+          'redirect-secret'
+        ])
+          expect(recorded).not.toContain(secret);
+      }
+    }
+  );
+
+  test('invalid URL events never retain raw credential-like strings', async () => {
+    await adapter.logUrlSecurityEvent({
+      guildId: 'guild-a',
+      userId: 'user-a',
+      domain: '',
+      action: 'blocked',
+      reason: 'invalid_url',
+      url: 'not-a-url-password-secret',
+      metadata: { location: 'invalid-redirect-secret' }
+    });
+    const recorded = JSON.stringify(pool.query.mock.calls);
+    expect(recorded).not.toContain('password-secret');
+    expect(recorded).not.toContain('redirect-secret');
+  });
+
+  test('feedback preserves message and optional context in the existing schema', async () => {
+    await adapter.submitFeedback({
+      guildId: 'guild-a',
+      userId: 'user-a',
+      username: 'tester',
+      feedbackType: 'general',
+      content: "A user's feedback; SELECT 1;",
+      context: 'Additional context'
+    });
+    const [sql, values] = pool.query.mock.calls[0]!;
+    expect(sql).toContain('(guild_id, user_id, feedback_type, message, metadata)');
+    expect(sql).not.toContain("A user's feedback");
+    expect(values).toEqual([
+      'guild-a',
+      'user-a',
+      'general',
+      "A user's feedback; SELECT 1;",
+      JSON.stringify({ username: 'tester', context: 'Additional context' })
+    ]);
+  });
+
   test('calculateEventCost totals token, image, and voice pricing', async () => {
     pool._setQueryResults([
       {
@@ -114,75 +193,6 @@ describe('AdminAdapter cost helpers', () => {
     const sql = (pool.query.mock.calls[0]?.[0] || '') as string;
     expect(sql).toContain('duration_ms');
     expect(sql).not.toContain('response_time_ms');
-  });
-
-  test('updateSafetyFeatures writes atomic JSONB merge update', async () => {
-    pool._setQueryResults([
-      {
-        rows: [
-          {
-            guild_id: 'guild-1',
-            default_provider: null,
-            auto_thread: false,
-            memory_retention_days: 30,
-            rate_limit_multiplier: 1,
-            features_enabled: {
-              edgyModeEnabled: true,
-              deterministicSentimentReviewEnabled: false
-            },
-            channel_configs: {},
-            created_at: new Date('2026-01-01T00:00:00Z'),
-            updated_at: new Date('2026-01-01T00:00:00Z')
-          }
-        ],
-        rowCount: 1
-      }
-    ]);
-
-    const result = await adapter.updateSafetyFeatures('guild-1', {
-      edgyModeEnabled: true,
-      deterministicSentimentReviewEnabled: false
-    });
-
-    const sql = (pool.query.mock.calls[0]?.[0] || '') as string;
-    const params = (pool.query.mock.calls[0]?.[1] || []) as unknown[];
-    expect(sql).toContain(
-      "features_enabled = COALESCE(server_config.features_enabled, '{}'::jsonb)"
-    );
-    expect(params).toEqual(['guild-1', true, false]);
-    expect(result.featuresEnabled.edgyModeEnabled).toBe(true);
-    expect(result.featuresEnabled.deterministicSentimentReviewEnabled).toBe(false);
-  });
-
-  test('updateSafetyFeatures sends null deterministic when omitted', async () => {
-    pool._setQueryResults([
-      {
-        rows: [
-          {
-            guild_id: 'guild-1',
-            default_provider: null,
-            auto_thread: false,
-            memory_retention_days: 30,
-            rate_limit_multiplier: 1,
-            features_enabled: {
-              edgyModeEnabled: false,
-              deterministicSentimentReviewEnabled: false
-            },
-            channel_configs: {},
-            created_at: new Date('2026-01-01T00:00:00Z'),
-            updated_at: new Date('2026-01-01T00:00:00Z')
-          }
-        ],
-        rowCount: 1
-      }
-    ]);
-
-    await adapter.updateSafetyFeatures('guild-1', {
-      edgyModeEnabled: false
-    });
-
-    const params = (pool.query.mock.calls[0]?.[1] || []) as unknown[];
-    expect(params).toEqual(['guild-1', false, null]);
   });
 
   test('getServerRuntimeConfig returns config and prompt state from one query', async () => {

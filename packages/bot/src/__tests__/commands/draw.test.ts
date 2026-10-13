@@ -1,3 +1,5 @@
+import { GuildMember } from 'discord.js';
+import * as mediaDownload from '../../services/media-download';
 /**
  * Tests for Draw Command
  *
@@ -5,19 +7,71 @@
  * and error handling.
  */
 
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
-import { createMockInteraction, createMockProviderRegistry } from '@silo/core/test-setup';
+import { describe, test, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import {
+  createMockInteraction as createBaseInteraction,
+  createMockProviderRegistry
+} from '@silo/core/test-setup';
 import { logger } from '@silo/core';
 import { DrawCommand } from '../../commands/draw';
 import type { PromptModerationGuard } from '../../security/command-prompt-moderation';
 
+function createMockInteraction(options?: Parameters<typeof createBaseInteraction>[0]) {
+  const interaction = createBaseInteraction(options);
+  Object.assign(interaction, {
+    id: 'interaction',
+    member: Object.assign(Object.create(GuildMember.prototype), {
+      user: interaction.user,
+      guild: { id: interaction.guildId }
+    })
+  });
+  return interaction;
+}
+const testQuota = {
+  executeReserved: async (p: any) => {
+    await p.beforeAttempt();
+    return { allowed: true, value: await p.execute(p.requestedAmount) };
+  }
+};
+
 describe('DrawCommand', () => {
+  test('shutdown does not intercept unrelated buttons or modals', async () => {
+    const controller = new AbortController();
+    controller.abort(new Error('shutdown'));
+    const command = new DrawCommand(
+      createMockProviderRegistry() as any,
+      undefined,
+      undefined,
+      undefined,
+      controller.signal
+    );
+    expect(await command.handleButtonInteraction({ customId: 'radio_skip:guild' } as never)).toBe(
+      false
+    );
+    expect(await command.handleModalSubmit({ customId: 'other_modal:id' } as never)).toBe(false);
+    await expect(
+      command.handleButtonInteraction({ customId: 'draw_retry:id' } as never)
+    ).rejects.toThrow('shutdown');
+    await expect(command.handleModalSubmit({ customId: 'draw_modal:id' } as never)).rejects.toThrow(
+      'shutdown'
+    );
+  });
+
   let command: DrawCommand;
 
   let mockRegistry: any;
   const originalFetch = globalThis.fetch;
+  let downloadSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
+    downloadSpy = spyOn(mediaDownload, 'downloadMedia').mockImplementation(async url => {
+      const response = await globalThis.fetch(url);
+      if (!response.ok) throw new Error('Download failed');
+      return {
+        bytes: Buffer.from(await response.arrayBuffer()),
+        contentType: response.headers.get('content-type') || ''
+      };
+    });
     globalThis.fetch = mock(async () => {
       return new Response(new Uint8Array([1, 2, 3]), {
         headers: {
@@ -27,10 +81,11 @@ describe('DrawCommand', () => {
       });
     }) as unknown as typeof fetch;
     mockRegistry = createMockProviderRegistry();
-    command = new DrawCommand(mockRegistry);
+    command = new DrawCommand(mockRegistry, testQuota as any);
   });
 
   afterEach(() => {
+    downloadSpy.mockRestore();
     globalThis.fetch = originalFetch;
   });
 
@@ -45,6 +100,25 @@ describe('DrawCommand', () => {
   });
 
   describe('execute', () => {
+    test.each(['gemini-3.1-flash-image-preview', 'unknown', '__proto__', 'constructor'])(
+      'rejects obsolete or forged model %s before paid work',
+      async model => {
+        const promptGuard = mock(async () => ({ allowed: true, processedPrompt: 'A sunset' }));
+        const quota = { checkQuota: mock(async () => true) };
+        command = new DrawCommand(mockRegistry, quota as any, undefined, promptGuard);
+        const interaction = createMockInteraction({ options: { prompt: 'A sunset', model } });
+        await command.execute(interaction as any);
+        expect(interaction._getReplies()).toEqual([
+          {
+            content: 'This image model is no longer available. Choose a current model from /draw.',
+            ephemeral: true
+          }
+        ]);
+        expect(promptGuard).not.toHaveBeenCalled();
+        expect(mockRegistry.getImageProvider).not.toHaveBeenCalled();
+        expect(quota.checkQuota).not.toHaveBeenCalled();
+      }
+    );
     test('defers reply before processing', async () => {
       const interaction = createMockInteraction({
         options: {
@@ -67,7 +141,7 @@ describe('DrawCommand', () => {
           logUrlSecurityEvent
         }
       };
-      command = new DrawCommand(mockRegistry, undefined, security as any);
+      command = new DrawCommand(mockRegistry, testQuota as any, security as any);
 
       const interaction = createMockInteraction({
         options: {
@@ -240,7 +314,7 @@ describe('DrawCommand', () => {
         userMessage: '⚠️ Prompt blocked by content policy. Please rephrase with safer wording.'
       }));
 
-      command = new DrawCommand(mockRegistry, undefined, undefined, blockedGuard as any);
+      command = new DrawCommand(mockRegistry, testQuota as any, undefined, blockedGuard as any);
 
       const interaction = createMockInteraction({
         options: {
@@ -269,7 +343,7 @@ describe('DrawCommand', () => {
         processedPrompt: 'sanitized text'
       })) as unknown as PromptModerationGuard;
 
-      command = new DrawCommand(mockRegistry, undefined, undefined, promptGuard);
+      command = new DrawCommand(mockRegistry, testQuota as any, undefined, promptGuard);
 
       const interaction = createMockInteraction({
         options: {
@@ -299,7 +373,7 @@ describe('DrawCommand', () => {
         throw new Error('moderation backend unavailable');
       }) as unknown as PromptModerationGuard;
 
-      command = new DrawCommand(mockRegistry, undefined, undefined, throwingGuard);
+      command = new DrawCommand(mockRegistry, testQuota as any, undefined, throwingGuard);
 
       const interaction = createMockInteraction({
         options: {
@@ -395,7 +469,7 @@ describe('DrawCommand', () => {
   });
 
   describe('handleModalSubmit', () => {
-    test('continues when original message edit fails and logs warning context', async () => {
+    test('reports failure when original message edit fails and logs warning context', async () => {
       const sessionId = 'session-1';
       const messageId = 'message-1';
       const editError = new Error('message no longer editable');
@@ -461,7 +535,7 @@ describe('DrawCommand', () => {
         });
 
         expect(interaction.editReply).toHaveBeenCalledWith({
-          content: 'Image updated successfully.'
+          content: expect.stringContaining('Image edit failed:')
         });
       } finally {
         (logger as any).warn = originalWarn;

@@ -21,6 +21,11 @@ describe('shutdownApplication', () => {
     const destroy = mock(() => {});
     const disconnect = mock(async () => {});
     const releaseProcessLock = mock(() => {});
+    const releaseRuntimeLease = mock(async () => {
+      expect(destroy).toHaveBeenCalledTimes(1);
+      expect(disconnect).toHaveBeenCalledTimes(1);
+    });
+    const stopRadio = mock(async () => {});
     const exit = mock((() => undefined) as (code?: number) => never);
 
     await shutdownApplication({
@@ -29,16 +34,20 @@ describe('shutdownApplication', () => {
       db: { disconnect } as never,
       healthServer: { stop } as never,
       releaseProcessLock,
+      releaseRuntimeLease,
       shutdownTracing,
+      stopRadio,
       log: createLogger(),
       exit
     });
 
     expect(shutdownTracing).toHaveBeenCalledTimes(1);
     expect(stop).toHaveBeenCalledTimes(1);
+    expect(stopRadio).toHaveBeenCalledTimes(1);
     expect(destroy).toHaveBeenCalledTimes(1);
     expect(disconnect).toHaveBeenCalledTimes(1);
     expect(releaseProcessLock).toHaveBeenCalledTimes(1);
+    expect(releaseRuntimeLease).toHaveBeenCalledTimes(1);
     expect(exit).toHaveBeenCalledWith(0);
   });
 });

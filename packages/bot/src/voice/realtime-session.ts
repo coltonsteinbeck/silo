@@ -1,4 +1,5 @@
 import WebSocket from 'ws';
+import type { SessionUpdateEvent } from 'openai/resources/realtime/realtime';
 import {
   createAudioPlayer,
   createAudioResource,
@@ -8,19 +9,29 @@ import {
 } from '@discordjs/voice';
 import type { VoiceConnection } from '@discordjs/voice';
 import { Readable } from 'stream';
+import { randomUUID } from 'node:crypto';
 import { OpusEncoder } from 'mediaplex';
 import { logger } from '@silo/core';
 import { buildPromptSafetyWarningMessage, evaluatePromptSafety } from '../security/prompt-safety';
 
-const REALTIME_API_URL = 'wss://api.openai.com/v1/realtime?model=gpt-4o-mini-realtime-preview';
+import { evaluateSafetyDecision } from '../security/safety-decision';
+import { resolveManagedGuildPersonaPolicy } from '../security/guild-persona-policy';
+import { composeSystemPromptWithSafety } from '../security/safety-policy';
+import { VoiceOutputGate } from './output-gate';
+import { withLangfuseRootTrace, type TraceMetadata } from '../telemetry/langfuse-client';
+
+const REALTIME_API_URL = 'wss://api.openai.com/v1/realtime';
+const INPUT_SILENCE_MS = 500;
 
 interface RealtimeSessionOptions {
+  guildId?: string;
   onAudioResponse?: (audio: Buffer) => void;
   onTranscript?: (text: string, isFinal: boolean) => void;
   onError?: (error: Error) => void;
   onClose?: () => void;
   voice?: string;
   instructions?: string;
+  assistantSafetyPolicy?: 'standard' | 'contextual_banter';
 }
 
 interface AudioChunk {
@@ -43,8 +54,19 @@ export class RealtimeSession {
   private connection: VoiceConnection | null = null;
   private isListening = false;
   private currentAudioStream: Readable | null = null;
-  private opusDecoder: OpusEncoder | null = null;
   private startTime: number | null = null;
+  private outputGate: VoiceOutputGate;
+  private turnVersion = 0;
+  private pendingResponseToken: string | null = null;
+  private latestInputItemId: string | null = null;
+  private lastTranscriptItemId: string | null = null;
+  private playbackItem: { id: string; startedAt: number; durationMs: number } | null = null;
+  private approvedAudioDurationMs = 0;
+  private lastResponseId: string | null = null;
+  private lastCompletedResponseId: string | null = null;
+  private speakingStart?: (id: string) => void;
+  private speakingEnd?: (id: string) => void;
+  private readonly voiceTraceId = randomUUID();
 
   constructor(apiKey: string, userId: string, options: RealtimeSessionOptions = {}) {
     this.apiKey = apiKey;
@@ -56,6 +78,25 @@ export class RealtimeSession {
       ...options
     };
 
+    this.outputGate = new VoiceOutputGate(
+      async transcript => {
+        const decision = await evaluateSafetyDecision(transcript, {
+          stage: 'assistant_output',
+          source: 'voice_output',
+          guildId: this.options.guildId,
+          userId: this.userId,
+          failurePolicy: 'fail_closed',
+          assistantSafetyPolicy: this.options.assistantSafetyPolicy
+        });
+        return decision.action === 'allow' && !decision.failed;
+      },
+      (audio, transcript) => {
+        this.approvedAudioDurationMs = audio.length / 48;
+        this.queueAudio(audio);
+        this.options.onAudioResponse?.(audio);
+        this.options.onTranscript?.(transcript, true);
+      }
+    );
     this.setupAudioPlayer();
   }
 
@@ -63,6 +104,7 @@ export class RealtimeSession {
    * Setup the audio player for playing responses
    */
   private setupAudioPlayer(): void {
+    this.audioPlayer.on(AudioPlayerStatus.Playing, () => this.traceStage('playback_started'));
     this.audioPlayer.on(AudioPlayerStatus.Idle, () => {
       this.isPlaying = false;
       this.playNextInQueue();
@@ -75,17 +117,30 @@ export class RealtimeSession {
     });
   }
 
+  private traceStage(stage: string, metadata: TraceMetadata = {}): void {
+    void withLangfuseRootTrace(
+      {
+        name: 'discord.voice',
+        sessionId: this.voiceTraceId,
+        metadata: { stage, turn: this.turnVersion, ...metadata }
+      },
+      async () => {}
+    ).catch(error => logger.warn('[RealtimeSession] Voice timing trace failed', error));
+  }
+
   /**
    * Connect to the OpenAI Realtime API
    */
   async connect(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(REALTIME_API_URL, {
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          'OpenAI-Beta': 'realtime=v1'
+      this.ws = new WebSocket(
+        `${REALTIME_API_URL}?model=${encodeURIComponent(process.env.OPENAI_REALTIME_MODEL || 'gpt-realtime')}`,
+        {
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`
+          }
         }
-      });
+      );
 
       const timeout = setTimeout(() => {
         reject(new Error('Connection timeout'));
@@ -93,13 +148,24 @@ export class RealtimeSession {
       }, 30000);
 
       this.ws.on('open', () => {
-        clearTimeout(timeout);
         this.startTime = Date.now();
         this.configureSession();
-        resolve();
       });
 
       this.ws.on('message', (data: WebSocket.RawData) => {
+        try {
+          const event = JSON.parse(data.toString());
+          if (event.type === 'session.updated') {
+            clearTimeout(timeout);
+            resolve();
+          }
+          if (event.type === 'error') {
+            clearTimeout(timeout);
+            reject(new Error('Voice session configuration failed'));
+          }
+        } catch {
+          /* The event handler rejects malformed input separately. */
+        }
         this.handleMessage(data);
       });
 
@@ -112,6 +178,10 @@ export class RealtimeSession {
 
       this.ws.on('close', () => {
         clearTimeout(timeout);
+        this.outputGate.cancel();
+        this.stopListening();
+        this.audioPlayer.stop();
+        reject(new Error('Voice connection closed before readiness'));
         this.options.onClose?.();
       });
     });
@@ -124,23 +194,27 @@ export class RealtimeSession {
     this.send({
       type: 'session.update',
       session: {
-        modalities: ['text', 'audio'],
+        type: 'realtime',
+        output_modalities: ['audio'],
         instructions: this.options.instructions,
-        voice: this.options.voice,
-        input_audio_format: 'pcm16',
-        output_audio_format: 'pcm16',
-        input_audio_transcription: {
-          model: 'whisper-1'
-        },
-        turn_detection: {
-          type: 'server_vad',
-          threshold: 0.5,
-          prefix_padding_ms: 300,
-          silence_duration_ms: 500,
-          create_response: false
+        max_output_tokens: 1024,
+        audio: {
+          input: {
+            format: { type: 'audio/pcm', rate: 24000 },
+            transcription: { model: process.env.OPENAI_TRANSCRIPTION_MODEL || 'whisper-1' },
+            turn_detection: {
+              type: 'server_vad',
+              threshold: 0.5,
+              prefix_padding_ms: 300,
+              silence_duration_ms: INPUT_SILENCE_MS,
+              create_response: false,
+              interrupt_response: false
+            }
+          },
+          output: { format: { type: 'audio/pcm', rate: 24000 }, voice: this.options.voice }
         }
       }
-    });
+    } satisfies SessionUpdateEvent);
   }
 
   /**
@@ -156,48 +230,52 @@ export class RealtimeSession {
           // Session is ready
           break;
 
-        case 'response.audio.delta':
-          // Received audio chunk
-          if (message.delta) {
-            const audioBuffer = Buffer.from(message.delta, 'base64');
-            this.queueAudio(audioBuffer);
-            this.options.onAudioResponse?.(audioBuffer);
+        case 'response.created':
+          if (message.response?.id === this.lastResponseId) break;
+          this.lastResponseId = message.response?.id || null;
+          if (
+            !this.pendingResponseToken ||
+            message.response?.metadata?.turn_id !== this.pendingResponseToken
+          ) {
+            this.send({ type: 'response.cancel', response_id: message.response?.id });
+          } else {
+            this.outputGate.start(message.response.id);
           }
           break;
 
-        case 'response.audio_transcript.delta':
-          // Partial transcript of AI response
-          if (message.delta) {
-            this.options.onTranscript?.(message.delta, false);
-          }
+        case 'response.output_audio.delta':
+          if (message.delta)
+            this.outputGate.append(message.response_id, Buffer.from(message.delta, 'base64'));
           break;
 
-        case 'response.audio_transcript.done':
-          // Final transcript of AI response
-          if (message.transcript) {
-            this.options.onTranscript?.(message.transcript, true);
-          }
+        case 'response.done':
+          this.finishVoiceResponse(message.response).catch(error =>
+            this.handleVoiceSafetyError('Voice output failed', error)
+          );
           break;
 
         case 'input_audio_buffer.speech_started':
+          this.traceStage('speech_started');
           // User started speaking - interrupt any playing audio
           this.interruptPlayback();
+          this.latestInputItemId = message.item_id || null;
           break;
 
         case 'input_audio_buffer.speech_stopped':
-          // User stopped speaking
+          this.traceStage('speech_stopped');
           break;
 
         case 'conversation.item.input_audio_transcription.completed':
+          this.traceStage('transcription_completed', {
+            characters: String(message.transcript || '').length
+          });
           // Transcription of user's speech is complete
           logger.debug('[RealtimeSession] User transcript received', {
             characters: String(message.transcript || '').length
           });
-          if (message.transcript) {
-            this.handleVoiceTranscript(message.transcript).catch(error => {
-              this.handleVoiceSafetyError('Failed to handle voice transcript', error);
-            });
-          }
+          this.handleVoiceTranscript(message.transcript || '', message.item_id).catch(error => {
+            this.handleVoiceSafetyError('Failed to handle voice transcript', error);
+          });
           break;
 
         case 'error': {
@@ -267,48 +345,75 @@ export class RealtimeSession {
    * Used when the bot first joins a voice channel
    */
   sendGreeting(greeting?: string): void {
-    const defaultGreeting =
-      'Introduce yourself briefly and explain that you can answer questions, help with tasks, and have natural conversations. Keep it under 15 seconds.';
+    this.sendText(
+      greeting ||
+        'Introduce yourself briefly and explain that you can answer questions. Keep it under 15 seconds.'
+    );
+  }
 
-    // Create a system-like instruction for the greeting
+  private requestResponse(): void {
+    this.pendingResponseToken = String(++this.turnVersion);
+    this.traceStage('response_requested');
     this.send({
-      type: 'conversation.item.create',
-      item: {
-        type: 'message',
-        role: 'user',
-        content: [
-          {
-            type: 'input_text',
-            text: greeting || defaultGreeting
-          }
-        ]
-      }
-    });
-
-    // Trigger the greeting response
-    this.send({
-      type: 'response.create'
+      type: 'response.create',
+      response: { metadata: { turn_id: this.pendingResponseToken } }
     });
   }
 
+  private async finishVoiceResponse(response: {
+    id?: string;
+    status?: string;
+    output?: Array<{ id?: string; type?: string; content?: Array<{ transcript?: string }> }>;
+  }): Promise<void> {
+    if (!response.id || response.id === this.lastCompletedResponseId) return;
+    this.lastCompletedResponseId = response.id;
+    this.traceStage('response_completed', { status: response.status ?? 'unknown' });
+    const items = response.output || [];
+    const transcript = items
+      .flatMap(item => item.content || [])
+      .map(part => part.transcript || '')
+      .join(' ');
+    const completed =
+      response.status === 'completed' && items.every(item => item.type === 'message');
+    const approved = await this.outputGate.finish(response.id, completed ? transcript : '');
+    this.traceStage('output_checked', { approved });
+    if (!approved) {
+      for (const item of items)
+        if (item.id) this.send({ type: 'conversation.item.delete', item_id: item.id });
+    } else if (items[0]?.id) {
+      this.playbackItem = {
+        id: items[0].id,
+        startedAt: Date.now(),
+        durationMs: this.approvedAudioDurationMs
+      };
+    }
+  }
+
   private async sendTextGuarded(text: string): Promise<void> {
+    this.interruptPlayback();
+    const version = this.turnVersion;
     let safetyResult;
 
     try {
       safetyResult = await evaluatePromptSafety(text, {
         profile: 'strict_tool_input',
         source: 'voice_text',
+        guildId: this.options.guildId,
         userId: this.userId
       });
     } catch (error) {
-      this.handleVoiceSafetyError('Voice text guardrail evaluation failed', error);
+      if (version === this.turnVersion)
+        this.handleVoiceSafetyError('Voice text guardrail evaluation failed', error);
       return;
     }
 
+    if (version !== this.turnVersion || !this.isConnected()) return;
     if (!safetyResult.allowed) {
       this.emitVoiceSafetyFallback(safetyResult.reasons, safetyResult.moderationCategories);
       return;
     }
+
+    this.refreshManagedInstructions(safetyResult.safeguardsEnabled !== false);
 
     this.send({
       type: 'conversation.item.create',
@@ -324,32 +429,44 @@ export class RealtimeSession {
       }
     });
 
-    this.send({
-      type: 'response.create'
-    });
+    this.requestResponse();
   }
 
-  private async handleVoiceTranscript(transcript: string): Promise<void> {
+  private async handleVoiceTranscript(transcript: string, itemId: string): Promise<void> {
+    if (!itemId || itemId === this.lastTranscriptItemId) return;
+    if (itemId !== this.latestInputItemId || !transcript.trim()) {
+      this.send({ type: 'conversation.item.delete', item_id: itemId });
+      return;
+    }
+    this.lastTranscriptItemId = itemId;
+    const version = this.turnVersion;
     let safetyResult;
 
     try {
       safetyResult = await evaluatePromptSafety(transcript, {
         profile: 'strict_tool_input',
         source: 'voice_transcript',
+        guildId: this.options.guildId,
         userId: this.userId
       });
     } catch (error) {
-      this.handleVoiceSafetyError('Voice transcript guardrail evaluation failed', error);
+      this.send({ type: 'conversation.item.delete', item_id: itemId });
+      if (version === this.turnVersion)
+        this.handleVoiceSafetyError('Voice transcript guardrail evaluation failed', error);
       return;
     }
 
+    if (version !== this.turnVersion || !this.isConnected()) {
+      this.send({ type: 'conversation.item.delete', item_id: itemId });
+      return;
+    }
     if (safetyResult.allowed) {
-      this.send({
-        type: 'response.create'
-      });
+      this.refreshManagedInstructions(safetyResult.safeguardsEnabled !== false);
+      this.requestResponse();
       return;
     }
 
+    this.send({ type: 'conversation.item.delete', item_id: itemId });
     logger.warn('[RealtimeSession] Blocked unsafe voice transcript', {
       userId: this.userId,
       reasons: safetyResult.reasons,
@@ -357,6 +474,20 @@ export class RealtimeSession {
     });
 
     this.emitVoiceSafetyFallback(safetyResult.reasons, safetyResult.moderationCategories);
+  }
+
+  private refreshManagedInstructions(safeguardsEnabled: boolean): void {
+    const policy = resolveManagedGuildPersonaPolicy(this.options.guildId);
+    if (!policy) return;
+    const instructions = composeSystemPromptWithSafety(
+      safeguardsEnabled ? policy.prompt : policy.promptWithoutContentSafeguards || policy.prompt,
+      safeguardsEnabled
+    );
+    const update: SessionUpdateEvent = {
+      type: 'session.update',
+      session: { type: 'realtime', instructions }
+    };
+    this.send({ ...update });
   }
 
   private handleVoiceSafetyError(context: string, error: unknown): void {
@@ -391,9 +522,7 @@ export class RealtimeSession {
         ]
       }
     });
-    this.send({
-      type: 'response.create'
-    });
+    this.requestResponse();
   }
 
   /**
@@ -463,6 +592,21 @@ export class RealtimeSession {
    * Interrupt current playback (e.g., when user starts speaking)
    */
   private interruptPlayback(): void {
+    this.turnVersion++;
+    this.pendingResponseToken = null;
+    this.outputGate.cancel();
+    if (this.playbackItem && this.isPlaying) {
+      this.send({
+        type: 'conversation.item.truncate',
+        item_id: this.playbackItem.id,
+        content_index: 0,
+        audio_end_ms: Math.min(
+          this.playbackItem.durationMs,
+          Math.max(0, Date.now() - this.playbackItem.startedAt)
+        )
+      });
+    }
+    this.playbackItem = null;
     this.audioQueue = [];
     if (this.isPlaying) {
       this.audioPlayer.stop();
@@ -500,26 +644,30 @@ export class RealtimeSession {
     logger.info(`[RealtimeSession] Started listening for user ${this.userId}`);
 
     // Listen for when the specific user starts speaking
-    receiver.speaking.on('start', (speakingUserId: string) => {
+    this.speakingStart = (speakingUserId: string) => {
       if (speakingUserId !== this.userId) return;
 
       logger.debug(`[RealtimeSession] User ${this.userId} started speaking`);
       this.startRecording();
-    });
+    };
+    receiver.speaking.on('start', this.speakingStart);
 
-    receiver.speaking.on('end', (speakingUserId: string) => {
+    this.speakingEnd = (speakingUserId: string) => {
       if (speakingUserId !== this.userId) return;
 
       logger.debug(`[RealtimeSession] User ${this.userId} stopped speaking`);
-      // Audio stream will end automatically due to EndBehaviorType.AfterSilence
-    });
+      // Audio stream ends automatically after silence.
+    };
+    receiver.speaking.on('end', this.speakingEnd);
+    this.traceStage('listening_started');
+    if (receiver.speaking.users.has(this.userId)) this.startRecording();
   }
 
   /**
    * Start recording audio from the user
    */
   private startRecording(): void {
-    if (!this.connection) return;
+    if (!this.connection || (this.currentAudioStream && !this.currentAudioStream.destroyed)) return;
 
     try {
       // Subscribe to the user's audio - Discord sends Opus-encoded audio at 48kHz stereo
@@ -533,18 +681,22 @@ export class RealtimeSession {
 
       // Create Opus decoder - Discord sends 48kHz stereo Opus
       // OpusEncoder has both encode() and decode() methods
-      this.opusDecoder = new OpusEncoder(48000, 2);
+      const decoder = new OpusEncoder(48000, 2);
+      let capturedBytes = 0;
+      const captureStartedAt = Date.now();
 
       audioStream.on('data', (opusPacket: Buffer) => {
         try {
-          if (!this.opusDecoder) return;
+          if (this.currentAudioStream !== audioStream) return;
 
           // Decode Opus to PCM
-          const pcmData = this.opusDecoder.decode(opusPacket);
+          const pcmData = decoder.decode(opusPacket);
           if (pcmData && pcmData.length > 0) {
             // Convert from 48kHz stereo to 24kHz mono for OpenAI
-            const convertedData = this.convertTo24kHzMono(Buffer.from(pcmData.buffer));
+            const convertedData = this.convertTo24kHzMono(Buffer.from(pcmData));
             if (convertedData && convertedData.length > 0) {
+              if (capturedBytes === 0) this.traceStage('audio_received');
+              capturedBytes += convertedData.length;
               this.sendAudio(convertedData);
             }
           }
@@ -557,10 +709,28 @@ export class RealtimeSession {
       });
 
       audioStream.on('end', () => {
+        if (this.currentAudioStream !== audioStream) return;
+        this.currentAudioStream = null;
+        // Discord stops delivering packets during pauses. Feed the provider a
+        // bounded silence tail so server VAD can commit without another utterance.
+        // Do not also commit manually: server VAD owns the input item boundary.
+        if (capturedBytes > 0 && this.isConnected()) {
+          this.sendAudio(Buffer.alloc(48 * (INPUT_SILENCE_MS + 100)));
+        }
+        this.traceStage('capture_ended', {
+          audioMs: capturedBytes / 48,
+          elapsedMs: Date.now() - captureStartedAt
+        });
         logger.debug(`[RealtimeSession] Audio stream ended for user ${this.userId}`);
       });
 
+      audioStream.on('close', () => {
+        if (this.currentAudioStream !== audioStream) return;
+        this.currentAudioStream = null;
+      });
+
       audioStream.on('error', (error: Error) => {
+        this.traceStage('capture_error');
         logger.error('[RealtimeSession] Audio stream error:', error);
       });
     } catch (error) {
@@ -596,13 +766,13 @@ export class RealtimeSession {
    */
   private stopListening(): void {
     this.isListening = false;
+    if (this.speakingStart) this.connection?.receiver.speaking.off('start', this.speakingStart);
+    if (this.speakingEnd) this.connection?.receiver.speaking.off('end', this.speakingEnd);
+    this.speakingStart = undefined;
+    this.speakingEnd = undefined;
     if (this.currentAudioStream) {
       this.currentAudioStream.destroy();
       this.currentAudioStream = null;
-    }
-    if (this.opusDecoder) {
-      // OpusEncoder is automatically garbage collected, no explicit cleanup needed
-      this.opusDecoder = null;
     }
   }
 
@@ -610,6 +780,8 @@ export class RealtimeSession {
    * Disconnect from the API and return session duration in milliseconds
    */
   async disconnect(): Promise<number> {
+    this.traceStage('disconnected');
+    this.interruptPlayback();
     this.stopListening();
     this.audioQueue = [];
     this.audioPlayer.stop();

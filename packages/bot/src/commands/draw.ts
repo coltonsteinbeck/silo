@@ -5,7 +5,6 @@ import {
   ButtonInteraction,
   ButtonStyle,
   ChatInputCommandInteraction,
-  GuildMember,
   ModalBuilder,
   ModalSubmitInteraction,
   SlashCommandBuilder,
@@ -14,6 +13,7 @@ import {
 } from 'discord.js';
 import { logger } from '@silo/core';
 import { Command } from './types';
+import { executeCommandMedia, MediaQuotaDeniedError } from './media-execution';
 import { ProviderRegistry } from '../providers/registry';
 import { QuotaMiddleware } from '../middleware/quota';
 import { AdminAdapter } from '../database/admin-adapter';
@@ -38,14 +38,6 @@ const DRAW_MODEL_CONFIG = {
   'grok-imagine-image': {
     provider: 'xai',
     maxReferences: 2,
-    supportsQuality: false,
-    supportsSize: false,
-    supportsAspectRatio: true,
-    supportsResolution: true
-  },
-  'gemini-3.1-flash-image-preview': {
-    provider: 'google',
-    maxReferences: 3,
     supportsQuality: false,
     supportsSize: false,
     supportsAspectRatio: true,
@@ -110,8 +102,7 @@ export class DrawCommand implements Command {
         .setRequired(false)
         .addChoices(
           { name: 'OpenAI GPT Image 1', value: 'gpt-image-1' },
-          { name: 'xAI Grok Imagine Image', value: 'grok-imagine-image' },
-          { name: 'Google Nano Banana', value: 'gemini-3.1-flash-image-preview' }
+          { name: 'xAI Grok Imagine Image', value: 'grok-imagine-image' }
         )
     )
     .addStringOption(option =>
@@ -140,7 +131,7 @@ export class DrawCommand implements Command {
     .addStringOption(option =>
       option
         .setName('aspect-ratio')
-        .setDescription('Aspect ratio (xAI / Google)')
+        .setDescription('Aspect ratio (xAI)')
         .setRequired(false)
         .addChoices(
           { name: '1:1', value: '1:1' },
@@ -155,7 +146,7 @@ export class DrawCommand implements Command {
     .addStringOption(option =>
       option
         .setName('resolution')
-        .setDescription('Resolution (xAI / Google)')
+        .setDescription('Resolution (xAI)')
         .setRequired(false)
         .addChoices({ name: '1K', value: '1k' }, { name: '2K', value: '2k' })
     )
@@ -173,7 +164,8 @@ export class DrawCommand implements Command {
     private registry: ProviderRegistry,
     private quotaMiddleware?: QuotaMiddleware,
     private urlSecurity?: DrawUrlSecurityOptions,
-    private promptGuard: PromptModerationGuard = moderateCommandPrompt
+    private promptGuard: PromptModerationGuard = moderateCommandPrompt,
+    private shutdownSignal?: AbortSignal
   ) {}
 
   private async logUrlScreening(
@@ -228,6 +220,7 @@ export class DrawCommand implements Command {
     error: unknown,
     context: 'generation' | 'regeneration' | 'edit'
   ): string {
+    if (error instanceof MediaQuotaDeniedError) return error.message;
     const rawMessage = error instanceof Error ? error.message : 'Unknown error';
     const lowered = rawMessage.toLowerCase();
 
@@ -238,7 +231,7 @@ export class DrawCommand implements Command {
     return `Image ${context} failed. Please try again in a moment.`;
   }
 
-  private resolveModel(raw: string | null): DrawModelName {
+  private resolveModel(raw: string | null): DrawModelName | null {
     if (!raw) {
       return 'gpt-image-1';
     }
@@ -248,11 +241,11 @@ export class DrawCommand implements Command {
       return 'gpt-image-1';
     }
 
-    if (raw in DRAW_MODEL_CONFIG) {
+    if (Object.hasOwn(DRAW_MODEL_CONFIG, raw)) {
       return raw as DrawModelName;
     }
 
-    return 'gpt-image-1';
+    return null;
   }
 
   private calculateQuotaCost(args: {
@@ -351,7 +344,10 @@ export class DrawCommand implements Command {
       resolution: string;
       references: string[];
     },
-    traceContext?: DrawTraceContext
+    traceContext: DrawTraceContext,
+    interaction: ChatInputCommandInteraction | ButtonInteraction | ModalSubmitInteraction,
+    quotaCost: number,
+    signal: AbortSignal
   ): Promise<DrawGeneration> {
     const modelConfig = DRAW_MODEL_CONFIG[session.model];
     const provider = this.registry.getImageProvider(modelConfig.provider);
@@ -359,8 +355,10 @@ export class DrawCommand implements Command {
       throw new Error('No image generation provider configured. Check your environment settings.');
     }
 
+    const requestedModel = this.registry.getConfiguredImageModel(provider.name) || session.model;
     const options = {
-      model: session.model,
+      signal,
+      model: requestedModel,
       quality: modelConfig.supportsQuality ? session.quality : undefined,
       size: modelConfig.supportsSize ? session.size : undefined,
       aspectRatio: modelConfig.supportsAspectRatio ? session.aspectRatio : undefined,
@@ -377,7 +375,7 @@ export class DrawCommand implements Command {
       messageType: traceContext?.messageType || 'slash-command',
       commandName: traceContext?.commandName || 'draw',
       provider: provider.name,
-      model: session.model,
+      model: requestedModel,
       adapter: provider.name,
       usesTools: false,
       supportsImages: true,
@@ -392,7 +390,7 @@ export class DrawCommand implements Command {
         tags: buildLangfuseTags(generationMetadataInput),
         input: {
           promptPreview: summarizeTextForTrace(session.prompt),
-          model: session.model,
+          model: requestedModel,
           referenceCount: session.references.length,
           size: options.size,
           quality: options.quality,
@@ -400,14 +398,21 @@ export class DrawCommand implements Command {
           resolution: options.resolution,
           action: options.action
         },
-        model: session.model,
+        model: requestedModel,
         metadata: buildLangfuseTraceMetadata(generationMetadataInput)
       },
       async generation => {
-        const providerResult = await provider.generateImage(session.prompt, options);
+        const providerResult = await executeCommandMedia(
+          interaction,
+          this.quotaMiddleware,
+          'images',
+          quotaCost,
+          signal,
+          () => provider.generateImage(session.prompt, options)
+        );
 
         generation?.update({
-          model: providerResult.model || session.model,
+          model: providerResult.model || requestedModel,
           output: {
             hasContent: Boolean(providerResult.url),
             revisedPromptApplied: Boolean(providerResult.revisedPrompt),
@@ -416,7 +421,7 @@ export class DrawCommand implements Command {
           },
           metadata: buildLangfuseTraceMetadata({
             ...generationMetadataInput,
-            model: providerResult.model || session.model
+            model: providerResult.model || requestedModel
           })
         });
 
@@ -424,14 +429,18 @@ export class DrawCommand implements Command {
       }
     );
 
-    const mediaReply = await buildMediaReplyPayload({
-      kind: 'image',
-      url: result.url,
-      model: result.model || session.model,
-      prompt: session.prompt,
-      revisedPrompt: result.revisedPrompt,
-      moderationPassed: result.moderationPassed
-    });
+    const mediaReply = await buildMediaReplyPayload(
+      {
+        kind: 'image',
+        url: result.url,
+        model: result.model || requestedModel,
+        prompt: session.prompt,
+        revisedPrompt: result.revisedPrompt,
+        moderationPassed: result.moderationPassed
+      },
+      { signal }
+    );
+    signal.throwIfAborted();
 
     return {
       content: mediaReply.content,
@@ -443,10 +452,22 @@ export class DrawCommand implements Command {
   }
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
+    const signal = AbortSignal.any([
+      AbortSignal.timeout(180_000),
+      ...(this.shutdownSignal ? [this.shutdownSignal] : [])
+    ]);
+    signal.throwIfAborted();
     this.cleanupSessions();
 
     const prompt = interaction.options.getString('prompt', true);
     const model = this.resolveModel(interaction.options.getString('model'));
+    if (!model) {
+      await interaction.reply({
+        content: 'This image model is no longer available. Choose a current model from /draw.',
+        ephemeral: true
+      });
+      return;
+    }
     const size = interaction.options.getString('size') || '1024x1024';
     const quality = interaction.options.getString('quality') || 'auto';
     const aspectRatio = interaction.options.getString('aspect-ratio') || '1:1';
@@ -462,9 +483,17 @@ export class DrawCommand implements Command {
         guildId: interaction.guildId,
         userId: interaction.user.id,
         command: 'draw',
-        phase: 'generate'
+        phase: 'generate',
+        signal
       });
     } catch (error) {
+      if (signal.aborted) {
+        if (!this.shutdownSignal?.aborted)
+          await interaction.editReply({
+            content: 'Image generation timed out. Please try again in a moment.'
+          });
+        return;
+      }
       logger.error('Draw prompt moderation failed', {
         guildId: interaction.guildId,
         userId: interaction.user.id,
@@ -476,6 +505,13 @@ export class DrawCommand implements Command {
       return;
     }
 
+    if (signal.aborted) {
+      if (!this.shutdownSignal?.aborted)
+        await interaction.editReply({
+          content: 'Image generation timed out. Please try again in a moment.'
+        });
+      return;
+    }
     if (!promptDecision.allowed) {
       await interaction.editReply({
         content: promptDecision.userMessage || '⚠️ Prompt blocked by content policy.'
@@ -486,6 +522,13 @@ export class DrawCommand implements Command {
     const effectivePrompt = promptDecision.processedPrompt;
 
     const referenceValidation = await this.validateReferences(references, model, interaction);
+    if (signal.aborted) {
+      if (!this.shutdownSignal?.aborted)
+        await interaction.editReply({
+          content: 'Image generation timed out. Please try again in a moment.'
+        });
+      return;
+    }
     if (!referenceValidation.valid) {
       await interaction.editReply({
         content: `Unable to process references: ${referenceValidation.reason}`
@@ -499,24 +542,6 @@ export class DrawCommand implements Command {
       resolution,
       referenceCount: references.length
     });
-
-    if (this.quotaMiddleware && interaction.guildId) {
-      const member = interaction.member as GuildMember;
-      const quotaCheck = await this.quotaMiddleware.checkQuota(
-        interaction.guildId,
-        interaction.user.id,
-        member,
-        'images',
-        quotaCost
-      );
-
-      if (!quotaCheck.allowed) {
-        await interaction.editReply({
-          content: `⚠️ ${quotaCheck.reason}`
-        });
-        return;
-      }
-    }
 
     try {
       const generation = await this.generateImage(
@@ -535,7 +560,10 @@ export class DrawCommand implements Command {
           interactionId: interaction.id,
           messageType: 'slash-command',
           commandName: 'draw'
-        }
+        },
+        interaction,
+        quotaCost,
+        signal
       );
 
       const sessionId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -578,16 +606,14 @@ export class DrawCommand implements Command {
         references,
         quotaCost
       });
-
-      if (this.quotaMiddleware && interaction.guildId) {
-        await this.quotaMiddleware.recordUsage(
-          interaction.guildId,
-          interaction.user.id,
-          'images',
-          quotaCost
-        );
-      }
     } catch (error) {
+      if (signal.aborted) {
+        if (!this.shutdownSignal?.aborted)
+          await interaction.editReply({
+            content: 'Image generation timed out. Please try again in a moment.'
+          });
+        return;
+      }
       logger.error('Draw generation failed', {
         guildId: interaction.guildId,
         userId: interaction.user.id,
@@ -604,6 +630,11 @@ export class DrawCommand implements Command {
     if (!interaction.customId.startsWith('draw_')) {
       return false;
     }
+    const signal = AbortSignal.any([
+      AbortSignal.timeout(180_000),
+      ...(this.shutdownSignal ? [this.shutdownSignal] : [])
+    ]);
+    signal.throwIfAborted();
 
     this.cleanupSessions();
 
@@ -659,34 +690,17 @@ export class DrawCommand implements Command {
         guildId: interaction.guildId,
         userId: interaction.user.id,
         command: 'draw',
-        phase: 'regenerate'
+        phase: 'regenerate',
+        signal
       });
 
+      signal.throwIfAborted();
       if (!promptDecision.allowed) {
         await interaction.followUp({
           content: promptDecision.userMessage || '⚠️ Prompt blocked by content policy.',
           ephemeral: true
         });
         return true;
-      }
-
-      if (this.quotaMiddleware && interaction.guildId) {
-        const member = interaction.member as GuildMember;
-        const quotaCheck = await this.quotaMiddleware.checkQuota(
-          interaction.guildId,
-          interaction.user.id,
-          member,
-          'images',
-          session.quotaCost
-        );
-
-        if (!quotaCheck.allowed) {
-          await interaction.followUp({
-            content: `⚠️ ${quotaCheck.reason}`,
-            ephemeral: true
-          });
-          return true;
-        }
       }
 
       const generation = await this.generateImage(
@@ -705,7 +719,10 @@ export class DrawCommand implements Command {
           interactionId: interaction.id,
           messageType: 'button-interaction',
           commandName: 'draw_regen'
-        }
+        },
+        interaction,
+        session.quotaCost,
+        signal
       );
 
       if (!generation.uploaded) {
@@ -734,16 +751,15 @@ export class DrawCommand implements Command {
       session.createdAt = Date.now();
       session.prompt = promptDecision.processedPrompt;
       this.sessions.set(session.id, session);
-
-      if (this.quotaMiddleware && interaction.guildId) {
-        await this.quotaMiddleware.recordUsage(
-          interaction.guildId,
-          interaction.user.id,
-          'images',
-          session.quotaCost
-        );
-      }
     } catch (error) {
+      if (signal.aborted) {
+        if (!this.shutdownSignal?.aborted)
+          await interaction.followUp({
+            content: 'Image regeneration timed out. Please try again in a moment.',
+            ephemeral: true
+          });
+        return true;
+      }
       logger.error('Draw regeneration failed', {
         guildId: interaction.guildId,
         userId: interaction.user.id,
@@ -763,6 +779,11 @@ export class DrawCommand implements Command {
     if (!interaction.customId.startsWith('draw_modal:')) {
       return false;
     }
+    const signal = AbortSignal.any([
+      AbortSignal.timeout(180_000),
+      ...(this.shutdownSignal ? [this.shutdownSignal] : [])
+    ]);
+    signal.throwIfAborted();
 
     this.cleanupSessions();
 
@@ -795,44 +816,25 @@ export class DrawCommand implements Command {
       return true;
     }
 
-    const promptDecision = await this.promptGuard({
-      prompt: updatedPrompt,
-      guildId: interaction.guildId,
-      userId: interaction.user.id,
-      command: 'draw',
-      phase: 'modal_edit'
-    });
-
-    if (!promptDecision.allowed) {
-      await interaction.reply({
-        content: promptDecision.userMessage || '⚠️ Prompt blocked by content policy.',
-        ephemeral: true
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const promptDecision = await this.promptGuard({
+        prompt: updatedPrompt,
+        guildId: interaction.guildId,
+        userId: interaction.user.id,
+        command: 'draw',
+        phase: 'modal_edit',
+        signal
       });
-      return true;
-    }
 
-    if (this.quotaMiddleware && interaction.guildId) {
-      const member = interaction.member as GuildMember;
-      const quotaCheck = await this.quotaMiddleware.checkQuota(
-        interaction.guildId,
-        interaction.user.id,
-        member,
-        'images',
-        session.quotaCost
-      );
-
-      if (!quotaCheck.allowed) {
-        await interaction.reply({
-          content: `⚠️ ${quotaCheck.reason}`,
-          ephemeral: true
+      signal.throwIfAborted();
+      if (!promptDecision.allowed) {
+        await interaction.editReply({
+          content: promptDecision.userMessage || '⚠️ Prompt blocked by content policy.'
         });
         return true;
       }
-    }
 
-    await interaction.deferReply({ ephemeral: true });
-
-    try {
       const generation = await this.generateImage(
         {
           prompt: promptDecision.processedPrompt,
@@ -849,7 +851,10 @@ export class DrawCommand implements Command {
           interactionId: interaction.id,
           messageType: 'button-interaction',
           commandName: 'draw_edit'
-        }
+        },
+        interaction,
+        session.quotaCost,
+        signal
       );
 
       if (!generation.uploaded) {
@@ -867,14 +872,11 @@ export class DrawCommand implements Command {
         return true;
       }
 
-      session.prompt = promptDecision.processedPrompt;
-      session.createdAt = Date.now();
-      this.sessions.set(session.id, session);
-
       const channel = interaction.channel;
       if (channel && 'messages' in channel) {
         try {
           const originalMessage = await channel.messages.fetch(session.messageId);
+          signal.throwIfAborted();
           await originalMessage.edit({
             content: generation.content ?? null,
             embeds: [],
@@ -882,25 +884,31 @@ export class DrawCommand implements Command {
             components: [this.createControls(session.id)]
           });
         } catch (error) {
-          logger.warn('Failed to edit original draw message after modal submit; continuing', {
+          signal.throwIfAborted();
+          logger.warn('Failed to edit original draw message after modal submit', {
             sessionId: session.id,
             messageId: session.messageId,
             error
           });
+          throw error;
         }
+      } else {
+        throw new Error('Original image channel is unavailable');
       }
 
-      if (this.quotaMiddleware && interaction.guildId) {
-        await this.quotaMiddleware.recordUsage(
-          interaction.guildId,
-          interaction.user.id,
-          'images',
-          session.quotaCost
-        );
-      }
-
+      signal.throwIfAborted();
+      session.prompt = promptDecision.processedPrompt;
+      session.createdAt = Date.now();
+      this.sessions.set(session.id, session);
       await interaction.editReply({ content: 'Image updated successfully.' });
     } catch (error) {
+      if (signal.aborted) {
+        if (!this.shutdownSignal?.aborted)
+          await interaction.editReply({
+            content: 'Image edit timed out. Please try again in a moment.'
+          });
+        return true;
+      }
       logger.error('Draw modal edit failed', {
         guildId: interaction.guildId,
         userId: interaction.user.id,

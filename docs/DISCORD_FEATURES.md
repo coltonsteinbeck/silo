@@ -15,7 +15,7 @@ The current message path supports natural Discord conversation through direct pr
 ingress -> input_safety -> context -> intent_routing -> tool_planning -> tool_execution -> synthesis -> output_safety -> persistence
 ```
 
-All configured text providers remain supported through the existing registry: OpenAI, Anthropic, xAI, Google, and local OpenAI-compatible endpoints. Graph v2 detects provider capabilities and enforces one tool round with explicit budgets. Provider-native OpenAI/xAI web search runs when `AGENT_SEARCH_ENABLED=true`, and explicit natural-language image/video generation runs when `AGENT_MEDIA_NL_ENABLED=true`. Dedicated `/draw` and `/video` command handlers remain supported for compatibility and precise controls.
+All configured text providers remain supported through the existing registry: OpenAI and xAI. Graph v2 detects provider capabilities and enforces one tool round with explicit budgets. Provider-native OpenAI/xAI web search runs when `AGENT_SEARCH_ENABLED=true`, and explicit natural-language image/video generation runs when `AGENT_MEDIA_NL_ENABLED=true`. Dedicated `/draw` and `/video` command handlers remain supported for compatibility and precise controls.
 
 ## Admin & Moderation Features
 
@@ -78,7 +78,7 @@ All configured text providers remain supported through the existing registry: Op
 
 ```typescript
 /channel-config set <channel> mode:<chat|support|creative>
-/channel-config set <channel> ai-provider:<openai|anthropic>
+/config view
 /channel-config set <channel> auto-thread:<true|false>
 ```
 

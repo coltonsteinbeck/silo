@@ -1,3 +1,4 @@
+import { downloadMedia } from './media-download';
 import { AttachmentBuilder } from 'discord.js';
 import type { AgentMediaResult } from '../agent/tool-executor';
 
@@ -11,6 +12,7 @@ export interface MediaReplyPayload {
 }
 
 export interface MediaDeliveryOptions {
+  signal?: AbortSignal;
   fetchImpl?: typeof fetch;
   maxBytes?: number;
   now?: () => number;
@@ -27,7 +29,7 @@ export function resolveDeliverableMediaResult(
   media: AgentMediaResult | null | undefined,
   outputBlockedBySafety: boolean
 ): AgentMediaResult | null {
-  if (outputBlockedBySafety) {
+  if (outputBlockedBySafety || media?.moderationPassed === false) {
     return null;
   }
 
@@ -72,7 +74,8 @@ function buildAttachment(
 
 function dataImageToAttachment(
   media: AgentMediaResult,
-  now: () => number
+  now: () => number,
+  maxBytes: number
 ): MediaReplyPayload | null {
   const match = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/is.exec(media.url);
   if (!match) {
@@ -90,13 +93,24 @@ function dataImageToAttachment(
     };
   }
 
-  const buffer = Buffer.from(base64Data, 'base64');
-  if (buffer.byteLength === 0) {
+  if (base64Data.length > Math.ceil(maxBytes / 3) * 4) {
     return {
       content: failureMessage(media.kind),
       files: [],
       uploaded: false,
-      failureReason: 'media data URL decoded to empty content'
+      failureReason: 'media exceeds size limit'
+    };
+  }
+  const buffer = Buffer.from(base64Data, 'base64');
+  if (buffer.byteLength === 0 || buffer.byteLength > maxBytes) {
+    return {
+      content: failureMessage(media.kind),
+      files: [],
+      uploaded: false,
+      failureReason:
+        buffer.byteLength > maxBytes
+          ? 'media exceeds size limit'
+          : 'media data URL decoded to empty content'
     };
   }
 
@@ -112,12 +126,48 @@ export async function buildMediaReplyPayload(
   media: AgentMediaResult,
   options: MediaDeliveryOptions = {}
 ): Promise<MediaReplyPayload> {
+  options.signal?.throwIfAborted();
+  if (media.moderationPassed === false) {
+    return {
+      content: 'Media generation was blocked by safety checks.',
+      files: [],
+      uploaded: false,
+      failureReason: 'provider moderation rejected media'
+    };
+  }
   const now = options.now || Date.now;
   const maxBytes = options.maxBytes || DEFAULT_INLINE_MEDIA_LIMIT_BYTES;
 
-  const dataImagePayload = dataImageToAttachment(media, now);
+  const dataImagePayload = dataImageToAttachment(media, now, maxBytes);
   if (dataImagePayload) {
     return dataImagePayload;
+  }
+
+  if (!options.fetchImpl) {
+    try {
+      const downloaded = await downloadMedia(media.url, { maxBytes, signal: options.signal });
+      if (!downloaded.contentType.startsWith(media.kind + '/'))
+        throw new Error('Unexpected media type');
+      return {
+        files: [
+          buildAttachment(
+            media,
+            downloaded.bytes,
+            inferMediaExtension(media.kind, media.url, downloaded.contentType),
+            now
+          )
+        ],
+        uploaded: true
+      };
+    } catch (error) {
+      if (options.signal?.aborted) throw error;
+      return {
+        content: failureMessage(media.kind),
+        files: [],
+        uploaded: false,
+        failureReason: 'media download rejected'
+      };
+    }
   }
 
   const fetchImpl = options.fetchImpl || globalThis.fetch;
@@ -131,7 +181,7 @@ export async function buildMediaReplyPayload(
   }
 
   try {
-    const response = await fetchImpl(media.url);
+    const response = await fetchImpl(media.url, { signal: options.signal });
     if (!response.ok) {
       return {
         content: failureMessage(media.kind),

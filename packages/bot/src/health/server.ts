@@ -23,6 +23,7 @@ interface HealthStatus {
     connected: boolean;
     responseTime?: number;
   };
+  leader: { held: boolean };
 }
 
 export class HealthServer {
@@ -45,7 +46,8 @@ export class HealthServer {
   constructor(
     private client: Client,
     private db: PostgresAdapter,
-    private port: number = 3000
+    private port: number = 3000,
+    private readonly hasLeaderLease: () => boolean = () => false
   ) {
     // Support both HEALTHCHECKS_URL and HEALTH_CHECK_SECRET for healthcheck.io URL
     this.healthchecksUrl = process.env.HEALTHCHECKS_URL || process.env.HEALTH_CHECK_SECRET || null;
@@ -141,7 +143,8 @@ export class HealthServer {
       logger.error('Database health check failed:', error);
     }
 
-    const isHealthy = discordReady && dbConnected;
+    const leaderHeld = this.hasLeaderLease();
+    const isHealthy = discordReady && dbConnected && leaderHeld;
 
     return {
       status: isHealthy ? 'healthy' : 'unhealthy',
@@ -155,7 +158,8 @@ export class HealthServer {
       database: {
         connected: dbConnected,
         responseTime: dbResponseTime
-      }
+      },
+      leader: { held: leaderHeld }
     };
   }
 

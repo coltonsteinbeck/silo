@@ -22,6 +22,15 @@ const MAX_RECURSION_DEPTH = 6;
 const SECRET_FIELD_PATTERN =
   /(api[-_]?key|secret|token|password|authorization|cookie|set-cookie|session|credential)/i;
 
+const CORRELATION_ID_FIELDS = new Set([
+  'discordGuildId',
+  'discordChannelId',
+  'discordMessageId',
+  'discordInteractionId'
+]);
+const TIMESTAMP_FIELDS = new Set(['modelCircuitContextDisabledUntil', 'promptUpdatedAt']);
+const HASH_FIELDS = new Set(['release', 'releaseCommit', 'promptHash']);
+
 type LangfuseState = {
   enabled: boolean;
   initialized: boolean;
@@ -90,11 +99,17 @@ function truncate(value: string, maxLength: number): string {
 }
 
 function sanitizeTraceString(value: string): string {
-  const compact = truncate(normalizeWhitespace(value), MAX_TRACE_TEXT_LENGTH);
-
-  return compact
+  const compact = normalizeWhitespace(value);
+  const sanitized = compact
     .replace(/\b(Bearer\s+)[A-Za-z0-9._~-]+/gi, `$1${REDACTED_VALUE}`)
     .replace(/\b(sk|pk)_[A-Za-z0-9_-]+/g, `$1_${REDACTED_VALUE}`)
+    .replace(/\b(?:sk|pk|xai)-[A-Za-z0-9_-]+\b/gi, REDACTED_VALUE)
+    .replace(/<@!?\d{15,22}>|<@&\d{15,22}>|<#\d{15,22}>/g, '[discord-id]')
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[email]')
+    .replace(/(?<![\w@])@[A-Za-z0-9._-]{2,32}\b/g, '[user-handle]')
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, '[ip-address]')
+    .replace(/(?<!\d)(?:\+?\d[\d\s().-]{7,}\d)(?!\d)/g, '[phone-or-id]')
+    .replace(/\b\d{15,22}\b/g, '[discord-id]')
     .replace(/https?:\/\/\S+/gi, rawUrl => {
       try {
         const hostname = new URL(rawUrl).hostname;
@@ -103,6 +118,8 @@ function sanitizeTraceString(value: string): string {
         return '[url]';
       }
     });
+
+  return truncate(sanitized, MAX_TRACE_TEXT_LENGTH);
 }
 
 function sanitizeTraceValue(value: unknown, depth = 0, seen = new WeakSet<object>()): unknown {
@@ -136,6 +153,14 @@ function sanitizeTraceValue(value: unknown, depth = 0, seen = new WeakSet<object
           return [key, REDACTED_VALUE];
         }
 
+        if (
+          key === 'metadata' &&
+          entryValue &&
+          typeof entryValue === 'object' &&
+          !Array.isArray(entryValue)
+        ) {
+          return [key, sanitizeMetadata(entryValue as TraceMetadata, depth + 1, seen)];
+        }
         return [key, sanitizeTraceValue(entryValue, depth + 1, seen)];
       })
     );
@@ -144,17 +169,38 @@ function sanitizeTraceValue(value: unknown, depth = 0, seen = new WeakSet<object
   return String(value);
 }
 
-function sanitizeMetadata(metadata: TraceMetadata | undefined): TraceMetadata | undefined {
+export function sanitizeMetadata(
+  metadata: TraceMetadata | undefined,
+  depth = 0,
+  seen = new WeakSet<object>()
+): TraceMetadata | undefined {
   if (!metadata) {
     return undefined;
   }
+  if (depth >= MAX_RECURSION_DEPTH || seen.has(metadata)) return undefined;
+  seen.add(metadata);
 
   const sanitizedEntries = Object.entries(metadata).flatMap(([key, value]) => {
     if (value === undefined) {
       return [];
     }
 
-    const sanitizedValue = sanitizeTraceValue(value);
+    const isCorrelationId =
+      CORRELATION_ID_FIELDS.has(key) && typeof value === 'string' && /^\d{15,22}$/.test(value);
+    const isTimestamp =
+      TIMESTAMP_FIELDS.has(key) &&
+      typeof value === 'string' &&
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value) &&
+      Number.isFinite(Date.parse(value));
+    const isHash =
+      HASH_FIELDS.has(key) &&
+      typeof value === 'string' &&
+      /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(value);
+    const sanitizedValue = SECRET_FIELD_PATTERN.test(key)
+      ? REDACTED_VALUE
+      : isCorrelationId || isTimestamp || isHash
+        ? value
+        : sanitizeTraceValue(value, depth + 1, seen);
     if (sanitizedValue === undefined) {
       return [];
     }
@@ -322,7 +368,7 @@ export async function withLangfuseSpan<T>(
   const runObservation = async (): Promise<T> =>
     startActiveObservation(options.name, async observation => {
       updateObservationIfPresent(observation, {
-        input: options.input,
+        input: sanitizeTraceValue(options.input),
         metadata: sanitizeMetadata(options.metadata),
         version: options.version
       });
@@ -349,7 +395,7 @@ export async function withLangfuseGuardrail<T>(
       options.name,
       async observation => {
         updateObservationIfPresent(observation, {
-          input: options.input,
+          input: sanitizeTraceValue(options.input),
           metadata: sanitizeMetadata(options.metadata),
           version: options.version
         });
@@ -378,7 +424,7 @@ export async function withLangfuseGeneration<T>(
       options.name,
       async observation => {
         updateObservationIfPresent(observation, {
-          input: options.input,
+          input: sanitizeTraceValue(options.input),
           model: options.model,
           modelParameters: options.modelParameters,
           metadata: sanitizeMetadata(options.metadata),

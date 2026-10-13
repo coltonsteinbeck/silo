@@ -3,7 +3,7 @@
     {
       "name": "silo",
       "script": "bun",
-      "args": "packages/bot/src/index.ts",
+      "args": "packages/bot/dist/index.js",
       "interpreter": "none",
       "instances": 1,
       "exec_mode": "fork",
@@ -27,7 +27,7 @@
       ],
       "max_memory_restart": "1G",
       "kill_timeout": 30000,
-      "shutdown_with_message": true
+      "shutdown_with_message": false
     }
   ]
 }

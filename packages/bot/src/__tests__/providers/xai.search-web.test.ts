@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { XAIProvider } from '../../providers/xai';
 
 type FetchInit = Parameters<typeof globalThis.fetch>[1];
@@ -11,6 +11,37 @@ function jsonResponse(payload: unknown, status = 200): Response {
 }
 
 describe('XAIProvider.searchWeb', () => {
+  test.each(['search', 'image'])(
+    'preserves the %s deadline with a supplied cancellation signal',
+    async kind => {
+      const caller = new AbortController();
+      const deadline = new AbortController();
+      let signal: AbortSignal | undefined;
+      const timeout = spyOn(AbortSignal, 'timeout').mockReturnValue(deadline.signal);
+      const previous = globalThis.fetch;
+      globalThis.fetch = mock(async (_input: unknown, init?: FetchInit) => {
+        signal = init?.signal ?? undefined;
+        return jsonResponse(
+          kind === 'image'
+            ? { data: [{ url: 'https://example.com/image.png' }] }
+            : { output_text: 'answer', model: 'test' }
+        );
+      }) as unknown as typeof fetch;
+      try {
+        const provider = new XAIProvider('test');
+        if (kind === 'image') await provider.generateImage('scene', { signal: caller.signal });
+        else await provider.searchWeb('query', { signal: caller.signal });
+        expect(timeout).toHaveBeenCalledWith(kind === 'image' ? 180_000 : 30_000);
+        expect(signal).not.toBe(caller.signal);
+        deadline.abort();
+        expect(signal?.aborted).toBe(true);
+      } finally {
+        globalThis.fetch = previous;
+        timeout.mockRestore();
+      }
+    }
+  );
+
   let originalFetch: typeof globalThis.fetch;
 
   beforeEach(() => {
@@ -44,10 +75,16 @@ describe('XAIProvider.searchWeb', () => {
       model: 'grok-4.20-non-reasoning',
       input: [{ role: 'user', content: 'space news' }],
       tools: [{ type: 'web_search' }],
+      max_output_tokens: 1200,
+      max_tool_calls: 2,
+      max_turns: 2,
+      store: false,
       stream: false
     });
     expect(result).toEqual({
       content: 'Fresh answer',
+      refused: false,
+      searchCalls: undefined,
       citations: [],
       model: 'grok-search',
       usage: {
@@ -110,6 +147,10 @@ describe('XAIProvider.searchWeb', () => {
       model: 'grok-search-beta',
       input: [{ role: 'user', content: 'topic' }],
       tools: [{ type: 'web_search' }],
+      max_output_tokens: 1200,
+      max_tool_calls: 2,
+      max_turns: 2,
+      store: false,
       stream: false
     });
     expect(result.content).toBe('Search summary');
@@ -129,7 +170,7 @@ describe('XAIProvider.searchWeb', () => {
     });
   });
 
-  test('throws when no answer text is returned', async () => {
+  test('retains empty answers for typed no-evidence handling', async () => {
     globalThis.fetch = mock(async () =>
       jsonResponse({
         output: [
@@ -151,8 +192,47 @@ describe('XAIProvider.searchWeb', () => {
     ) as unknown as typeof globalThis.fetch;
 
     const provider = new XAIProvider('xai-key');
-    await expect(provider.searchWeb('topic')).rejects.toThrow(
-      'xAI web search returned no answer text'
-    );
+    expect((await provider.searchWeb('topic')).content).toBe('');
+  });
+
+  test('does not report zero usage for a partial provider response', async () => {
+    globalThis.fetch = mock(async () =>
+      jsonResponse({
+        output_text: 'Answer',
+        usage: { input_tokens: 32, total_tokens: 151 }
+      })
+    ) as unknown as typeof globalThis.fetch;
+    expect((await new XAIProvider('xai-key').searchWeb('topic')).usage).toBeUndefined();
+  });
+
+  test('includes separate reasoning in legacy Responses usage without double-counting modern output', async () => {
+    const payloads = [
+      {
+        prompt_tokens: 32,
+        completion_tokens: 9,
+        total_tokens: 151,
+        completion_tokens_details: { reasoning_tokens: 110 }
+      },
+      {
+        input_tokens: 32,
+        output_tokens: 119,
+        total_tokens: 151,
+        output_tokens_details: { reasoning_tokens: 110 }
+      }
+    ];
+    globalThis.fetch = mock(async () =>
+      jsonResponse({
+        output_text: 'Answer',
+        usage: payloads.shift()
+      })
+    ) as unknown as typeof globalThis.fetch;
+    const provider = new XAIProvider('xai-key');
+    for (let i = 0; i < 2; i++) {
+      expect((await provider.searchWeb('topic')).usage).toMatchObject({
+        promptTokens: 32,
+        completionTokens: 119,
+        totalTokens: 151
+      });
+    }
   });
 });

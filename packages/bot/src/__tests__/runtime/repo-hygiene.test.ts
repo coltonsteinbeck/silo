@@ -32,6 +32,7 @@ describe('repo hygiene check', () => {
       'packages/bot/src/__tests__/fixtures/conversation-output-safety.csv',
       'docker/postgres-init/000_supabase_compat.sql',
       'supabase/migrations/001_public_schema.sql',
+      'packages/bot/src/__tests__/database/quota-role-contract.sql',
       'logs.md'
     ]);
 

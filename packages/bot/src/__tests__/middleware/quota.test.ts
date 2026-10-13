@@ -252,7 +252,7 @@ describe('QuotaMiddleware', () => {
   describe('estimateResponseTokens', () => {
     test('uses default multiplier when no accuracy data exists', async () => {
       const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
-      const estimate = await middleware.estimateResponseTokens(500);
+      const estimate = await middleware.estimateResponseTokensWithCap(500, 4000);
 
       // Default: input * 0.3 + 150 base = 500 * 0.3 + 150 = 300
       expect(estimate).toBe(300);
@@ -260,23 +260,23 @@ describe('QuotaMiddleware', () => {
 
     test('clamps estimate to minimum of 50 tokens', async () => {
       const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
-      const estimate = await middleware.estimateResponseTokens(0);
+      const estimate = await middleware.estimateResponseTokensWithCap(0, 4000);
 
       expect(estimate).toBeGreaterThanOrEqual(50);
     });
 
     test('clamps estimate to maximum of 4000 tokens', async () => {
       const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
-      const estimate = await middleware.estimateResponseTokens(100000);
+      const estimate = await middleware.estimateResponseTokensWithCap(100000, 4000);
 
       expect(estimate).toBeLessThanOrEqual(4000);
     });
 
     test('caps estimate to the configured response token ceiling', async () => {
       const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
-      const estimate = await middleware.estimateResponseTokensWithCap(5000, 180);
+      const estimate = await middleware.estimateResponseTokensWithCap(5000, 400);
 
-      expect(estimate).toBe(180);
+      expect(estimate).toBe(400);
     });
 
     test('respects a very small remaining token budget', async () => {
@@ -294,7 +294,7 @@ describe('QuotaMiddleware', () => {
       }));
 
       const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
-      const estimate = await middleware.estimateResponseTokens(500);
+      const estimate = await middleware.estimateResponseTokensWithCap(500, 4000);
 
       // With 0.5 ratio: 500 * 0.5 + 150 = 400
       expect(estimate).toBe(400);
@@ -425,47 +425,6 @@ describe('QuotaMiddleware', () => {
         'user1',
         'channel1'
       );
-    });
-  });
-
-  describe('getRemainingQuotas', () => {
-    test('returns remaining quota for all types', async () => {
-      mockAdminDb.getRoleTierQuota = mock(async () => ({
-        textTokens: 5000,
-        images: 1,
-        voiceMinutes: 0,
-        visionTokens: 1000,
-        videoTokens: 4
-      }));
-      mockAdminDb.getUserDailyUsage = mock(async () => ({
-        textTokens: 1000,
-        images: 0,
-        voiceMinutes: 0,
-        visionTokens: 0,
-        videoTokens: 1
-      }));
-
-      const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
-      const result = await middleware.getRemainingQuotas('guild1', 'user1', { id: 'user1' } as any);
-
-      expect(result.text_tokens.remaining).toBe(4000);
-      expect(result.text_tokens.max).toBe(5000);
-      expect(result.images.remaining).toBe(1);
-      expect(result.images.max).toBe(1);
-      expect(result.video_tokens.remaining).toBe(3);
-      expect(result.video_tokens.max).toBe(4);
-    });
-  });
-
-  describe('getGuildUsageSummary', () => {
-    test('returns guild usage with defaults when no data', async () => {
-      const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
-      const result = await middleware.getGuildUsageSummary('guild1');
-
-      expect(result.textTokens.used).toBe(0);
-      expect(result.textTokens.max).toBe(50000);
-      expect(result.images.used).toBe(0);
-      expect(result.images.max).toBe(5);
     });
   });
 });

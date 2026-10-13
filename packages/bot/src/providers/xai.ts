@@ -16,6 +16,7 @@ import type {
   WebSearchProvider,
   WebSearchResponse
 } from '@silo/core';
+import { normalizeTextGenerationFinishReason } from './finish-reason';
 
 interface XAIErrorResponse {
   error?: string | { message?: string };
@@ -68,6 +69,10 @@ interface XAIResponsesOutputItem {
 }
 
 interface XAIResponsesRequest {
+  max_output_tokens: number;
+  max_tool_calls: number;
+  max_turns: number;
+  store: false;
   model: string;
   input: Array<{
     role: 'user';
@@ -79,17 +84,39 @@ interface XAIResponsesRequest {
   stream: false;
 }
 
+interface XAIUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  completion_tokens_details?: { reasoning_tokens?: number | null } | null;
+}
+
+function normalizeXAIUsage(usage: XAIUsage | undefined): TextGenerationResponse['usage'] {
+  if (!usage) return undefined;
+  const promptTokens = usage.input_tokens ?? usage.prompt_tokens;
+  const completionTokens = usage.output_tokens ?? usage.completion_tokens;
+  const totalTokens = usage.total_tokens;
+  // Incomplete usage must retain the callers' conservative quota fallback.
+  if (promptTokens === undefined || completionTokens === undefined || totalTokens === undefined) {
+    return undefined;
+  }
+  // xAI's legacy completion counter excludes separately billed reasoning tokens.
+  // Responses output_tokens is already the aggregate output counter.
+  const reasoningTokens = usage.completion_tokens_details?.reasoning_tokens ?? 0;
+  return {
+    promptTokens,
+    completionTokens: usage.output_tokens ?? completionTokens + reasoningTokens,
+    totalTokens
+  };
+}
+
 interface XAIResponsesResult {
   output_text?: string;
   output?: XAIResponsesOutputItem[];
   model?: string;
-  usage?: {
-    input_tokens?: number;
-    output_tokens?: number;
-    total_tokens?: number;
-    prompt_tokens?: number;
-    completion_tokens?: number;
-  };
+  usage?: XAIUsage;
 }
 
 function assertValidXAIResponsesRequest(request: XAIResponsesRequest): void {
@@ -158,16 +185,20 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider, 
       throw new Error('xAI provider not configured');
     }
 
-    const response = await this.client.chat.completions.create({
-      model: options?.model || this.defaultModel,
-      messages: messages.map(m => ({
-        role: m.role,
-        content: m.content
-      })),
-      temperature: options?.temperature ?? 0.8,
-      max_tokens: options?.maxTokens ?? 1024,
-      stream: false
-    });
+    const response = await this.client.chat.completions.create(
+      {
+        model: options?.model || this.defaultModel,
+        messages: messages.map(m => ({
+          role: m.role,
+          content: m.content
+        })),
+        temperature: options?.temperature ?? 0.8,
+        max_tokens: options?.maxTokens ?? 1024,
+        stream: false,
+        ...(options?.reasoning?.effort ? { reasoning_effort: options.reasoning.effort } : {})
+      },
+      { signal: options?.signal, maxRetries: 0 }
+    );
 
     const choice = response.choices[0];
     if (!choice?.message?.content) {
@@ -176,20 +207,17 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider, 
 
     return {
       content: choice.message.content,
-      usage: response.usage
-        ? {
-            promptTokens: response.usage.prompt_tokens,
-            completionTokens: response.usage.completion_tokens,
-            totalTokens: response.usage.total_tokens
-          }
-        : undefined,
-      model: response.model
+      usage: normalizeXAIUsage(response.usage),
+      model: response.model,
+      finishReason: normalizeTextGenerationFinishReason(choice.finish_reason),
+      providerFinishReason: choice.finish_reason || undefined
     };
   }
 
   private async requestJson<T>(
     path: string,
-    init: NonNullable<Parameters<typeof fetch>[1]>
+    init: NonNullable<Parameters<typeof fetch>[1]>,
+    timeoutMs = 30_000
   ): Promise<T> {
     if (!this.apiKey) {
       throw new Error('xAI provider not configured');
@@ -197,6 +225,11 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider, 
 
     const response = await fetch(`${this.baseUrl}${path}`, {
       ...init,
+      signal: AbortSignal.any([
+        AbortSignal.timeout(timeoutMs),
+        ...(init.signal ? [init.signal] : [])
+      ]),
+      redirect: 'error',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${this.apiKey}`,
@@ -222,15 +255,22 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider, 
       if (typeof parsedError === 'string') {
         const lowered = parsedError.toLowerCase();
         if (lowered.includes('content moderation') || lowered.includes('moderation')) {
-          throw new Error(
-            'xAI rejected this image request due to content moderation. Try a safer, less explicit prompt or edit instruction.'
+          throw Object.assign(
+            new Error(
+              'xAI rejected this image request due to content moderation. Try a safer, less explicit prompt or edit instruction.'
+            ),
+            { status: response.status, refused: true }
           );
         }
 
-        throw new Error(`xAI API error (${response.status}): ${parsedError}`);
+        throw Object.assign(new Error(`xAI API error (${response.status}): ${parsedError}`), {
+          status: response.status
+        });
       }
 
-      throw new Error(`xAI API error (${response.status}): ${body.slice(0, 300)}`);
+      throw Object.assign(new Error(`xAI API error (${response.status}): ${body.slice(0, 300)}`), {
+        status: response.status
+      });
     }
 
     return (await response.json()) as T;
@@ -246,19 +286,20 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider, 
     options?: ImageGenerationOptions
   ): Promise<ImageGenerationResponse> {
     const references = options?.referenceImages || [];
+    if (references.length > 5) throw new Error('Too many reference images');
 
     const payload: {
       model: string;
       prompt: string;
-      image_format: 'url';
+      response_format: 'url';
       aspect_ratio?: string;
       resolution?: string;
-      image_url?: string;
-      image_urls?: string[];
+      image?: { url: string; type: 'image_url' };
+      images?: Array<{ url: string; type: 'image_url' }>;
     } = {
       model: options?.model || this.defaultImageModel,
       prompt,
-      image_format: 'url'
+      response_format: 'url'
     };
 
     if (options?.aspectRatio) {
@@ -269,15 +310,20 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider, 
     }
 
     if (references.length === 1) {
-      payload.image_url = references[0];
+      payload.image = { url: references[0]!, type: 'image_url' };
     } else if (references.length > 1) {
-      payload.image_urls = references;
+      payload.images = references.map(url => ({ url, type: 'image_url' }));
     }
 
-    const response = await this.requestJson<XAIImageResponse>('/images/generations', {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    });
+    const response = await this.requestJson<XAIImageResponse>(
+      references.length ? '/images/edits' : '/images/generations',
+      {
+        signal: options?.signal,
+        method: 'POST',
+        body: JSON.stringify(payload)
+      },
+      180_000
+    );
 
     const imageEntry: XAIImageEntry | undefined =
       response.data?.[0] || response.images?.[0] || response.image;
@@ -299,14 +345,18 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider, 
     prompt: string,
     options?: VideoGenerationOptions
   ): Promise<VideoGenerationResponse> {
+    const signal = AbortSignal.any([
+      AbortSignal.timeout(12 * 60 * 1000),
+      ...(options?.signal ? [options.signal] : [])
+    ]);
     const payload: {
       model: string;
       prompt: string;
       duration: number;
       aspect_ratio?: string;
       resolution?: string;
-      image_url?: string;
-      reference_image_urls?: string[];
+      image?: { url: string };
+      reference_images?: Array<{ url: string }>;
     } = {
       model: options?.model || this.defaultVideoModel,
       prompt,
@@ -322,12 +372,13 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider, 
 
     const references = options?.referenceImages || [];
     if (references.length === 1) {
-      payload.image_url = references[0];
+      payload.image = { url: references[0]! };
     } else if (references.length > 1) {
-      payload.reference_image_urls = references;
+      payload.reference_images = references.map(url => ({ url }));
     }
 
     const start = await this.requestJson<{ request_id?: string }>('/videos/generations', {
+      signal,
       method: 'POST',
       body: JSON.stringify(payload)
     });
@@ -345,6 +396,7 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider, 
       const status = await this.requestJson<XAIVideoStatusResponse>(
         `/videos/${encodeURIComponent(requestId)}`,
         {
+          signal,
           method: 'GET'
         }
       );
@@ -374,23 +426,40 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider, 
         throw new Error('xAI video generation request expired');
       }
 
-      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+      await new Promise<void>((resolve, reject) => {
+        const cancel = () => {
+          clearTimeout(timer);
+          reject(signal.reason);
+        };
+        const timer = setTimeout(() => {
+          signal.removeEventListener('abort', cancel);
+          resolve();
+        }, pollIntervalMs);
+        signal.addEventListener('abort', cancel, { once: true });
+        if (signal.aborted) cancel();
+      });
     }
 
     throw new Error('xAI video generation timed out');
   }
 
   async searchWeb(query: string, options?: WebSearchOptions): Promise<WebSearchResponse> {
+    options?.signal?.throwIfAborted();
     const request: XAIResponsesRequest = {
       model: options?.model?.trim() || this.defaultModel,
       input: [{ role: 'user', content: query }],
       tools: [{ type: 'web_search' }],
+      max_output_tokens: 1200,
+      max_tool_calls: 2,
+      max_turns: 2,
+      store: false,
       stream: false
     };
 
     assertValidXAIResponsesRequest(request);
 
     const response = await this.requestJson<XAIResponsesResult>('/responses', {
+      signal: options?.signal,
       method: 'POST',
       body: JSON.stringify(request)
     });
@@ -415,21 +484,15 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider, 
         endIndex: annotation.end_index
       }));
 
-    if (!outputText) {
-      throw new Error('xAI web search returned no answer text');
-    }
-
     return {
       content: outputText,
+      refused: (response.output || []).some(item =>
+        (item.content || []).some(content => content.type === 'refusal')
+      ),
+      searchCalls: response.output?.filter(item => item.type === 'web_search_call').length,
       citations,
       model: response.model || options?.model || this.defaultModel,
-      usage: response.usage
-        ? {
-            promptTokens: response.usage.input_tokens || response.usage.prompt_tokens || 0,
-            completionTokens: response.usage.output_tokens || response.usage.completion_tokens || 0,
-            totalTokens: response.usage.total_tokens || 0
-          }
-        : undefined
+      usage: normalizeXAIUsage(response.usage)
     };
   }
 
@@ -473,13 +536,7 @@ export class XAIProvider implements TextProvider, ImageProvider, VideoProvider, 
 
     return {
       content: choice.message.content,
-      usage: response.usage
-        ? {
-            promptTokens: response.usage.prompt_tokens,
-            completionTokens: response.usage.completion_tokens,
-            totalTokens: response.usage.total_tokens
-          }
-        : undefined
+      usage: normalizeXAIUsage(response.usage)
     };
   }
 }

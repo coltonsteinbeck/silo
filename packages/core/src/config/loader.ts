@@ -178,6 +178,15 @@ function buildDatabaseUrl(): string {
   return 'postgresql://silo:silo_dev@localhost:5432/silo';
 }
 
+function loadTextRouting(): unknown {
+  if (!process.env.TEXT_MODEL_ROLES) return undefined;
+  try {
+    return JSON.parse(process.env.TEXT_MODEL_ROLES);
+  } catch {
+    throw new Error('TEXT_MODEL_ROLES must be a valid JSON object');
+  }
+}
+
 export class ConfigLoader {
   static load(): Config {
     loadEnvFileIfNeeded();
@@ -202,14 +211,8 @@ export class ConfigLoader {
         openai: process.env.OPENAI_API_KEY
           ? {
               apiKey: process.env.OPENAI_API_KEY,
-              model: process.env.OPENAI_MODEL || 'gpt-5.4-nano',
+              model: process.env.OPENAI_MODEL || 'gpt-6-luna',
               imageModel: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-1'
-            }
-          : undefined,
-        anthropic: process.env.ANTHROPIC_API_KEY
-          ? {
-              apiKey: process.env.ANTHROPIC_API_KEY,
-              model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6'
             }
           : undefined,
         xai: process.env.XAI_API_KEY
@@ -219,22 +222,9 @@ export class ConfigLoader {
               imageModel: process.env.XAI_IMAGE_MODEL || 'grok-imagine-image',
               videoModel: process.env.XAI_VIDEO_MODEL || 'grok-imagine-video'
             }
-          : undefined,
-        local:
-          process.env.LOCAL_API_KEY || process.env.LOCAL_MODEL || process.env.LOCAL_BASE_URL
-            ? {
-                apiKey: process.env.LOCAL_API_KEY,
-                model: process.env.LOCAL_MODEL || 'llama3.1',
-                baseURL: process.env.LOCAL_BASE_URL || 'http://localhost:11434/v1'
-              }
-            : undefined,
-        google: process.env.GOOGLE_API_KEY
-          ? {
-              apiKey: process.env.GOOGLE_API_KEY,
-              model: process.env.GOOGLE_MODEL || 'gemini-3.1-flash-image-preview'
-            }
           : undefined
       },
+      textRouting: loadTextRouting(),
       database: {
         url: buildDatabaseUrl(),
         maxConnections: process.env.DB_MAX_CONNECTIONS
@@ -253,7 +243,6 @@ export class ConfigLoader {
       },
       features: {
         enableRAG: process.env.ENABLE_RAG === 'true',
-        enableLocalModels: process.env.ENABLE_LOCAL_MODELS === 'true',
         enableVoice: process.env.ENABLE_VOICE !== 'false',
         enableImages: process.env.ENABLE_IMAGES !== 'false'
       },
