@@ -36,7 +36,7 @@ describe('readable Discord user mentions', () => {
         `Hi <@${FIRST_ID}>, ask <@!${SECOND_ID}> and <@${FIRST_ID}> about 12345.`,
         message
       )
-    ).toBe('Hi user “Guild Name”, ask user “Second Name” and user “Guild Name” about 12345.');
+    ).toBe('Hi user “Guild Name”, ask user “Second Account” and user “Guild Name” about 12345.');
   });
 
   test('uses account name in a DM and a non-identifying fallback for unavailable users', () => {
@@ -74,5 +74,6 @@ describe('readable Discord user mentions', () => {
     } as unknown as Pick<Message<boolean>, 'author' | 'member'>;
     expect(readableMessageAuthor(author)).toBe('Guild Name');
     expect(author.author.id).toBe(FIRST_ID);
+    expect(readableMessageAuthor({ ...author, member: null })).toBe('account');
   });
 });
