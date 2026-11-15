@@ -23,7 +23,7 @@ export function renderReadableUserMentions(
   return content.replace(USER_MENTION, (_mention, userId: string) => {
     const member = message?.mentions?.members?.get(userId);
     const user = message?.mentions?.users?.get(userId);
-    const name = readableName(member?.displayName || user?.globalName || user?.username);
+    const name = readableName(member?.displayName || user?.username);
     return `user “${name}”`;
   });
 }
@@ -31,7 +31,5 @@ export function renderReadableUserMentions(
 export function readableMessageAuthor(
   message: Pick<Message<boolean>, 'member' | 'author'>
 ): string {
-  return readableName(
-    message.member?.displayName || message.author?.globalName || message.author?.username
-  );
+  return readableName(message.member?.displayName || message.author?.username);
 }

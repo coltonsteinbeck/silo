@@ -1886,11 +1886,7 @@ export async function startBot(): Promise<void> {
                 ? member
                 : message.guild?.members.cache.get(msg.userId);
             const historicalUser = message.client.users.cache.get(msg.userId);
-            const name = readableName(
-              historicalMember?.displayName ||
-                historicalUser?.globalName ||
-                historicalUser?.username
-            );
+            const name = readableName(historicalMember?.displayName || historicalUser?.username);
             return {
               role: msg.role,
               content: `[User: ${name}] ${sanitizeDiscordMassMentions(renderReadableUserMentions(msg.content))}`
