@@ -38,12 +38,14 @@ describe('conversation-context', () => {
           {
             messageId: 'r1',
             userId: 'u1',
+            userName: 'Example User',
             content: 'reply 1',
             imageUrls: ['https://img.test/reply1-a.png', 'https://img.test/reply1-b.png']
           },
           {
             messageId: 'r2',
             userId: 'u2',
+            userName: 'Another User',
             content: 'reply 2',
             imageUrls: ['https://img.test/reply2.png']
           }
@@ -72,6 +74,7 @@ describe('conversation-context', () => {
           {
             messageId: 'r1',
             userId: 'u1',
+            userName: 'Example User',
             content: 'reply 1',
             imageUrls: ['https://img.test/reply1-a.png']
           }

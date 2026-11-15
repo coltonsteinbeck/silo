@@ -111,6 +111,7 @@ import {
   type IntegerRangeResponse
 } from './services/integer-range';
 import { resolveReplyContext } from './services/reply-context';
+import { readableName, renderReadableUserMentions } from './services/readable-mentions';
 import { shouldHandleAssistantMessage } from './services/message-trigger';
 import { fetchUrlContextBlock, hasUrlContextCandidate } from './services/url-context';
 import {
@@ -1193,7 +1194,10 @@ export async function startBot(): Promise<void> {
           });
 
           const botMentionPattern = new RegExp(`<@!?${botUserId}>`, 'g');
-          const userContent = message.content.replace(botMentionPattern, '').trim();
+          const userContent = renderReadableUserMentions(
+            message.content.replace(botMentionPattern, '').trim(),
+            message
+          );
           const imageAttachments = message.attachments.filter(
             att => att.contentType?.startsWith('image/') && att.size <= 20 * 1024 * 1024
           );
@@ -1907,13 +1911,25 @@ export async function startBot(): Promise<void> {
             );
           }
 
-          const messages = historyForPrompt.map(msg => ({
-            role: msg.role,
-            content:
-              msg.role === 'user'
-                ? `[User: ${msg.userId}] ${msg.content}`
-                : sanitizeDiscordMassMentions(msg.content)
-          }));
+          const messages = historyForPrompt.map(msg => {
+            if (msg.role !== 'user') {
+              return { role: msg.role, content: sanitizeDiscordMassMentions(msg.content) };
+            }
+            const historicalMember =
+              msg.userId === message.author.id
+                ? member
+                : message.guild?.members.cache.get(msg.userId);
+            const historicalUser = message.client.users.cache.get(msg.userId);
+            const name = readableName(
+              historicalMember?.displayName ||
+                historicalUser?.globalName ||
+                historicalUser?.username
+            );
+            return {
+              role: msg.role,
+              content: `[User: ${name}] ${sanitizeDiscordMassMentions(renderReadableUserMentions(msg.content))}`
+            };
+          });
           const recentAssistantMessages = prunedHistoryForPrompt
             .filter(message => message.role === 'assistant')
             .map(message => message.content);
