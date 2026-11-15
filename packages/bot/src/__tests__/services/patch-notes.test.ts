@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { randomBytes } from 'node:crypto';
 import {
   PatchNotesService,
+  buildPatchNotesEmbed,
   encryptPatchNotesToken,
   decryptPatchNotesToken
 } from '../../services/patch-notes';
@@ -18,6 +19,7 @@ const webhookId = fixtureId('03'),
 const token = 'opaque_test_webhook_token_1234567890';
 const key = Buffer.alloc(32, 7).toString('base64');
 const originalFetch = globalThis.fetch;
+const releaseDate = new Date('2026-11-15T18:30:00.000Z');
 const record = (): PatchNotesWebhook => ({
   guildId,
   channelId,
@@ -59,7 +61,12 @@ describe('patch-note credentials and delivery', () => {
       }),
       completePatchNotesDelivery: mock(async () => {})
     };
-    service = new PatchNotesService(db, { id: botId, token: 'test-bot-token' }, key);
+    service = new PatchNotesService(
+      db,
+      { id: botId, token: 'test-bot-token' },
+      key,
+      () => releaseDate
+    );
     transport = mock(async () => json(hook()));
     globalThis.fetch = transport as unknown as typeof fetch;
   });
@@ -167,11 +174,39 @@ describe('patch-note credentials and delivery', () => {
     expect(post[0]).toEndWith('?wait=true');
     const body = JSON.parse((post[1] as FetchOptions).body as string);
     expect(body.allowed_mentions).toEqual({ parse: [] });
-    expect(body.content).not.toContain('@everyone');
-    expect(body.content).not.toContain('@here');
+    expect(body.content).toBeUndefined();
+    expect(body.embeds).toHaveLength(1);
+    expect(body.embeds[0].title).toBe('Silo v1.2.3 is live');
+    expect(body.embeds[0].description).not.toContain('@everyone');
+    expect(body.embeds[0].description).not.toContain('@here');
+    expect(body.embeds[0].footer.text).toContain('Production • Silo v1.2.3');
     expect(db.completePatchNotesDelivery).toHaveBeenCalledWith(guildId, '1.2.3', fixtureId('06'));
     expect(await service.send(guildId, userId, '1.2.3', 'Different notes')).toBe(
       'already-attempted'
+    );
+    expect(
+      transport.mock.calls.filter(call => (call[1] as FetchOptions).method === 'POST')
+    ).toHaveLength(1);
+  });
+
+  test('footer time does not change the durable duplicate claim', async () => {
+    configure();
+    let now = releaseDate;
+    service = new PatchNotesService(db, { id: botId, token: 'test-bot-token' }, key, () => now);
+    transport.mockImplementation(async (_url: string, init: FetchOptions) =>
+      json(
+        init?.method === 'POST'
+          ? { id: fixtureId('06'), channel_id: channelId, webhook_id: webhookId }
+          : hook()
+      )
+    );
+    expect(await service.send(guildId, userId, '2.0.1', 'Added\n- Use /search')).toBe('delivered');
+    now = new Date('2026-11-16T18:30:00.000Z');
+    expect(await service.send(guildId, userId, 'v2.0.1', 'Added\n- Use /search')).toBe(
+      'already-attempted'
+    );
+    expect(db.claimPatchNotesDelivery.mock.calls[0]![2]).toBe(
+      db.claimPatchNotesDelivery.mock.calls[1]![2]
     );
     expect(
       transport.mock.calls.filter(call => (call[1] as FetchOptions).method === 'POST')
@@ -242,13 +277,24 @@ describe('patch-note credentials and delivery', () => {
 
   test('invalid content, missing setup, or unreadable credentials cause no network request', async () => {
     await expect(service.send(guildId, userId, 'invalid', 'Notes')).rejects.toThrow();
+    await expect(service.send(guildId, userId, 'vv1.2.3', 'Notes')).rejects.toThrow();
     await expect(service.send(guildId, userId, '1.2.3', ' ')).rejects.toThrow();
+    await expect(service.send(guildId, userId, '1.2.3', 'Added\nFixed')).rejects.toThrow();
     await expect(service.send(guildId, userId, '1.2.3', 'x'.repeat(1801))).rejects.toThrow();
+    await expect(
+      service.send(
+        guildId,
+        userId,
+        '1.2.3',
+        `Added\n${Array.from({ length: 598 }, () => '/a').join('\n')}`
+      )
+    ).rejects.toThrow('embed limits');
     await expect(service.send(guildId, userId, '1.2.3', 'Notes')).rejects.toThrow('Set up');
     configure();
     stored!.encryptedToken = 'bad';
     await expect(service.send(guildId, userId, '1.2.3', 'Notes')).rejects.toThrow('unlocked');
     expect(transport).not.toHaveBeenCalled();
+    expect(db.claimPatchNotesDelivery).not.toHaveBeenCalled();
   });
 
   test('transport redirects and HTTP errors are sanitized without retry', async () => {
@@ -260,6 +306,45 @@ describe('patch-note credentials and delivery', () => {
     expect(transport).toHaveBeenCalledTimes(1);
     expect(transport.mock.calls[0]![1]).toHaveProperty('redirect', 'error');
     expect(transport.mock.calls[0]![1]).toHaveProperty('signal');
+  });
+});
+
+describe('patch-note release card', () => {
+  test('groups nonempty sections and formats slash commands without dropping introductory text', () => {
+    const embed = buildPatchNotesEmbed(
+      'v2.0.1',
+      'A short introduction.\n\nAdded\n- Use /search for sources\n- Try `/draw`\nChanged:\n* Better replies\nFixed\n',
+      releaseDate
+    );
+    expect(embed.title).toBe('Silo v2.0.1 is live');
+    expect(embed.color).toBe(0x5865f2);
+    expect(embed.description).toBe(
+      '**Notes**\nA short introduction.\n\n**Added**\n• Use `/search` for sources\n• Try `/draw`\n\n**Changed**\n• Better replies'
+    );
+    expect(embed.footer.text).toContain('Nov 15, 2026');
+    expect(embed.footer.text).toContain('EST');
+  });
+
+  test('keeps free-text submissions readable and prevents mass mentions', () => {
+    const embed = buildPatchNotesEmbed(
+      '2.0.1',
+      'Improved /draw.\n@everyone please try it.',
+      releaseDate
+    );
+    expect(embed.description).toStartWith('**Notes**\n');
+    expect(embed.description).toContain('`/draw`');
+    expect(embed.description).not.toContain('@everyone');
+    expect(buildPatchNotesEmbed('2.0.1', '- Existing bullet', releaseDate).description).toContain(
+      '- Existing bullet'
+    );
+  });
+
+  test('rejects expanded content beyond Discord limits before delivery', () => {
+    const manyLines = Array.from({ length: 598 }, () => '/a').join('\n');
+    expect(() => buildPatchNotesEmbed('2.0.1', `Added\n${manyLines}`, releaseDate)).toThrow(
+      'embed limits'
+    );
+    expect(() => buildPatchNotesEmbed('2.0.1', 'x'.repeat(1801), releaseDate)).toThrow('1–1800');
   });
 });
 
