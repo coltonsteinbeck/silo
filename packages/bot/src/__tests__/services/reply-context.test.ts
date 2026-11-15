@@ -28,11 +28,28 @@ function createMockMessage(opts: {
   referenced?: Message<boolean>;
   throwOnFetch?: boolean;
   bot?: boolean;
+  username?: string;
+  globalName?: string | null;
+  displayName?: string;
+  mentions?: Record<string, { username: string; globalName?: string | null; displayName?: string }>;
 }): Message<boolean> {
+  const users = new Map<string, object>();
+  const members = new Map<string, object>();
+  for (const [id, user] of Object.entries(opts.mentions || {})) {
+    users.set(id, user);
+    if (user.displayName) members.set(id, { displayName: user.displayName });
+  }
   return {
     id: opts.id,
     content: opts.content || '',
-    author: { id: opts.userId || 'u1', bot: Boolean(opts.bot) },
+    author: {
+      id: opts.userId || 'u1',
+      bot: Boolean(opts.bot),
+      username: opts.username || 'Example User',
+      globalName: opts.globalName
+    },
+    member: opts.displayName ? { displayName: opts.displayName } : null,
+    mentions: { users, members },
     reference: opts.referenceMessageId ? { messageId: opts.referenceMessageId } : null,
     attachments: createAttachmentCollection(opts.attachments || []),
     fetchReference: async () => {
@@ -63,6 +80,7 @@ describe('resolveReplyContext', () => {
     const replyLevel2 = createMockMessage({
       id: 'm_ref_2',
       userId: 'u_ref_2',
+      displayName: 'Older Member',
       content: 'older message',
       attachments: [{ url: 'https://img.test/2.png', contentType: 'image/png', size: 1024 }]
     });
@@ -70,6 +88,7 @@ describe('resolveReplyContext', () => {
     const replyLevel1 = createMockMessage({
       id: 'm_ref_1',
       userId: 'u_ref_1',
+      displayName: 'Recent Member',
       content: ' recent   message  ',
       referenceMessageId: 'm_ref_2',
       attachments: [
@@ -98,8 +117,10 @@ describe('resolveReplyContext', () => {
 
     expect(result.directReplyMessageId).toBe('m_ref_1');
     expect(result.directReplyUserId).toBe('u_ref_1');
-    expect(result.textContext).toContain('[Reply level 1 | user u_ref_1]');
-    expect(result.textContext).toContain('[Reply level 2 | user u_ref_2]');
+    expect(result.textContext).toContain('[Reply level 1 | user Recent Member]');
+    expect(result.textContext).toContain('[Reply level 2 | user Older Member]');
+    expect(result.textContext).not.toContain('u_ref_1');
+    expect(result.textContext).not.toContain('u_ref_2');
   });
 
   test('gracefully handles missing/inaccessible referenced message', async () => {
@@ -115,6 +136,28 @@ describe('resolveReplyContext', () => {
     expect(result.chain).toHaveLength(0);
     expect(result.directReplyMessageId).toBeNull();
     expect(result.textContext).toBe('');
+  });
+
+  test('renders mentions in referenced text while retaining internal reply identity', async () => {
+    const mentionedId = '1'.repeat(17);
+    const referenced = createMockMessage({
+      id: 'm_ref',
+      userId: 'author_id',
+      displayName: 'Reply Author',
+      content: `Ask <@!${mentionedId}> about this`,
+      mentions: { [mentionedId]: { username: 'Account', displayName: 'Mentioned Member' } }
+    });
+    const message = createMockMessage({
+      id: 'm_current',
+      referenceMessageId: 'm_ref',
+      referenced
+    });
+    const result = await resolveReplyContext(message);
+    expect(result.directReplyUserId).toBe('author_id');
+    expect(result.textContext).toContain('[Reply level 1 | user Reply Author]');
+    expect(result.textContext).toContain('Ask user “Mentioned Member” about this');
+    expect(result.textContext).not.toContain(mentionedId);
+    expect(result.textContext).not.toContain('author_id');
   });
 
   test('neutralizes Discord mass mentions in referenced context', async () => {
@@ -160,7 +203,7 @@ describe('resolveReplyContext', () => {
     expect(result.chain[0]?.content).toBe('');
     expect(result.chain[0]?.isBot).toBe(true);
     expect(result.chain[0]?.omittedReason).toBe('blocked_safety_fallback');
-    expect(result.textContext).toContain('[Reply level 1 | user bot_user]');
+    expect(result.textContext).toContain('[Reply level 1 | user Example User]');
     expect(result.textContext).not.toContain('I can’t help with that request');
   });
 

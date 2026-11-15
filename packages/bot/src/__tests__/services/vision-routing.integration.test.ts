@@ -27,6 +27,7 @@ describe('vision routing integration seam', () => {
           {
             messageId: 'm_ref',
             userId: 'u_ref',
+            userName: 'Example User',
             content: 'a previous message with image',
             imageUrls: ['https://img.test/reply.png']
           }
