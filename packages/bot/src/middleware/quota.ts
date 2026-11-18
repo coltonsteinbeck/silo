@@ -166,7 +166,11 @@ export class QuotaMiddleware {
         const denialCode = reservation.reason || `reservation_${reservation.status}`;
         return {
           allowed: false,
-          reason: this.formatReservationDenial(request.usageType, denialCode),
+          reason: this.formatReservationDenial(request.usageType, denialCode, {
+            requestedAmount,
+            remaining: reservation.remaining,
+            userLimit: reservation.userLimit
+          }),
           denialCode,
           remaining: Math.max(0, reservation.remaining),
           max: Math.max(0, Math.min(reservation.userLimit, reservation.guildLimit))
@@ -871,12 +875,27 @@ export class QuotaMiddleware {
         return 0;
     }
   }
-  private formatReservationDenial(usageType: UsageType, denialCode: string): string {
+  private formatReservationDenial(
+    usageType: UsageType,
+    denialCode: string,
+    detail?: { requestedAmount: number; remaining: number; userLimit: number }
+  ): string {
     if (denialCode === 'guild_limit') {
       return `Server has reached its daily ${this.formatUsageType(usageType)} limit.`;
     }
     if (usageType === 'voice_minutes' && denialCode === 'role_disabled') {
       return 'Voice features require Trusted role or higher. Ask an admin for access.';
+    }
+    if (usageType === 'images' && denialCode === 'role_disabled') {
+      return 'Image generation is unavailable for your role. Ask a server admin for access.';
+    }
+    if (usageType === 'images' && denialCode === 'insufficient_quota' && detail) {
+      const required = detail.requestedAmount;
+      const remaining = Math.max(0, detail.remaining);
+      if (detail.userLimit > 0 && required > detail.userLimit) {
+        return `This image needs ${required} image credits, but your full daily allowance is ${detail.userLimit}. Choose a lower-cost option if available or ask a server admin to review limits.`;
+      }
+      return `This image needs ${required} image credits; only ${remaining} remain under the daily limits. Choose a lower-cost option if available or ask a server admin to review limits.`;
     }
     if (
       denialCode === 'insufficient_quota' ||

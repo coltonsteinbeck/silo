@@ -116,6 +116,58 @@ describe('OpenAIProvider.generateImage error handling', () => {
 });
 
 describe('OpenAIProvider image editing', () => {
+  test('uses Flare for default generation with supported options', async () => {
+    const provider = new OpenAIProvider('sk-test');
+    const generate = mock(
+      async (_body: Record<string, unknown>, _options: Record<string, unknown>) => ({
+        data: [{ b64_json: 'generated-image' }]
+      })
+    );
+    (provider as any).client = { images: { generate } };
+    await provider.generateImage('draw cat', { size: '1536x1024', quality: 'high' });
+    expect(generate.mock.calls[0]?.[0]).toMatchObject({
+      model: 'gpt-image-2.5-flare',
+      size: '1536x1024',
+      quality: 'high',
+      n: 1
+    });
+    expect(generate.mock.calls[0]?.[1]).toMatchObject({ maxRetries: 0 });
+  });
+
+  test.each(['gpt-image-1', 'gpt-image-1.5'])(
+    'maps legacy explicit image model %s before the provider call',
+    async model => {
+      const provider = new OpenAIProvider('sk-test');
+      const generate = mock(async (_body: Record<string, unknown>) => ({
+        data: [{ b64_json: 'generated-image' }]
+      }));
+      (provider as any).client = { images: { generate } };
+      const result = await provider.generateImage('draw cat', { model });
+      expect(generate.mock.calls[0]?.[0].model).toBe('gpt-image-2.5-flare');
+      expect(result.model).toBe('gpt-image-2.5-flare');
+    }
+  );
+
+  test('uses Flare for edits without unverified input fidelity', async () => {
+    const provider = new OpenAIProvider('sk-test');
+    const edit = mock(async (_body: Record<string, unknown>) => ({
+      data: [{ b64_json: 'edited-image' }]
+    }));
+    (provider as any).client = { images: { edit } };
+    await provider.generateImage('make blue', {
+      referenceImages: ['data:image/png;base64,aGVsbG8='],
+      size: '1024x1536',
+      quality: 'medium',
+      inputFidelity: 'high'
+    });
+    const body = edit.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(body).toMatchObject({
+      model: 'gpt-image-2.5-flare',
+      size: '1024x1536',
+      quality: 'medium'
+    });
+    expect(body).not.toHaveProperty('input_fidelity');
+  });
   test('sends bounded reference files to Images edits with retries disabled', async () => {
     const provider = new OpenAIProvider('sk-test');
     const edit = mock(async (_body: unknown, _options?: unknown) => ({
@@ -129,8 +181,8 @@ describe('OpenAIProvider image editing', () => {
     expect(edit.mock.calls[0]?.[0]).toMatchObject({ prompt: 'make blue', n: 1 });
     expect(edit.mock.calls[0]?.[1]).toMatchObject({ maxRetries: 0 });
   });
-  test.each(['gpt-image-1', 'gpt-image-1.5', 'gpt-image-2'])(
-    'sends input fidelity only for supported models: %s',
+  test.each(['gpt-image-1', 'gpt-image-1.5', 'gpt-image-2', 'gpt-image-2.5-flare'])(
+    'omits input fidelity for Flare and legacy models mapped to Flare: %s',
     async model => {
       const provider = new OpenAIProvider('sk-test');
       const edit = mock(async (_body: unknown) => ({ data: [{ b64_json: 'edited-image' }] }));
@@ -141,8 +193,7 @@ describe('OpenAIProvider image editing', () => {
         referenceImages: ['data:image/png;base64,aGVsbG8=']
       });
       const body = edit.mock.calls[0]?.[0] as Record<string, unknown>;
-      if (model === 'gpt-image-2') expect(body).not.toHaveProperty('input_fidelity');
-      else expect(body.input_fidelity).toBe('high');
+      expect(body).not.toHaveProperty('input_fidelity');
     }
   );
   test('does not submit unsafe reference URLs or retry ambiguous provider failures', async () => {

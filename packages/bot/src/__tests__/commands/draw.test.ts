@@ -100,6 +100,158 @@ describe('DrawCommand', () => {
   });
 
   describe('execute', () => {
+    test.each([null, 'gpt-image-2.5-flare', 'gpt-image-1', 'gpt-image-1.5'])(
+      'routes requested model %s to Flare at the basic OpenAI cost',
+      async selectedModel => {
+        const costs: number[] = [];
+        const provider = {
+          name: 'openai',
+          generateImage: mock(async (_prompt: string, _options: Record<string, unknown>) => ({
+            url: 'data:image/png;base64,AQID'
+          }))
+        };
+        mockRegistry.getImageProvider = mock(() => provider);
+        mockRegistry.getConfiguredImageModel = mock(() => 'gpt-image-1');
+        command = new DrawCommand(mockRegistry, {
+          executeReserved: async (request: any) => {
+            costs.push(request.requestedAmount);
+            await request.beforeAttempt();
+            return { allowed: true, value: await request.execute() };
+          }
+        } as any);
+        const options: Record<string, string> = { prompt: 'A sunset' };
+        if (selectedModel) options.model = selectedModel;
+        await command.execute(createMockInteraction({ options }) as any);
+        expect(costs).toEqual([1]);
+        expect(provider.generateImage).toHaveBeenCalledTimes(1);
+        expect(provider.generateImage.mock.calls[0]?.[1]).toMatchObject({
+          model: 'gpt-image-2.5-flare',
+          size: '1024x1024',
+          quality: 'auto'
+        });
+      }
+    );
+
+    test('rejects unknown configured OpenAI model before reserving or calling provider', async () => {
+      const provider = { name: 'openai', generateImage: mock(async () => ({ url: 'unused' })) };
+      const executeReserved = mock(async () => ({ allowed: true }));
+      mockRegistry.getImageProvider = mock(() => provider);
+      mockRegistry.getConfiguredImageModel = mock(() => 'unsupported-model');
+      command = new DrawCommand(mockRegistry, { executeReserved } as any);
+      const interaction = createMockInteraction({ options: { prompt: 'A sunset' } });
+      await command.execute(interaction as any);
+      expect(executeReserved).not.toHaveBeenCalled();
+      expect(provider.generateImage).not.toHaveBeenCalled();
+      expect(interaction._getReplies()[0]).toContain('unavailable due to configuration');
+      expect(JSON.stringify(interaction._getReplies())).not.toContain('unsupported-model');
+    });
+
+    test.each([
+      ['gpt-image-2.5-flare', { resolution: '2k' }],
+      ['gpt-image-2.5-flare', { 'aspect-ratio': '16:9' }],
+      ['grok-imagine-image', { size: '1024x1024' }],
+      ['grok-imagine-image', { quality: 'high' }]
+    ])('rejects unsupported %s option without paid work', async (model, option) => {
+      const executeReserved = mock(async () => ({ allowed: true }));
+      command = new DrawCommand(mockRegistry, { executeReserved } as any);
+      const interaction = createMockInteraction({
+        options: { prompt: 'A sunset', model, ...option }
+      });
+      await command.execute(interaction as any);
+      expect(executeReserved).not.toHaveBeenCalled();
+      expect(mockRegistry.getImageProvider).not.toHaveBeenCalled();
+      expect(interaction._getReplies()[0]).toMatchObject({ ephemeral: true });
+    });
+
+    test.each([
+      ['gpt-image-2.5-flare', 'high', '1k', 2],
+      ['gpt-image-2.5-flare', 'auto', '2k', 1],
+      ['grok-imagine-image', 'auto', '1k', 2],
+      ['grok-imagine-image', 'auto', '2k', 3]
+    ])('keeps %s option cost policy', async (model, quality, resolution, expectedCost) => {
+      const costs: number[] = [];
+      const provider = {
+        name: model === 'grok-imagine-image' ? 'xai' : 'openai',
+        generateImage: mock(async () => ({ url: 'data:image/png;base64,AQID' }))
+      };
+      mockRegistry.getImageProvider = mock(() => provider);
+      command = new DrawCommand(mockRegistry, {
+        executeReserved: async (request: any) => {
+          costs.push(request.requestedAmount);
+          await request.beforeAttempt();
+          return { allowed: true, value: await request.execute() };
+        }
+      } as any);
+      const interaction = createMockInteraction({ options: { prompt: 'A sunset' } });
+      await (command as any).generateImage(
+        {
+          prompt: 'A sunset',
+          model,
+          size: '1024x1024',
+          quality,
+          aspectRatio: '1:1',
+          resolution,
+          references: []
+        },
+        { messageType: 'slash-command', commandName: 'draw' },
+        interaction,
+        new AbortController().signal
+      );
+      expect(costs).toEqual([expectedCost]);
+    });
+
+    test('recomputes legacy session edit and regeneration costs with the effective model', async () => {
+      const costs: number[] = [];
+      const provider = {
+        name: 'openai',
+        generateImage: mock(async (_prompt: string, _options: Record<string, unknown>) => ({
+          url: 'data:image/png;base64,AQID'
+        }))
+      };
+      mockRegistry.getImageProvider = mock(() => provider);
+      mockRegistry.getConfiguredImageModel = mock(() => 'gpt-image-1.5');
+      command = new DrawCommand(mockRegistry, {
+        executeReserved: async (request: any) => {
+          costs.push(request.requestedAmount);
+          await request.beforeAttempt();
+          return { allowed: true, value: await request.execute() };
+        }
+      } as any);
+      const interaction = createMockInteraction({ options: { prompt: 'A sunset' } });
+      const session = {
+        prompt: 'A sunset',
+        model: 'gpt-image-1',
+        size: '1024x1024',
+        quality: 'auto',
+        aspectRatio: '1:1',
+        resolution: '1k',
+        references: ['data:image/png;base64,AQID']
+      };
+      await (command as any).generateImage(
+        session,
+        { messageType: 'button-interaction', commandName: 'draw_edit' },
+        interaction,
+        new AbortController().signal
+      );
+      session.references = [];
+      await (command as any).generateImage(
+        session,
+        { messageType: 'button-interaction', commandName: 'draw_regen' },
+        interaction,
+        new AbortController().signal
+      );
+      expect(costs).toEqual([2, 1]);
+      expect(provider.generateImage.mock.calls[0]?.[1]).toMatchObject({
+        model: 'gpt-image-2.5-flare',
+        action: 'edit',
+        referenceImages: ['data:image/png;base64,AQID']
+      });
+      expect(provider.generateImage.mock.calls[1]?.[1]).toMatchObject({
+        model: 'gpt-image-2.5-flare',
+        action: 'generate',
+        referenceImages: []
+      });
+    });
     test.each(['gemini-3.1-flash-image-preview', 'unknown', '__proto__', 'constructor'])(
       'rejects obsolete or forged model %s before paid work',
       async model => {
@@ -296,6 +448,25 @@ describe('DrawCommand', () => {
       expect(reply).toContain('Error generating image:');
       expect(reply).toContain('Image generation failed. Please try again in a moment.');
       expect(reply).not.toContain('API rate limit exceeded');
+    });
+
+    test.each([
+      [401, 'provider access needs attention'],
+      [404, 'unavailable for this model'],
+      [429, 'temporarily unavailable from the provider']
+    ])('classifies provider status %s without exposing raw errors', async (status, expected) => {
+      const provider = {
+        name: 'openai',
+        generateImage: mock(async () => {
+          const cause = Object.assign(new Error('private provider detail'), { status });
+          throw new Error('OpenAI image generation failed', { cause });
+        })
+      };
+      mockRegistry.getImageProvider = mock(() => provider);
+      const interaction = createMockInteraction({ options: { prompt: 'A sunset' } });
+      await command.execute(interaction as any);
+      expect(interaction._getReplies()[0]).toContain(expected);
+      expect(JSON.stringify(interaction._getReplies())).not.toContain('private provider detail');
     });
 
     test('blocks prompt via moderation preflight before provider call', async () => {

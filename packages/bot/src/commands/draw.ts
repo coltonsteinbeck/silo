@@ -27,7 +27,7 @@ import { summarizeTextForTrace, withLangfuseGeneration } from '../telemetry/lang
 import { buildLangfuseTags, buildLangfuseTraceMetadata } from '../telemetry/langfuse-metadata';
 
 const DRAW_MODEL_CONFIG = {
-  'gpt-image-1': {
+  'gpt-image-2.5-flare': {
     provider: 'openai',
     maxReferences: 2,
     supportsQuality: true,
@@ -60,7 +60,6 @@ interface DrawSession {
   aspectRatio: string;
   resolution: string;
   references: string[];
-  quotaCost: number;
 }
 
 interface DrawGeneration {
@@ -101,7 +100,7 @@ export class DrawCommand implements Command {
         .setDescription('Image model')
         .setRequired(false)
         .addChoices(
-          { name: 'OpenAI GPT Image 1', value: 'gpt-image-1' },
+          { name: 'OpenAI GPT Image 2.5 Flare', value: 'gpt-image-2.5-flare' },
           { name: 'xAI Grok Imagine Image', value: 'grok-imagine-image' }
         )
     )
@@ -221,11 +220,36 @@ export class DrawCommand implements Command {
     context: 'generation' | 'regeneration' | 'edit'
   ): string {
     if (error instanceof MediaQuotaDeniedError) return error.message;
-    const rawMessage = error instanceof Error ? error.message : 'Unknown error';
+    const cause = error instanceof Error && error.cause instanceof Error ? error.cause : error;
+    const status =
+      cause && typeof cause === 'object' && 'status' in cause ? cause.status : undefined;
+    const rawMessage = error instanceof Error ? error.message : '';
     const lowered = rawMessage.toLowerCase();
 
     if (lowered.includes('content moderation') || lowered.includes('moderation')) {
       return `Image ${context} was blocked by safety policy. Try safer wording and fewer sensitive details.`;
+    }
+
+    if (status === 401 || status === 403) {
+      return `Image ${context} is unavailable because provider access needs attention. Please contact an administrator.`;
+    }
+    if (rawMessage.startsWith('Unsupported OpenAI image model configuration.')) {
+      return `Image ${context} is unavailable due to configuration. Please contact an administrator.`;
+    }
+    if (
+      status === 404 ||
+      (status === 400 && /model.*(?:does not exist|not found)/i.test(rawMessage))
+    ) {
+      return `Image ${context} is unavailable for this model. Please contact an administrator.`;
+    }
+    if (
+      cause instanceof Error &&
+      ['TimeoutError', 'APIConnectionTimeoutError', 'AbortError'].includes(cause.name)
+    ) {
+      return `Image ${context} timed out. Please try again in a moment.`;
+    }
+    if (status === 429 || (typeof status === 'number' && status >= 500)) {
+      return `Image ${context} is temporarily unavailable from the provider. Please try again later.`;
     }
 
     return `Image ${context} failed. Please try again in a moment.`;
@@ -233,12 +257,12 @@ export class DrawCommand implements Command {
 
   private resolveModel(raw: string | null): DrawModelName | null {
     if (!raw) {
-      return 'gpt-image-1';
+      return 'gpt-image-2.5-flare';
     }
 
     // Backward compatibility for older command payloads/sessions.
-    if (raw === 'gpt-image-1.5') {
-      return 'gpt-image-1';
+    if (raw === 'gpt-image-1' || raw === 'gpt-image-1.5') {
+      return 'gpt-image-2.5-flare';
     }
 
     if (Object.hasOwn(DRAW_MODEL_CONFIG, raw)) {
@@ -254,11 +278,30 @@ export class DrawCommand implements Command {
     resolution: string;
     referenceCount: number;
   }): number {
-    const base = args.model === 'gpt-image-1' ? 1 : 2;
-    const qualityBoost = args.quality === 'high' ? 1 : 0;
-    const resolutionBoost = args.resolution.toLowerCase() === '2k' ? 1 : 0;
+    const config = DRAW_MODEL_CONFIG[args.model];
+    const base = config.provider === 'openai' ? 1 : 2;
+    const qualityBoost = config.supportsQuality && args.quality === 'high' ? 1 : 0;
+    const resolutionBoost =
+      config.supportsResolution && args.resolution.toLowerCase() === '2k' ? 1 : 0;
     const referenceBoost = Math.min(args.referenceCount, 2);
     return base + qualityBoost + resolutionBoost + referenceBoost;
+  }
+
+  private resolveEffectiveModel(model: DrawModelName): string {
+    const config = DRAW_MODEL_CONFIG[model];
+    const configured = this.registry.getConfiguredImageModel(config.provider);
+    if (config.provider === 'openai') {
+      if (!configured || this.resolveModel(configured) === 'gpt-image-2.5-flare') {
+        return 'gpt-image-2.5-flare';
+      }
+      logger.error('Unsupported OpenAI image model configuration', {
+        expectedModel: 'gpt-image-2.5-flare'
+      });
+      throw new Error(
+        'Unsupported OpenAI image model configuration. Set OPENAI_IMAGE_MODEL to gpt-image-2.5-flare.'
+      );
+    }
+    return configured || model;
   }
 
   private async validateReferences(
@@ -337,7 +380,7 @@ export class DrawCommand implements Command {
   private async generateImage(
     session: {
       prompt: string;
-      model: DrawModelName;
+      model: DrawModelName | 'gpt-image-1' | 'gpt-image-1.5';
       size: string;
       quality: string;
       aspectRatio: string;
@@ -346,16 +389,23 @@ export class DrawCommand implements Command {
     },
     traceContext: DrawTraceContext,
     interaction: ChatInputCommandInteraction | ButtonInteraction | ModalSubmitInteraction,
-    quotaCost: number,
     signal: AbortSignal
   ): Promise<DrawGeneration> {
-    const modelConfig = DRAW_MODEL_CONFIG[session.model];
+    const model = this.resolveModel(session.model);
+    if (!model) throw new Error('Unsupported image model in draw session');
+    const modelConfig = DRAW_MODEL_CONFIG[model];
     const provider = this.registry.getImageProvider(modelConfig.provider);
     if (!provider) {
       throw new Error('No image generation provider configured. Check your environment settings.');
     }
 
-    const requestedModel = this.registry.getConfiguredImageModel(provider.name) || session.model;
+    const requestedModel = this.resolveEffectiveModel(model);
+    const quotaCost = this.calculateQuotaCost({
+      model,
+      quality: session.quality,
+      resolution: session.resolution,
+      referenceCount: session.references.length
+    });
     const options = {
       signal,
       model: requestedModel,
@@ -364,8 +414,7 @@ export class DrawCommand implements Command {
       aspectRatio: modelConfig.supportsAspectRatio ? session.aspectRatio : undefined,
       resolution: modelConfig.supportsResolution ? session.resolution : undefined,
       referenceImages: session.references,
-      action: session.references.length > 0 ? ('edit' as const) : ('generate' as const),
-      inputFidelity: session.references.length > 0 ? ('high' as const) : ('low' as const)
+      action: session.references.length > 0 ? ('edit' as const) : ('generate' as const)
     };
 
     const generationMetadataInput = {
@@ -390,6 +439,7 @@ export class DrawCommand implements Command {
         tags: buildLangfuseTags(generationMetadataInput),
         input: {
           promptPreview: summarizeTextForTrace(session.prompt),
+          requestedModel: session.model,
           model: requestedModel,
           referenceCount: session.references.length,
           size: options.size,
@@ -468,6 +518,21 @@ export class DrawCommand implements Command {
       });
       return;
     }
+    const modelConfig = DRAW_MODEL_CONFIG[model];
+    const unsupportedOption =
+      modelConfig.provider === 'openai'
+        ? interaction.options.getString('aspect-ratio') != null ||
+          interaction.options.getString('resolution') != null
+        : interaction.options.getString('size') != null ||
+          interaction.options.getString('quality') != null;
+    if (unsupportedOption) {
+      await interaction.reply({
+        content:
+          'Those image options are not supported by the selected model. Remove them and try again.',
+        ephemeral: true
+      });
+      return;
+    }
     const size = interaction.options.getString('size') || '1024x1024';
     const quality = interaction.options.getString('quality') || 'auto';
     const aspectRatio = interaction.options.getString('aspect-ratio') || '1:1';
@@ -536,13 +601,6 @@ export class DrawCommand implements Command {
       return;
     }
 
-    const quotaCost = this.calculateQuotaCost({
-      model,
-      quality,
-      resolution,
-      referenceCount: references.length
-    });
-
     try {
       const generation = await this.generateImage(
         {
@@ -562,7 +620,6 @@ export class DrawCommand implements Command {
           commandName: 'draw'
         },
         interaction,
-        quotaCost,
         signal
       );
 
@@ -603,8 +660,7 @@ export class DrawCommand implements Command {
         quality,
         aspectRatio,
         resolution,
-        references,
-        quotaCost
+        references
       });
     } catch (error) {
       if (signal.aborted) {
@@ -618,7 +674,7 @@ export class DrawCommand implements Command {
         guildId: interaction.guildId,
         userId: interaction.user.id,
         model,
-        error
+        errorType: error instanceof Error ? error.name : 'unknown'
       });
       await interaction.editReply(
         `Error generating image: ${this.formatImageError(error, 'generation')}`
@@ -721,7 +777,6 @@ export class DrawCommand implements Command {
           commandName: 'draw_regen'
         },
         interaction,
-        session.quotaCost,
         signal
       );
 
@@ -764,7 +819,7 @@ export class DrawCommand implements Command {
         guildId: interaction.guildId,
         userId: interaction.user.id,
         sessionId: session.id,
-        error
+        errorType: error instanceof Error ? error.name : 'unknown'
       });
       await interaction.followUp({
         content: `Regeneration failed: ${this.formatImageError(error, 'regeneration')}`,
@@ -853,7 +908,6 @@ export class DrawCommand implements Command {
           commandName: 'draw_edit'
         },
         interaction,
-        session.quotaCost,
         signal
       );
 
@@ -913,7 +967,7 @@ export class DrawCommand implements Command {
         guildId: interaction.guildId,
         userId: interaction.user.id,
         sessionId: session.id,
-        error
+        errorType: error instanceof Error ? error.name : 'unknown'
       });
       await interaction.editReply({
         content: `Image edit failed: ${this.formatImageError(error, 'edit')}`

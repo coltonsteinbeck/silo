@@ -295,7 +295,7 @@ Migration safety rules:
 - **Mention Safety**: Bot-generated text neutralizes `@everyone` and `@here`, and generated Discord replies disable mention parsing
 - **Realtime Voice**: Talk to Silo in voice channels with multiple voice options (alloy, ash, ballad, coral, echo, sage, shimmer, verse)
 - **Advanced Memory**: User and server memory systems with search
-- **Image Generation**: gpt-image-1 with low/medium/high quality options
+- **Image Generation**: gpt-image-2.5-flare with low/medium/high quality options
 - **Database Flexibility**: Works with any PostgreSQL (Supabase, Railway, local, etc.)
 - **Sharding**: Built-in Discord.js ShardingManager for multi-guild scaling
 - **Role-Based Permissions**: Admin, moderator, trusted, member, restricted tiers
@@ -322,7 +322,7 @@ Memory scope rules:
 
 #### Media Generation
 
-- `/draw <prompt>` - Generate images with gpt-image-1
+- `/draw <prompt>` - Generate images with gpt-image-2.5-flare
 
 #### Voice
 
@@ -375,7 +375,7 @@ Usage limits reset at midnight UTC:
 ### AI Models
 
 - **Text**: gpt-5-mini ($0.25/1M input, $2.00/1M output)
-- **Images**: gpt-image-1 (low/medium/high quality)
+- **Images**: gpt-image-2.5-flare (low/medium/high quality)
 - **Voice**: gpt-4o-mini-realtime-preview (~$0.34/5min session)
 
 ### Planned Features

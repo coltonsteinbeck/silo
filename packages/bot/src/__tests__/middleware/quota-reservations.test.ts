@@ -190,6 +190,36 @@ describe('QuotaMiddleware', () => {
         reason: "You've reached your daily text token limit. Resets at midnight ET."
       });
     });
+    test.each([
+      [2, 1, 1, 'full daily allowance is 1'],
+      [2, 5, 1, 'only 1 remain under the daily limits']
+    ])(
+      'explains unaffordable image request using existing quota metadata',
+      async (requestedAmount, userLimit, remaining, expected) => {
+        mockAdminDb.reserveQuotaUsage.mockResolvedValue({
+          allowed: false,
+          reason: 'insufficient_quota',
+          status: 'released',
+          remaining,
+          userLimit,
+          guildLimit: 10
+        });
+        const result = await new QuotaMiddleware(mockAdminDb, mockPermissions).reserveQuota({
+          operationKey: 'image:denied',
+          guildId: 'guild1',
+          userId: 'user1',
+          member: { id: 'user1' } as any,
+          usageType: 'images',
+          requestedAmount,
+          minimumAmount: requestedAmount
+        });
+        expect(result.allowed).toBe(false);
+        if (!result.allowed) {
+          expect(result.reason).toContain(expected);
+          expect(result.reason).not.toContain('Resets at midnight');
+        }
+      }
+    );
     test('does not execute paid work for a duplicate still-reserved operation', async () => {
       mockAdminDb.reserveQuotaUsage = mock(async () => ({
         idempotencyKey: 'discord:duplicate:search',

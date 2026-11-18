@@ -82,6 +82,10 @@ export function toOpenAIImageSize(size: string | undefined): OpenAIImageSize {
   }
 }
 
+function resolveOpenAIImageModel(model: string): string {
+  return ['gpt-image-1', 'gpt-image-1.5'].includes(model) ? 'gpt-image-2.5-flare' : model;
+}
+
 function redactSecrets(value: string): string {
   return value
     .replace(/\bsk-[A-Za-z0-9_-]+\b/g, '[redacted-key]')
@@ -130,7 +134,7 @@ export class OpenAIProvider implements TextProvider, ImageProvider, WebSearchPro
 
   constructor(apiKey?: string, model: string = 'gpt-6-luna', imageModel: string = 'gpt-image-1') {
     this.defaultModel = model;
-    this.defaultImageModel = imageModel;
+    this.defaultImageModel = resolveOpenAIImageModel(imageModel);
     if (apiKey) {
       this.client = new OpenAI({ apiKey });
     }
@@ -218,7 +222,7 @@ export class OpenAIProvider implements TextProvider, ImageProvider, WebSearchPro
       if (references.length > this.capabilities.maxImageReferences)
         throw new Error('Too many reference images');
       const params = {
-        model: options?.model || this.defaultImageModel,
+        model: resolveOpenAIImageModel(options?.model || this.defaultImageModel),
         prompt,
         n: 1,
         size: toOpenAIImageSize(options?.size),
@@ -269,7 +273,7 @@ export class OpenAIProvider implements TextProvider, ImageProvider, WebSearchPro
         return {
           url: `data:image/png;base64,${image.b64_json}`,
           revisedPrompt: image.revised_prompt,
-          model: options?.model || this.defaultImageModel
+          model: params.model
         };
       }
 
@@ -281,7 +285,7 @@ export class OpenAIProvider implements TextProvider, ImageProvider, WebSearchPro
       return {
         url: image.url,
         revisedPrompt: image.revised_prompt,
-        model: options?.model || this.defaultImageModel
+        model: params.model
       };
     } catch (error) {
       const message = redactSecrets(error instanceof Error ? error.message : String(error));

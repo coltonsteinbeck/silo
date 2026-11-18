@@ -51,6 +51,7 @@ describe('ConfigSchema', () => {
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.openai?.model).toBe('gpt-6-luna');
+        expect(result.data.openai?.imageModel).toBe('gpt-image-2.5-flare');
       }
     });
 
