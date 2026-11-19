@@ -4,7 +4,6 @@ import {
   GatewayIntentBits,
   Events,
   REST,
-  Routes,
   MessageFlags,
   InteractionReplyOptions,
   ButtonInteraction,
@@ -14,6 +13,11 @@ import {
 import dns from 'node:dns';
 import { randomUUID } from 'node:crypto';
 import { ConfigLoader, logger, RateLimiter } from '@silo/core';
+import {
+  assertScopedCommandTarget,
+  resolveCommandSyncMode,
+  syncApplicationCommands
+} from './runtime/command-registration';
 import { ProviderRegistry, classifyTextWorkload } from './providers/registry';
 import { createAgentGraphRuntimeConfig } from './agent/config';
 import { runBoundedAgentGraph } from './agent/bounded-graph';
@@ -497,6 +501,13 @@ export async function startBot(): Promise<void> {
   }
 
   const config = ConfigLoader.load();
+  // Resolve before connecting to the database or Discord. Scoped modes are development only.
+  const commandSyncMode = resolveCommandSyncMode(
+    process.env.DISCORD_COMMAND_SYNC_MODE,
+    config.app.environment,
+    process.env.NODE_ENV,
+    config.discord.guildId
+  );
   configureLangfuseMetadataDefaults({
     appName: config.app.name,
     appEnv: config.app.environment,
@@ -665,9 +676,22 @@ export async function startBot(): Promise<void> {
       logger.error('Discord application identity does not match the runtime lease');
       process.exit(1);
     }
+    const joinedGuildIds = readyClient.guilds.cache.map(guild => guild.id);
+    try {
+      assertScopedCommandTarget(
+        commandSyncMode,
+        config.discord.clientId,
+        readyClient.user.id,
+        joinedGuildIds,
+        config.discord.guildId
+      );
+    } catch (error) {
+      logger.error('Discord startup scope validation failed', error);
+      process.exit(1);
+      return;
+    }
     logger.info(`Bot ready! Logged in as ${readyClient.user.tag}`);
     logger.info(`Serving ${readyClient.guilds.cache.size} guilds`);
-    const joinedGuildIds = readyClient.guilds.cache.map(guild => guild.id);
 
     // Set client reference for security modules
     guildManager.setClient(client);
@@ -693,63 +717,25 @@ export async function startBot(): Promise<void> {
     inactivityScheduler.start();
 
     // Register slash commands
-    const rest = new REST().setToken(config.discord.token);
     const commandData = Array.from(commands.values()).map(cmd => cmd.data.toJSON());
 
     try {
-      const registerGuildOnly =
-        Boolean(config.discord.guildId) && process.env.DISCORD_USE_GUILD_COMMANDS === 'true';
-
-      if (registerGuildOnly && config.discord.guildId) {
-        logger.info(
-          `Registering ${commandData.length} guild slash commands for guild ${config.discord.guildId}...`
-        );
-        await rest.put(
-          Routes.applicationGuildCommands(readyClient.user.id, config.discord.guildId),
-          { body: commandData }
-        );
-        logger.info('Guild slash commands registered successfully');
-
-        logger.info('Clearing global slash commands to avoid duplicate guild/global entries...');
-        await rest.put(Routes.applicationCommands(readyClient.user.id), { body: [] });
-        logger.info('Global slash commands cleared');
-
-        const staleGuildIds = joinedGuildIds.filter(guildId => guildId !== config.discord.guildId);
-        if (staleGuildIds.length > 0) {
-          logger.info(
-            `Clearing guild slash command overrides for ${staleGuildIds.length} non-target guild(s)...`
-          );
-          await Promise.all(
-            staleGuildIds.map(guildId =>
-              rest.put(Routes.applicationGuildCommands(readyClient.user.id, guildId), {
-                body: []
-              })
-            )
-          );
-          logger.info('Non-target guild slash command overrides cleared');
-        }
-      } else {
-        logger.info(`Registering ${commandData.length} global slash commands...`);
-        await rest.put(Routes.applicationCommands(readyClient.user.id), { body: commandData });
-        logger.info('Global slash commands registered successfully');
-
-        // Clear guild-scoped overrides to avoid duplicate command entries in the guild picker.
-        if (joinedGuildIds.length > 0) {
-          logger.info(
-            `Clearing guild slash command overrides for ${joinedGuildIds.length} guild(s) to avoid duplicates...`
-          );
-          await Promise.all(
-            joinedGuildIds.map(guildId =>
-              rest.put(Routes.applicationGuildCommands(readyClient.user.id, guildId), {
-                body: []
-              })
-            )
-          );
-          logger.info('Guild slash command overrides cleared');
-        }
-      }
+      await syncApplicationCommands({
+        mode: commandSyncMode,
+        applicationId: readyClient.user.id,
+        expectedGuildId: config.discord.guildId,
+        joinedGuildIds,
+        legacyGuildOnly: process.env.DISCORD_USE_GUILD_COMMANDS === 'true',
+        commandData,
+        rest: commandSyncMode === 'none' ? undefined : new REST().setToken(config.discord.token)
+      });
+      logger.info('Discord slash command startup mode completed', { mode: commandSyncMode });
     } catch (error) {
       logger.error('Failed to register slash commands:', error);
+      if (commandSyncMode === 'guild-only') {
+        commandShutdown.abort();
+        process.exit(1);
+      }
     }
 
     void (async () => {
