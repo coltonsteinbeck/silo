@@ -14,6 +14,7 @@ import dns from 'node:dns';
 import { randomUUID } from 'node:crypto';
 import { ConfigLoader, logger, RateLimiter } from '@silo/core';
 import {
+  acceptsScopedGuildEvent,
   assertScopedCommandTarget,
   resolveCommandSyncMode,
   syncApplicationCommands
@@ -670,6 +671,10 @@ export async function startBot(): Promise<void> {
   // Start periodic cost aggregation
   costAggregator.start();
 
+  let scopedReady = commandSyncMode === 'legacy';
+  const admitsEvent = (guildId: string | null | undefined): boolean =>
+    scopedReady && acceptsScopedGuildEvent(commandSyncMode, guildId, config.discord.guildId);
+
   client.once(Events.ClientReady, async readyClient => {
     if (commandShutdown.signal.aborted || !(await runtimeLease.verify())) return;
     if (readyClient.user.id !== config.discord.clientId) {
@@ -729,6 +734,7 @@ export async function startBot(): Promise<void> {
         commandData,
         rest: commandSyncMode === 'none' ? undefined : new REST().setToken(config.discord.token)
       });
+      scopedReady = true;
       logger.info('Discord slash command startup mode completed', { mode: commandSyncMode });
     } catch (error) {
       logger.error('Failed to register slash commands:', error);
@@ -759,6 +765,8 @@ export async function startBot(): Promise<void> {
 
   // Handle slash command interactions
   client.on(Events.InteractionCreate, async interaction => {
+    // Application commands can reach the app without bot membership in the caller's guild.
+    if (!admitsEvent(interaction.guildId)) return;
     if (commandShutdown.signal.aborted || !(await runtimeLease.verify())) return;
     const withInteractionRootTrace = async <T>(
       options: {
@@ -946,6 +954,7 @@ export async function startBot(): Promise<void> {
   client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
     if (!(radioCommand instanceof RadioCommand)) return;
     const guildId = newState.guild.id || oldState.guild.id;
+    if (!admitsEvent(guildId)) return;
     const metadataInput = {
       guildId,
       channelId: newState.channelId || oldState.channelId,
@@ -974,6 +983,13 @@ export async function startBot(): Promise<void> {
 
   // Handle guild join
   client.on(Events.GuildCreate, async guild => {
+    if (!scopedReady) return;
+    if (!admitsEvent(guild.id)) {
+      commandShutdown.abort();
+      logger.error('Scoped Discord runtime joined an unexpected guild');
+      process.exit(1);
+      return;
+    }
     if (commandShutdown.signal.aborted || !(await runtimeLease.verify())) return;
     const metadataInput = {
       guildId: guild.id,
@@ -1024,6 +1040,15 @@ export async function startBot(): Promise<void> {
 
   // Handle guild leave/kick
   client.on(Events.GuildDelete, async guild => {
+    if (!scopedReady) return;
+    if (commandSyncMode !== 'legacy') {
+      if (admitsEvent(guild.id)) {
+        commandShutdown.abort();
+        logger.error('Scoped Discord runtime left its expected guild');
+        process.exit(1);
+      }
+      return;
+    }
     if (commandShutdown.signal.aborted || !(await runtimeLease.verify())) return;
     const metadataInput = {
       guildId: guild.id,
@@ -1074,6 +1099,7 @@ export async function startBot(): Promise<void> {
   client.on(Events.MessageCreate, async message => {
     if (message.author.bot) return;
     if (!message.guildId) return;
+    if (!admitsEvent(message.guildId)) return;
     if (commandShutdown.signal.aborted || !(await runtimeLease.verify())) return;
     const botUserId = client.user?.id;
     if (!botUserId) return;
@@ -3516,6 +3542,7 @@ export async function startBot(): Promise<void> {
 
   // Handle message reactions for feedback
   client.on(Events.MessageReactionAdd, async (reaction, user) => {
+    if (!admitsEvent(reaction.message.guildId)) return;
     await handleReactionFeedback({ reaction, user, client, adminDb, permissions, log: logger });
   });
 

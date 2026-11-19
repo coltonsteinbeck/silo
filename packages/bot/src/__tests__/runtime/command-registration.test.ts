@@ -1,6 +1,7 @@
 import { describe, expect, mock, test } from 'bun:test';
 import { Routes, type REST } from 'discord.js';
 import {
+  acceptsScopedGuildEvent,
   assertScopedCommandTarget,
   resolveCommandSyncMode,
   syncApplicationCommands,
@@ -64,6 +65,17 @@ describe('development command sync scope', () => {
       ).toThrow();
       expect(() => assertScopedCommandTarget(mode, appId, appId, [guildId], guildId)).not.toThrow();
     }
+  });
+
+  test('scoped event admission excludes command-only installs and direct messages', () => {
+    for (const mode of ['none', 'guild-only'] as const) {
+      expect(acceptsScopedGuildEvent(mode, guildId, guildId)).toBe(true);
+      expect(acceptsScopedGuildEvent(mode, otherGuildId, guildId)).toBe(false);
+      expect(acceptsScopedGuildEvent(mode, null, guildId)).toBe(false);
+      expect(acceptsScopedGuildEvent(mode, undefined, guildId)).toBe(false);
+    }
+    expect(acceptsScopedGuildEvent('legacy', otherGuildId, guildId)).toBe(true);
+    expect(acceptsScopedGuildEvent('legacy', null, guildId)).toBe(true);
   });
 
   test('no-registration mode never constructs or calls REST', async () => {

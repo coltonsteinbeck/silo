@@ -36,6 +36,14 @@ export function assertScopedCommandTarget(
   }
 }
 
+export function acceptsScopedGuildEvent(
+  mode: CommandSyncMode,
+  eventGuildId: string | null | undefined,
+  expectedGuildId: string | undefined
+): boolean {
+  return mode === 'legacy' || (Boolean(expectedGuildId) && eventGuildId === expectedGuildId);
+}
+
 export async function syncApplicationCommands(options: {
   mode: CommandSyncMode;
   applicationId: string;
