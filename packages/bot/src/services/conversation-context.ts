@@ -187,10 +187,65 @@ export function buildWebAccessInstruction(
   return `\n\nWeb access rule: Ordinary conversation cannot run web searches. Never invent search results or citations.${pageContext}${search}`;
 }
 
-export function buildCurrentTimeInstruction(now: Date): string {
+export function buildCurrentTimeInstruction(now: Date, configuredTimeZone?: string): string {
   if (!Number.isFinite(now.getTime())) {
     throw new Error('Current time must be a valid date');
   }
 
-  return `\n\nCurrent time rule: The trusted server time is ${now.toISOString()} (UTC). Use this time for date questions, and state UTC when the user's timezone is unknown. This clock does not prove that an external event happened. For current event or release status, including requests to check again, do not treat persona examples, earlier assistant claims, or unsourced memory as fresh evidence. If no current source was supplied, say the status cannot be verified from this conversation and follow the web access rule.`;
+  const configuredCalendar = configuredTimeZone
+    ? ` Configured calendar: ${formatCurrentDate(now, configuredTimeZone)}`
+    : '';
+  return `\n\nCurrent time rule: The trusted server time is ${now.toISOString()} (UTC).${configuredCalendar} Use the configured calendar for date questions when present, otherwise UTC; state the timezone and do not assume the user's own timezone. This clock does not prove that an external event happened. For current event or release status, including requests to check again, do not treat persona examples, earlier assistant claims, or unsourced memory as fresh evidence. If no current source was supplied, say the status cannot be verified from this conversation and follow the web access rule.`;
+}
+
+const CURRENT_DATE_QUESTION =
+  /^(?:(?:please\s+)?(?:tell me\s+)?(?:what(?:'s| is)\s+(?:(?:today'?s|the current)\s+date|the\s+date(?:\s+(?:today|right now))?)|what\s+(?:day|date)\s+is\s+it(?:\s+(?:today|now|right now))?|what\s+day\s+of\s+the\s+week\s+is\s+it(?:\s+today)?|tell me\s+today'?s\s+date))\s*[?.!]*$/i;
+const CURRENT_STATUS_CUE =
+  /\b(?:today|now|current|currently|latest|recent|yet|still|this week|right now|up[- ]to[- ]date)\b/i;
+const CURRENT_STATUS_SUBJECT =
+  /\b(?:releas(?:e|ed|ing)|launch(?:ed|ing)?|come out|out now|available|status|updates?|news)\b/i;
+const IMPLICIT_RELEASE_STATUS =
+  /^(?:has|have|is|are|did)\b.{1,180}\b(?:releas(?:e|ed)|launch(?:ed)?|out yet|available yet)\b[?.!]*$/i;
+const CURRENT_STATUS_RECHECK =
+  /^(?:(?:can|could|would)\s+you\s+)?(?:please\s+)?(?:check|look|verify|search)(?:\s+(?:that|it|this))?\s+again\s*[?.!]*$/i;
+
+export function isCurrentDateQuestion(text: string): boolean {
+  return CURRENT_DATE_QUESTION.test(text.replace(/\s+/g, ' ').trim());
+}
+
+export function isCurrentStatusQuestion(text: string, previousUserText?: string | null): boolean {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (CURRENT_STATUS_RECHECK.test(normalized)) {
+    return !previousUserText || isCurrentStatusQuestion(previousUserText);
+  }
+  if (/\b(?:in|during|back in|from)\s+(?:19|20)\d{2}\b/i.test(normalized)) return false;
+  return (
+    (CURRENT_STATUS_CUE.test(normalized) && CURRENT_STATUS_SUBJECT.test(normalized)) ||
+    IMPLICIT_RELEASE_STATUS.test(normalized)
+  );
+}
+
+export function formatCurrentDate(now: Date, configuredTimeZone?: string): string {
+  if (!Number.isFinite(now.getTime())) throw new Error('Current time must be a valid date');
+  let timeZone = configuredTimeZone || 'UTC';
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone });
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error;
+    timeZone = 'UTC';
+  }
+  const date = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric'
+  }).format(now);
+  return `Today is ${date} (${timeZone}).`;
+}
+
+export function currentStatusNeedsSource(searchAvailable: boolean): string {
+  return searchAvailable
+    ? 'I can’t verify that current status from this conversation. Use /search with the topic for a sourced answer.'
+    : 'I can’t verify that current status from this conversation. Web search is unavailable here.';
 }

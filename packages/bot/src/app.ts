@@ -77,6 +77,10 @@ import {
   buildImageSummaryBlock,
   buildWebAccessInstruction,
   buildCurrentTimeInstruction,
+  currentStatusNeedsSource,
+  formatCurrentDate,
+  isCurrentDateQuestion,
+  isCurrentStatusQuestion,
   shouldIncludeConversationHistoryForPrompt
 } from './services/conversation-context';
 import { sanitizeConversationHistoryForPrompt } from './services/conversation-history-sanitizer';
@@ -1296,6 +1300,10 @@ export async function startBot(): Promise<void> {
 
           const { processedContent, moderation } = moderationResult;
           const inputSafetyDecision = moderation.safetyDecision;
+          const deterministicDateRequest =
+            currentImageUrls.length === 0 &&
+            inputSafetyDecision?.action === 'allow' &&
+            isCurrentDateQuestion(processedContent);
           const inputNsfwRisk = hasSemanticNsfwInputRisk(processedContent);
 
           messageTrace?.update({
@@ -1394,9 +1402,12 @@ export async function startBot(): Promise<void> {
             );
           }
 
-          const promptSentiment = deterministicRangeRequest
-            ? classifyPromptDeterministic(processedContent)
-            : await sentimentClassifier.classifyPrompt(processedContent);
+          const promptSentiment =
+            deterministicRangeRequest ||
+            deterministicDateRequest ||
+            isCurrentStatusQuestion(processedContent)
+              ? classifyPromptDeterministic(processedContent)
+              : await sentimentClassifier.classifyPrompt(processedContent);
           const sentimentApplied = shouldApplySentiment(promptSentiment);
           logger.info('Sentiment classification for prompt', {
             guildId,
@@ -1495,7 +1506,7 @@ export async function startBot(): Promise<void> {
             }
 
             visionUserLimit = visionQuotaCheck.max;
-          } else if (!deterministicRangeRequest) {
+          } else if (!deterministicRangeRequest && !deterministicDateRequest) {
             const quotaStatus = await quotaMiddleware.checkQuota(
               guildId,
               message.author.id,
@@ -1668,7 +1679,11 @@ export async function startBot(): Promise<void> {
             lowContextHistoryDisabled;
 
           // Build memory retrieval as a parallel task
-          const memoryPromise = contextReuseDisabledForTurn
+          const skipMemoryForCurrentInformation =
+            contextReuseDisabledForTurn ||
+            deterministicDateRequest ||
+            isCurrentStatusQuestion(processedContent);
+          const memoryPromise = skipMemoryForCurrentInformation
             ? Promise.resolve({
                 context: '',
                 selected: [],
@@ -1821,7 +1836,7 @@ export async function startBot(): Promise<void> {
             agentGraphConfig.searchEnabled,
             urlContext.items.length > 0
           );
-          const systemPrompt = `${baseSystemPrompt}${personaTurnInstruction}${webAccessInstruction}${buildCurrentTimeInstruction(new Date())}${buildVisionResponseInstruction(useVision)}`;
+          const systemPrompt = `${baseSystemPrompt}${personaTurnInstruction}${webAccessInstruction}${buildCurrentTimeInstruction(new Date(), process.env.TZ)}${buildVisionResponseInstruction(useVision)}`;
           const outputInputNsfwRisk =
             assistantSafetyPolicy === 'contextual_banter' && personaState === 'alternate'
               ? hasSemanticNsfwInputRisk(
@@ -1904,6 +1919,25 @@ export async function startBot(): Promise<void> {
             prunedHistoryForPrompt.length > 0 &&
             !lowContextHistoryDisabled;
           const historyForPrompt = includeConversationHistory ? prunedHistoryForPrompt : [];
+          const previousUserTask = selectLatestTaskDefiningUserText(
+            historyForPrompt
+              .filter(historyMessage => historyMessage.role === 'user')
+              .map(historyMessage => historyMessage.content)
+          );
+          const deterministicCurrentResponse =
+            currentImageUrls.length === 0 && inputSafetyDecision?.action === 'allow'
+              ? deterministicDateRequest
+                ? formatCurrentDate(new Date(), process.env.TZ)
+                : isCurrentStatusQuestion(processedContent, previousUserTask)
+                  ? currentStatusNeedsSource(
+                      agentGraphConfig.searchEnabled &&
+                        Boolean(
+                          providers.getWebSearchProvider('openai') ||
+                          providers.getWebSearchProvider('xai')
+                        )
+                    )
+                  : null
+              : null;
           const conversationHistoryInstruction = buildConversationHistoryInstruction(
             includeConversationHistory
           );
@@ -1993,9 +2027,16 @@ export async function startBot(): Promise<void> {
             adapter: textProvider.name,
             routerDecision,
             routerReason,
-            generationSource: deterministicRangeResponse ? 'deterministic_range' : 'provider',
+            generationSource: deterministicRangeResponse
+              ? 'deterministic_range'
+              : deterministicCurrentResponse
+                ? 'deterministic_current_information'
+                : 'provider',
             configuredMaxOutputTokens: configuredTextResponseTokens,
-            effectiveMaxOutputTokens: deterministicRangeResponse ? 0 : maxTextResponseTokens,
+            effectiveMaxOutputTokens:
+              deterministicRangeResponse || deterministicCurrentResponse
+                ? 0
+                : maxTextResponseTokens,
             hasConversationHistory: messages.length > 0,
             conversationMessageCount: messages.length,
             usesTools: false,
@@ -2086,7 +2127,12 @@ export async function startBot(): Promise<void> {
           let recoveryReason: 'safety' | 'quality' | null = null;
           let recoveryContextRetained = false;
           let recoveryStrategy: AssistantRecoveryStrategy | null = null;
-          const generationSource = deterministicRangeResponse ? 'deterministic_range' : 'provider';
+          const generationSource = deterministicRangeResponse
+            ? 'deterministic_range'
+            : deterministicCurrentResponse
+              ? 'deterministic_current_information'
+              : 'provider';
+          const isDeterministicGeneration = generationSource !== 'provider';
           const traceableRangeBounds = Boolean(
             deterministicRangeResponse &&
             Math.abs(deterministicRangeResponse.start) <= MAX_TRACEABLE_RANGE_BOUND &&
@@ -2112,11 +2158,38 @@ export async function startBot(): Promise<void> {
                 hasPromptFallbackNotice: Boolean(promptFallbackNotice),
                 generationSource,
                 configuredMaxOutputTokens: configuredTextResponseTokens,
-                effectiveMaxOutputTokens: deterministicRangeResponse ? 0 : maxTextResponseTokens,
+                effectiveMaxOutputTokens:
+                  deterministicRangeResponse || deterministicCurrentResponse
+                    ? 0
+                    : maxTextResponseTokens,
                 temperature: 0.6
               }
             },
             async generation => {
+              if (deterministicCurrentResponse) {
+                const deterministicResponse = {
+                  content: deterministicCurrentResponse,
+                  model: 'deterministic-current-information',
+                  finishReason: 'stop' as const,
+                  providerFinishReason: 'deterministic_complete',
+                  usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 }
+                };
+                generation?.update({
+                  output: {
+                    outputCharacters: deterministicCurrentResponse.length,
+                    hasContent: true,
+                    generationSource
+                  },
+                  metadata: {
+                    ...buildLangfuseTraceMetadata(generationMetadataInput),
+                    generationSource,
+                    finishReason: deterministicResponse.finishReason,
+                    providerFinishReason: deterministicResponse.providerFinishReason,
+                    completionTokens: 0
+                  }
+                });
+                return deterministicResponse;
+              }
               if (deterministicRangeResponse) {
                 const deterministicResponse = {
                   content: deterministicRangeResponse.content,
@@ -3246,10 +3319,9 @@ export async function startBot(): Promise<void> {
             }
           }
 
-          const actualTokens =
-            generationSource === 'deterministic_range'
-              ? 0
-              : quotaMiddleware.getChargeableTextTokens(response.usage, responseContent);
+          const actualTokens = isDeterministicGeneration
+            ? 0
+            : quotaMiddleware.getChargeableTextTokens(response.usage, responseContent);
           if (usedVision) {
             const safeVisionUserLimit = Number.isFinite(visionUserLimit)
               ? visionUserLimit
@@ -3344,8 +3416,7 @@ export async function startBot(): Promise<void> {
                 model: response.model || requestedTextModel || undefined,
                 generationSource,
                 configuredMaxOutputTokens: configuredTextResponseTokens,
-                effectiveMaxOutputTokens:
-                  generationSource === 'deterministic_range' ? 0 : maxTextResponseTokens,
+                effectiveMaxOutputTokens: isDeterministicGeneration ? 0 : maxTextResponseTokens,
                 completionTokens: response.usage?.completionTokens,
                 finishReason: response.finishReason,
                 providerFinishReason: response.providerFinishReason,
@@ -3434,8 +3505,7 @@ export async function startBot(): Promise<void> {
               recoveryStrategy,
               generationSource,
               configuredMaxOutputTokens: configuredTextResponseTokens,
-              effectiveMaxOutputTokens:
-                generationSource === 'deterministic_range' ? 0 : maxTextResponseTokens,
+              effectiveMaxOutputTokens: isDeterministicGeneration ? 0 : maxTextResponseTokens,
               completionTokens: response.usage?.completionTokens ?? null,
               finishReason: response.finishReason || null,
               providerFinishReason: response.providerFinishReason || null,
@@ -3537,7 +3607,7 @@ export async function startBot(): Promise<void> {
             }
           });
 
-          if (usedVision || generationSource === 'deterministic_range') {
+          if (usedVision || isDeterministicGeneration) {
             Promise.all([conversationWrite, sentimentEvent]).catch(err => {
               logger.error('Failed to complete post-response writes:', err);
             });
