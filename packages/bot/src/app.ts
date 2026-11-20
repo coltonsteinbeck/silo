@@ -76,6 +76,7 @@ import {
   buildConversationHistoryInstruction,
   buildImageSummaryBlock,
   buildWebAccessInstruction,
+  buildCurrentTimeInstruction,
   shouldIncludeConversationHistoryForPrompt
 } from './services/conversation-context';
 import { sanitizeConversationHistoryForPrompt } from './services/conversation-history-sanitizer';
@@ -1820,7 +1821,7 @@ export async function startBot(): Promise<void> {
             agentGraphConfig.searchEnabled,
             urlContext.items.length > 0
           );
-          const systemPrompt = `${baseSystemPrompt}${personaTurnInstruction}${webAccessInstruction}${buildVisionResponseInstruction(useVision)}`;
+          const systemPrompt = `${baseSystemPrompt}${personaTurnInstruction}${webAccessInstruction}${buildCurrentTimeInstruction(new Date())}${buildVisionResponseInstruction(useVision)}`;
           const outputInputNsfwRisk =
             assistantSafetyPolicy === 'contextual_banter' && personaState === 'alternate'
               ? hasSemanticNsfwInputRisk(

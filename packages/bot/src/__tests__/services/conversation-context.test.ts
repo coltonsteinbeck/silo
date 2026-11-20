@@ -3,6 +3,7 @@ import {
   assembleConversationContext,
   buildEffectiveUserPrompt,
   buildConversationHistoryInstruction,
+  buildCurrentTimeInstruction,
   buildWebAccessInstruction,
   isRefusalLoopResetTurn,
   isLowContextStandaloneTurn,
@@ -11,6 +12,17 @@ import {
 } from '../../services/conversation-context';
 
 describe('conversation-context', () => {
+  test('grounds current dates in UTC without presenting the clock as event evidence', () => {
+    const before = buildCurrentTimeInstruction(new Date('2026-11-20T23:59:59.000Z'));
+    const after = buildCurrentTimeInstruction(new Date('2026-11-21T00:00:00.000Z'));
+    expect(before).toContain('2026-11-20T23:59:59.000Z');
+    expect(after).toContain('2026-11-21T00:00:00.000Z');
+    expect(after).toContain('This clock does not prove that an external event happened');
+    expect(after).toContain('including requests to check again');
+    expect(after).toContain('earlier assistant claims');
+    expect(() => buildCurrentTimeInstruction(new Date(Number.NaN))).toThrow();
+  });
+
   test('keeps referenced content for storage but excludes it from merged user prompt', () => {
     const context = assembleConversationContext({
       processedContent: 'Has he gone guru?',

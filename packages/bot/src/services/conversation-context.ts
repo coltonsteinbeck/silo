@@ -186,3 +186,11 @@ export function buildWebAccessInstruction(
     : ' Web search is unavailable; do not direct the user to an unavailable command.';
   return `\n\nWeb access rule: Ordinary conversation cannot run web searches. Never invent search results or citations.${pageContext}${search}`;
 }
+
+export function buildCurrentTimeInstruction(now: Date): string {
+  if (!Number.isFinite(now.getTime())) {
+    throw new Error('Current time must be a valid date');
+  }
+
+  return `\n\nCurrent time rule: The trusted server time is ${now.toISOString()} (UTC). Use this time for date questions, and state UTC when the user's timezone is unknown. This clock does not prove that an external event happened. For current event or release status, including requests to check again, do not treat persona examples, earlier assistant claims, or unsourced memory as fresh evidence. If no current source was supplied, say the status cannot be verified from this conversation and follow the web access rule.`;
+}
