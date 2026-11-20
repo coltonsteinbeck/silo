@@ -1,6 +1,7 @@
 {
   "name": "silo",
-  "version": "0.1.0",
+  "version": "2.1.0",
+  "packageManager": "bun@1.4.4",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -11,6 +12,7 @@
     "runtime:prepare": "bash scripts/prepare-radio-runtime.sh",
     "radio:verify-runtime": "bun scripts/verify-ytdlp-artifact.ts",
     "radio:validate": "bun scripts/validate-radio-playback.ts",
+    "runtime:tls-memory": "node scripts/tls-memory-repro.mjs",
     "dev": "bun run --filter '*' dev",
     "dev:bot": "bun --watch packages/bot/src/index.ts",
     "predev:bot": "bun test",

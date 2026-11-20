@@ -23,7 +23,7 @@ By participating in this project, you agree to maintain a respectful and inclusi
 
 ### Prerequisites
 
-- [Bun](https://bun.sh) >= 1.0.0
+- [Bun](https://bun.sh) 1.4.4
 - PostgreSQL >= 14
 - Redis >= 7.0
 - Discord Bot Application
@@ -41,7 +41,7 @@ By participating in this project, you agree to maintain a respectful and inclusi
 2. **Install dependencies:**
 
    ```bash
-   bun install
+   bash scripts/install-locked.sh
    ```
 
 3. **Set up Git hooks:**

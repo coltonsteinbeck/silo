@@ -34,6 +34,7 @@ import { DrawCommand } from './commands/draw';
 import { RadioCommand } from './commands/radio';
 import { FeedbackCommand } from './commands/feedback';
 import { HealthServer } from './health/server';
+import { assertReleaseBunRuntime } from './runtime/bun-version';
 import {
   guildManager,
   contentSanitizer,
@@ -480,6 +481,7 @@ export async function handleModalSubmit(
 }
 
 export async function startBot(): Promise<void> {
+  assertReleaseBunRuntime();
   installProcessErrorHandlers({
     log: logger,
     shutdownTracing: shutdownLangfuseTracing

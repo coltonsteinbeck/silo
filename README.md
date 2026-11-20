@@ -6,7 +6,7 @@ Self-hosted Discord bot framework with customizable AI providers, advanced memor
 
 ### Prerequisites
 
-- Bun 1.0+
+- Bun 1.4.4 (the validated release runtime)
 - PostgreSQL database (local Docker, Supabase, or any Postgres provider)
 - Redis (for rate limiting)
 - Discord Bot Token
@@ -65,11 +65,14 @@ bun run setup  # Installs deps, starts Docker, runs migrations
 The bot holds one PostgreSQL session advisory lock per Discord application before migrations or login. Use a direct connection or session-mode pooler; transaction-mode pooling cannot preserve the runtime lease. Every instance of the same application must use the same database. The lease uses one dedicated connection in addition to the application pool, checks ownership every five seconds, and terminates the process on connection loss, a failed ownership check, or an expired ten-second heartbeat window. `/health` includes `leader.held` and requires it for healthy status. Stop the previous instance before starting its replacement.
 
 Build with `bun run build` before using the PM2 example, which runs `packages/bot/dist/index.js`.
+This release requires the exact Bun version in `.bun-version` for local, container, and PM2 startup. The bot checks the runtime before connecting to Discord or the database; verify which `bun` the supervisor resolves before restarting it. The application pool retains idle connections for two minutes to reuse the 60-second health heartbeat, and retires them after at most one hour. The runtime leader lease keeps its separate database session.
+
+On macOS, `node scripts/tls-memory-repro.mjs /absolute/path/to/bun` runs a synthetic, loopback-only 3,000-connection TLS RSS check. It requires the pinned Bun version, OpenSSL, and `ps`; it does not connect to Discord or a database. This local regression does not replace the post-deployment memory observation.
 
 ```bash
 git clone <your-repo>
 cd silo
-bun install
+bash scripts/install-locked.sh
 
 # Get your Postgres connection string from Supabase
 export DATABASE_URL='postgresql://postgres:[password]@db.[project].supabase.co:5432/postgres'

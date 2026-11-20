@@ -200,9 +200,9 @@ describe('patch-note credentials and delivery', () => {
           : hook()
       )
     );
-    expect(await service.send(guildId, userId, '2.0.1', 'Added\n- Use /search')).toBe('delivered');
+    expect(await service.send(guildId, userId, '2.1.0', 'Added\n- Use /search')).toBe('delivered');
     now = new Date('2026-11-16T18:30:00.000Z');
-    expect(await service.send(guildId, userId, 'v2.0.1', 'Added\n- Use /search')).toBe(
+    expect(await service.send(guildId, userId, 'v2.1.0', 'Added\n- Use /search')).toBe(
       'already-attempted'
     );
     expect(db.claimPatchNotesDelivery.mock.calls[0]![2]).toBe(
@@ -312,11 +312,11 @@ describe('patch-note credentials and delivery', () => {
 describe('patch-note release card', () => {
   test('groups nonempty sections and formats slash commands without dropping introductory text', () => {
     const embed = buildPatchNotesEmbed(
-      'v2.0.1',
+      'v2.1.0',
       'A short introduction.\n\nAdded\n- Use /search for sources\n- Try `/draw`\nChanged:\n* Better replies\nFixed\n',
       releaseDate
     );
-    expect(embed.title).toBe('Silo v2.0.1 is live');
+    expect(embed.title).toBe('Silo v2.1.0 is live');
     expect(embed.color).toBe(0x5865f2);
     expect(embed.description).toBe(
       '**Notes**\nA short introduction.\n\n**Added**\n• Use `/search` for sources\n• Try `/draw`\n\n**Changed**\n• Better replies'
@@ -327,24 +327,24 @@ describe('patch-note release card', () => {
 
   test('keeps free-text submissions readable and prevents mass mentions', () => {
     const embed = buildPatchNotesEmbed(
-      '2.0.1',
+      '2.1.0',
       'Improved /draw.\n@everyone please try it.',
       releaseDate
     );
     expect(embed.description).toStartWith('**Notes**\n');
     expect(embed.description).toContain('`/draw`');
     expect(embed.description).not.toContain('@everyone');
-    expect(buildPatchNotesEmbed('2.0.1', '- Existing bullet', releaseDate).description).toContain(
+    expect(buildPatchNotesEmbed('2.1.0', '- Existing bullet', releaseDate).description).toContain(
       '- Existing bullet'
     );
   });
 
   test('rejects expanded content beyond Discord limits before delivery', () => {
     const manyLines = Array.from({ length: 598 }, () => '/a').join('\n');
-    expect(() => buildPatchNotesEmbed('2.0.1', `Added\n${manyLines}`, releaseDate)).toThrow(
+    expect(() => buildPatchNotesEmbed('2.1.0', `Added\n${manyLines}`, releaseDate)).toThrow(
       'embed limits'
     );
-    expect(() => buildPatchNotesEmbed('2.0.1', 'x'.repeat(1801), releaseDate)).toThrow('1–1800');
+    expect(() => buildPatchNotesEmbed('2.1.0', 'x'.repeat(1801), releaseDate)).toThrow('1–1800');
   });
 });
 

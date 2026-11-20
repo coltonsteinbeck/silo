@@ -220,7 +220,10 @@ export class PostgresAdapter implements DatabaseAdapter {
     this.pool = new Pool({
       connectionString: connectionUrl,
       connectionTimeoutMillis: 10000,
-      idleTimeoutMillis: 30000,
+      // The 60-second health heartbeat should reuse an application connection.
+      // Idle clients still close after two minutes; the leader lease uses its own session.
+      idleTimeoutMillis: 120000,
+      maxLifetimeSeconds: 3600,
       max: options?.maxConnections ?? 10,
       ...(options?.ssl ? { ssl: { rejectUnauthorized: false } } : {})
     });
