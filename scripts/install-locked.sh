@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "$(bun --version)" != "1.4.4" ]]; then
-  echo "Silo requires Bun 1.4.4 for dependency installation" >&2
+if [[ "$(bun --version)" != "1.4.5" ]]; then
+  echo "Silo requires Bun 1.4.5 for dependency installation" >&2
   exit 1
 fi
 

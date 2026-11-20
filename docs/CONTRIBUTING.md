@@ -23,7 +23,7 @@ By participating in this project, you agree to maintain a respectful and inclusi
 
 ### Prerequisites
 
-- [Bun](https://bun.sh) 1.4.4
+- [Bun](https://bun.sh) 1.4.5
 - PostgreSQL >= 14
 - Redis >= 7.0
 - Discord Bot Application

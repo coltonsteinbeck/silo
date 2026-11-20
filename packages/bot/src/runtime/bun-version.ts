@@ -1,4 +1,4 @@
-export const RELEASE_BUN_VERSION = '1.4.4';
+export const RELEASE_BUN_VERSION = '1.4.5';
 
 export function assertReleaseBunRuntime(
   version: string | undefined = typeof Bun === 'undefined' ? undefined : Bun.version

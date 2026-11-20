@@ -6,7 +6,7 @@ Self-hosted Discord bot framework with customizable AI providers, advanced memor
 
 ### Prerequisites
 
-- Bun 1.4.4 (the validated release runtime)
+- Bun 1.4.5 (the validated release runtime)
 - PostgreSQL database (local Docker, Supabase, or any Postgres provider)
 - Redis (for rate limiting)
 - Discord Bot Token

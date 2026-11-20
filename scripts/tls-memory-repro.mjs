@@ -21,7 +21,7 @@ function rssKiB(pid) {
 }
 
 async function worker(port, host) {
-  if (Bun.version !== '1.4.4') throw new Error('The memory gate requires Bun 1.4.4');
+  if (Bun.version !== '1.4.5') throw new Error('The memory gate requires Bun 1.4.5');
   if (host !== localAddress()) throw new Error('The memory gate requires an internal interface');
   const samples = [];
   for (let i = 1; i <= COUNT; i++) {
@@ -49,7 +49,7 @@ async function worker(port, host) {
 }
 
 async function parent(binary) {
-  if (!binary || !binary.startsWith('/')) throw new Error('Pass an absolute path to Bun 1.4.4');
+  if (!binary || !binary.startsWith('/')) throw new Error('Pass an absolute path to Bun 1.4.5');
   const directory = await mkdtemp(join(tmpdir(), 'silo-tls-memory-'));
   let server;
   try {
