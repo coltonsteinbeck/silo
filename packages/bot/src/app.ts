@@ -668,12 +668,15 @@ export async function startBot(): Promise<void> {
     logger.warn('Safety monitor alert', { guildId, detail: messageContent });
   };
 
-  // Start periodic cost aggregation
-  costAggregator.start();
+  // A no-registration dev session is a passive readiness check. It must not
+  // process guild activity or start jobs that can send Discord messages.
+  if (commandSyncMode !== 'none') costAggregator.start();
 
   let scopedReady = commandSyncMode === 'legacy';
   const admitsEvent = (guildId: string | null | undefined): boolean =>
-    scopedReady && acceptsScopedGuildEvent(commandSyncMode, guildId, config.discord.guildId);
+    commandSyncMode !== 'none' &&
+    scopedReady &&
+    acceptsScopedGuildEvent(commandSyncMode, guildId, config.discord.guildId);
 
   client.once(Events.ClientReady, async readyClient => {
     if (commandShutdown.signal.aborted || !(await runtimeLease.verify())) return;
@@ -698,28 +701,30 @@ export async function startBot(): Promise<void> {
     logger.info(`Bot ready! Logged in as ${readyClient.user.tag}`);
     logger.info(`Serving ${readyClient.guilds.cache.size} guilds`);
 
-    // Set client reference for security modules
-    guildManager.setClient(client);
+    if (commandSyncMode !== 'none') {
+      // Set client reference for security modules
+      guildManager.setClient(client);
 
-    // Ensure all guilds the bot is in are registered in guild_registry.
-    // This prevents the inactivity scheduler from evicting guilds that were
-    // never registered (e.g. after a database reset or migration issue).
-    try {
-      const syncResult = await guildManager.ensureGuildsRegistered();
-      if (syncResult.synced > 0) {
-        logger.info(
-          `Guild sync: registered ${syncResult.synced} missing guild(s), ${syncResult.skipped} already registered`
-        );
-      } else {
-        logger.info(`Guild sync: all ${syncResult.skipped} guild(s) already registered`);
+      // Ensure all guilds the bot is in are registered in guild_registry.
+      // This prevents the inactivity scheduler from evicting guilds that were
+      // never registered (e.g. after a database reset or migration issue).
+      try {
+        const syncResult = await guildManager.ensureGuildsRegistered();
+        if (syncResult.synced > 0) {
+          logger.info(
+            `Guild sync: registered ${syncResult.synced} missing guild(s), ${syncResult.skipped} already registered`
+          );
+        } else {
+          logger.info(`Guild sync: all ${syncResult.skipped} guild(s) already registered`);
+        }
+      } catch (error) {
+        logger.error('Guild sync failed:', error);
       }
-    } catch (error) {
-      logger.error('Guild sync failed:', error);
-    }
 
-    // Start inactivity scheduler (only in hosted mode)
-    inactivityScheduler.init(db.pool, client);
-    inactivityScheduler.start();
+      // Start inactivity scheduler (only in hosted mode)
+      inactivityScheduler.init(db.pool, client);
+      inactivityScheduler.start();
+    }
 
     // Register slash commands
     const commandData = Array.from(commands.values()).map(cmd => cmd.data.toJSON());
@@ -744,23 +749,24 @@ export async function startBot(): Promise<void> {
       }
     }
 
-    void (async () => {
-      const prewarmStart = Date.now();
+    if (commandSyncMode !== 'none')
+      void (async () => {
+        const prewarmStart = Date.now();
 
-      try {
-        const customPrompts = await collectStartupCustomPrompts(joinedGuildIds, adminDb);
-        await Promise.allSettled([
-          contentSanitizer.prewarmRuntime(),
-          prewarmGuardrailsRuntime({ customPrompts })
-        ]);
+        try {
+          const customPrompts = await collectStartupCustomPrompts(joinedGuildIds, adminDb);
+          await Promise.allSettled([
+            contentSanitizer.prewarmRuntime(),
+            prewarmGuardrailsRuntime({ customPrompts })
+          ]);
 
-        logger.info(
-          `Safety runtime warmed in ${Date.now() - prewarmStart}ms (${customPrompts.length} custom prompt(s) cached)`
-        );
-      } catch (error) {
-        logger.debug('Safety runtime prewarm failed', error);
-      }
-    })();
+          logger.info(
+            `Safety runtime warmed in ${Date.now() - prewarmStart}ms (${customPrompts.length} custom prompt(s) cached)`
+          );
+        } catch (error) {
+          logger.debug('Safety runtime prewarm failed', error);
+        }
+      })();
   });
 
   // Handle slash command interactions
@@ -984,6 +990,14 @@ export async function startBot(): Promise<void> {
   // Handle guild join
   client.on(Events.GuildCreate, async guild => {
     if (!scopedReady) return;
+    if (commandSyncMode === 'none') {
+      if (guild.id !== config.discord.guildId) {
+        commandShutdown.abort();
+        logger.error('Scoped Discord runtime joined an unexpected guild');
+        process.exit(1);
+      }
+      return;
+    }
     if (!admitsEvent(guild.id)) {
       commandShutdown.abort();
       logger.error('Scoped Discord runtime joined an unexpected guild');
@@ -1041,6 +1055,14 @@ export async function startBot(): Promise<void> {
   // Handle guild leave/kick
   client.on(Events.GuildDelete, async guild => {
     if (!scopedReady) return;
+    if (commandSyncMode === 'none') {
+      if (guild.id === config.discord.guildId) {
+        commandShutdown.abort();
+        logger.error('Scoped Discord runtime left its expected guild');
+        process.exit(1);
+      }
+      return;
+    }
     if (commandSyncMode !== 'legacy') {
       if (admitsEvent(guild.id)) {
         commandShutdown.abort();

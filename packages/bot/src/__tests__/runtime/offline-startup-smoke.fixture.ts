@@ -159,9 +159,10 @@ process.chdir(fixtureDirectory);
 try {
   const { startBot } = await import(source('app.ts'));
   await startBot();
-  for (let attempt = 0; attempt < 100 && !calls.includes('guardrails-prewarm-mocked'); attempt++) {
+  for (let attempt = 0; attempt < 100 && !calls.includes('client-login'); attempt++) {
     await Bun.sleep(10);
   }
+  await Bun.sleep(25);
   assert(FixtureClient.latest, 'fixture client not created');
   for (const required of [
     'process-lock-mocked',
@@ -171,11 +172,18 @@ try {
     'database-connect-mocked',
     'policy-registry-mocked',
     'health-start-mocked',
-    'client-login',
-    'guild-sync-mocked',
-    'guardrails-prewarm-mocked'
+    'client-login'
   ])
     assert(calls.includes(required), `missing startup step: ${required}`);
+  for (const forbidden of [
+    'cost-start-mocked',
+    'guild-manager-client-mocked',
+    'guild-sync-mocked',
+    'scheduler-init-mocked',
+    'scheduler-start-mocked',
+    'guardrails-prewarm-mocked'
+  ])
+    assert(!calls.includes(forbidden), `passive startup unexpectedly ran: ${forbidden}`);
   assert(!calls.includes('client-destroy'));
   process.stdout.write(JSON.stringify({ status: 'offline-startup-passed', steps: calls }) + '\n');
 } finally {
