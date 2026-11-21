@@ -70,6 +70,7 @@ import { sanitizeAssistantOutput, sanitizeDiscordMassMentions } from './security
 import { QuotaMiddleware } from './middleware/quota';
 import { CostAggregator } from './services/cost-aggregator';
 import { selectMemoryContext } from './services/memory-selector';
+import { createCurrentStatusSearch, ownPriorUserTexts } from './services/current-status-search';
 import {
   assembleConversationContext,
   buildEffectiveUserPrompt,
@@ -588,6 +589,13 @@ export async function startBot(): Promise<void> {
   const available = providers.getAvailableProviders();
   logger.info('Available providers:', available);
   const agentGraphConfig = createAgentGraphRuntimeConfig();
+  const lookupCurrentStatus = createCurrentStatusSearch({
+    registry: providers,
+    quota: quotaMiddleware,
+    permissions,
+    enabled: agentGraphConfig.searchEnabled,
+    shutdownSignal: commandShutdown.signal
+  });
   logger.info('Agent graph runtime:', {
     enabled: agentGraphConfig.enabled,
     mode: agentGraphConfig.mode,
@@ -1919,23 +1927,29 @@ export async function startBot(): Promise<void> {
             prunedHistoryForPrompt.length > 0 &&
             !lowContextHistoryDisabled;
           const historyForPrompt = includeConversationHistory ? prunedHistoryForPrompt : [];
-          const previousUserTask = selectLatestTaskDefiningUserText(
-            historyForPrompt
-              .filter(historyMessage => historyMessage.role === 'user')
-              .map(historyMessage => historyMessage.content)
-          );
+          const priorOwnUserTexts = ownPriorUserTexts(historyForPrompt, message.author.id);
+          const previousUserTask = selectLatestTaskDefiningUserText(priorOwnUserTexts);
+          const currentStatusQuestion = isCurrentStatusQuestion(processedContent, previousUserTask);
+          const currentStatusSearchResult =
+            currentImageUrls.length === 0 &&
+            inputSafetyDecision?.action === 'allow' &&
+            !deterministicDateRequest &&
+            currentStatusQuestion
+              ? await lookupCurrentStatus({
+                  currentText: processedContent,
+                  priorUserTexts: priorOwnUserTexts,
+                  guildId,
+                  userId: message.author.id,
+                  messageId: message.id,
+                  member
+                })
+              : null;
           const deterministicCurrentResponse =
             currentImageUrls.length === 0 && inputSafetyDecision?.action === 'allow'
               ? deterministicDateRequest
                 ? formatCurrentDate(new Date(), process.env.TZ)
-                : isCurrentStatusQuestion(processedContent, previousUserTask)
-                  ? currentStatusNeedsSource(
-                      agentGraphConfig.searchEnabled &&
-                        Boolean(
-                          providers.getWebSearchProvider('openai') ||
-                          providers.getWebSearchProvider('xai')
-                        )
-                    )
+                : currentStatusQuestion
+                  ? currentStatusSearchResult?.content || currentStatusNeedsSource(false)
                   : null
               : null;
           const conversationHistoryInstruction = buildConversationHistoryInstruction(
@@ -2030,7 +2044,9 @@ export async function startBot(): Promise<void> {
             generationSource: deterministicRangeResponse
               ? 'deterministic_range'
               : deterministicCurrentResponse
-                ? 'deterministic_current_information'
+                ? currentStatusSearchResult?.searched
+                  ? 'current_status_search'
+                  : 'deterministic_current_information'
                 : 'provider',
             configuredMaxOutputTokens: configuredTextResponseTokens,
             effectiveMaxOutputTokens:
@@ -2039,7 +2055,8 @@ export async function startBot(): Promise<void> {
                 : maxTextResponseTokens,
             hasConversationHistory: messages.length > 0,
             conversationMessageCount: messages.length,
-            usesTools: false,
+            usesTools: Boolean(currentStatusSearchResult?.searched),
+            searchProvider: currentStatusSearchResult?.providerName || null,
             supportsImages: Boolean(visionProvider?.analyzeImage),
             supportsVideo: Boolean(textProvider.capabilities?.videoGeneration),
             supportsAudio: false,
@@ -2130,7 +2147,9 @@ export async function startBot(): Promise<void> {
           const generationSource = deterministicRangeResponse
             ? 'deterministic_range'
             : deterministicCurrentResponse
-              ? 'deterministic_current_information'
+              ? currentStatusSearchResult?.searched
+                ? 'current_status_search'
+                : 'deterministic_current_information'
               : 'provider';
           const isDeterministicGeneration = generationSource !== 'provider';
           const traceableRangeBounds = Boolean(
