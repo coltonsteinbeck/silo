@@ -1404,6 +1404,20 @@ export class AdminAdapter {
     return mapQuotaLifecycleRow(result.rows[0]);
   }
 
+  async releaseRejectedImageQuotaUsage(
+    idempotencyKey: string,
+    guildId: string,
+    userId: string,
+    evidence: { status: 400 | 404; code: 'model_not_found'; requestId: string }
+  ): Promise<QuotaReservationLifecycleRow> {
+    const result = await this.pool.query(
+      `SELECT * FROM release_rejected_image_quota_usage($1, $2, $3, $4, $5, $6)`,
+      [idempotencyKey, guildId, userId, evidence.status, evidence.code, evidence.requestId]
+    );
+    if (!result.rows[0]) throw new Error('Rejected image quota release returned no result');
+    return mapQuotaLifecycleRow(result.rows[0]);
+  }
+
   async reconcileQuotaUsageReservations(limit = 100): Promise<{
     released: number;
     committed: number;
@@ -1419,6 +1433,31 @@ export class AdminAdapter {
       committed: asFiniteQuotaNumber(row.committed),
       processed: asFiniteQuotaNumber(row.processed),
       failed: asFiniteQuotaNumber(row.failed)
+    };
+  }
+
+  async getQuotaReservationBacklog(): Promise<{
+    reserved: number;
+    attempted: number;
+    staleAttempted: number;
+    oldestAttemptedSeconds: number;
+  }> {
+    const result = await this.pool.query(`
+      SELECT
+        count(*) FILTER (WHERE status = 'reserved') AS reserved,
+        count(*) FILTER (WHERE status = 'attempted') AS attempted,
+        count(*) FILTER (WHERE status = 'attempted' AND expires_at <= NOW()) AS stale_attempted,
+        COALESCE(max(EXTRACT(EPOCH FROM NOW() - attempted_at))
+          FILTER (WHERE status = 'attempted'), 0) AS oldest_attempted_seconds
+      FROM public.quota_usage_reservations
+      WHERE status IN ('reserved', 'attempted')
+    `);
+    const row = result.rows[0] ?? {};
+    return {
+      reserved: asFiniteQuotaNumber(row.reserved),
+      attempted: asFiniteQuotaNumber(row.attempted),
+      staleAttempted: asFiniteQuotaNumber(row.stale_attempted),
+      oldestAttemptedSeconds: asFiniteQuotaNumber(row.oldest_attempted_seconds)
     };
   }
 

@@ -1,5 +1,42 @@
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { OpenAIProvider, toOpenAIImageSize } from '../../providers/openai';
+import { APIError } from 'openai';
+import {
+  classifyOpenAIImageModelRejection,
+  ImageModelRejectedBeforeGenerationError
+} from '../../providers/image-rejection';
+
+function imageApiError(status: number, code: string | null, param: string | null = 'model') {
+  return APIError.generate(
+    status,
+    { error: { code, param, message: 'synthetic rejection' } },
+    undefined,
+    new globalThis.Headers({ 'x-request-id': 'req_synthetic_1' })
+  );
+}
+
+describe('structured image rejection classification', () => {
+  test('accepts only a correlated model-not-found response', () => {
+    const rejected = classifyOpenAIImageModelRejection(imageApiError(400, 'model_not_found'));
+    expect(rejected).toBeInstanceOf(ImageModelRejectedBeforeGenerationError);
+    expect(rejected?.evidence).toEqual({
+      provider: 'openai',
+      status: 400,
+      code: 'model_not_found',
+      requestId: 'req_synthetic_1'
+    });
+  });
+
+  test.each([
+    imageApiError(400, null),
+    imageApiError(400, 'content_policy_violation'),
+    imageApiError(400, 'model_not_found', 'prompt'),
+    imageApiError(429, 'model_not_found'),
+    new Error('400 The model does not exist')
+  ])('does not infer non-generation from prose or other errors', error => {
+    expect(classifyOpenAIImageModelRejection(error)).toBeNull();
+  });
+});
 
 describe('toOpenAIImageSize', () => {
   test('returns each valid size unchanged', () => {
@@ -111,6 +148,19 @@ describe('OpenAIProvider.generateImage error handling', () => {
 
     await expect(provider.generateImage('draw cat')).rejects.toThrow(
       'OpenAI image generation failed: No image URL from OpenAI'
+    );
+  });
+
+  test('preserves a structured model rejection for quota settlement', async () => {
+    (provider as any).client = {
+      images: {
+        generate: mock(async () => {
+          throw imageApiError(404, 'model_not_found');
+        })
+      }
+    };
+    await expect(provider.generateImage('synthetic prompt')).rejects.toBeInstanceOf(
+      ImageModelRejectedBeforeGenerationError
     );
   });
 });

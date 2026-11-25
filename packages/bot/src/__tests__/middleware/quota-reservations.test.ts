@@ -7,6 +7,7 @@
 
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
 import { QuotaMiddleware } from '../../middleware/quota';
+import { ImageModelRejectedBeforeGenerationError } from '../../providers/image-rejection';
 
 describe('QuotaMiddleware', () => {
   let mockAdminDb: any;
@@ -64,6 +65,14 @@ describe('QuotaMiddleware', () => {
         idempotencyKey,
         status: 'released',
         reservedAmount: 1000,
+        actualAmount: null,
+        usageDate: '2026-08-14',
+        idempotent: false
+      })),
+      releaseRejectedImageQuotaUsage: mock(async (idempotencyKey: string) => ({
+        idempotencyKey,
+        status: 'released',
+        reservedAmount: 1,
         actualAmount: null,
         usageDate: '2026-08-14',
         idempotent: false
@@ -476,6 +485,38 @@ describe('QuotaMiddleware', () => {
 
       expect(result.allowed).toBe(true);
       expect(mockAdminDb.commitQuotaUsage).toHaveBeenCalledWith('message:2:zero-usage', 500);
+    });
+
+    test('settles a correlated model rejection without committing image credits', async () => {
+      const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
+      const rejection = new ImageModelRejectedBeforeGenerationError({
+        provider: 'openai',
+        status: 400,
+        code: 'model_not_found',
+        requestId: 'req_synthetic_1'
+      });
+      await expect(
+        middleware.executeReserved({
+          operationKey: 'draw:synthetic:1',
+          guildId: 'guild1',
+          userId: 'user1',
+          member: { id: 'user1' } as any,
+          usageType: 'images',
+          requestedAmount: 1,
+          execute: async () => {
+            throw rejection;
+          },
+          getActualAmount: () => 1
+        })
+      ).rejects.toBe(rejection);
+      expect(mockAdminDb.releaseRejectedImageQuotaUsage).toHaveBeenCalledWith(
+        'draw:synthetic:1',
+        'guild1',
+        'user1',
+        rejection.evidence
+      );
+      expect(mockAdminDb.commitQuotaUsage).not.toHaveBeenCalled();
+      expect(mockAdminDb.releaseQuotaUsage).not.toHaveBeenCalled();
     });
 
     test('keeps an attempted reservation pending when provider outcome is ambiguous', async () => {

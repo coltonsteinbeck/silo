@@ -4,6 +4,7 @@ import type { PermissionManager } from '../permissions/manager';
 import type { UserRole } from '@silo/core';
 import { logger } from '@silo/core';
 import type { QuotaReservationLifecycleRow, QuotaReservationRow } from '../database/admin-adapter';
+import { ImageModelRejectedBeforeGenerationError } from '../providers/image-rejection';
 
 export type UsageType =
   'text_tokens' | 'images' | 'voice_minutes' | 'vision_tokens' | 'video_tokens';
@@ -355,6 +356,39 @@ export class QuotaMiddleware {
     try {
       value = await params.execute(reservation.reservedAmount);
     } catch (error) {
+      if (
+        params.usageType === 'images' &&
+        error instanceof ImageModelRejectedBeforeGenerationError
+      ) {
+        try {
+          const transition = await this.retryQuotaTransition('release_rejected_image', () =>
+            this.adminDb.releaseRejectedImageQuotaUsage(
+              reservation.idempotencyKey,
+              params.guildId,
+              params.userId,
+              error.evidence
+            )
+          );
+          if (transition.status !== 'released') {
+            throw new Error('Unexpected rejected image status', { cause: error });
+          }
+          logger.info('Rejected image reservation settled without usage', {
+            event: 'image_model_rejection_released',
+            guildId: params.guildId,
+            type: params.usageType,
+            providerStatus: error.evidence.status,
+            providerCode: error.evidence.code
+          });
+        } catch (settlementError) {
+          logger.error('Rejected image reservation settlement failed', {
+            event: 'image_model_rejection_settlement_failed',
+            guildId: params.guildId,
+            type: params.usageType,
+            errorType: settlementError instanceof Error ? settlementError.name : 'unknown'
+          });
+        }
+        throw error;
+      }
       logger.warn(
         'Paid provider call failed with an attempted reservation pending reconciliation',
         {

@@ -14,6 +14,7 @@ import {
 import { logger } from '@silo/core';
 import { Command } from './types';
 import { executeCommandMedia, MediaQuotaDeniedError } from './media-execution';
+import { ImageModelRejectedBeforeGenerationError } from '../providers/image-rejection';
 import { ProviderRegistry } from '../providers/registry';
 import { QuotaMiddleware } from '../middleware/quota';
 import { AdminAdapter } from '../database/admin-adapter';
@@ -220,6 +221,9 @@ export class DrawCommand implements Command {
     context: 'generation' | 'regeneration' | 'edit'
   ): string {
     if (error instanceof MediaQuotaDeniedError) return error.message;
+    if (error instanceof ImageModelRejectedBeforeGenerationError) {
+      return `Image ${context} is unavailable for this model. Please contact an administrator.`;
+    }
     const cause = error instanceof Error && error.cause instanceof Error ? error.cause : error;
     const status =
       cause && typeof cause === 'object' && 'status' in cause ? cause.status : undefined;

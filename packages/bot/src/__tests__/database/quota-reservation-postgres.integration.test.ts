@@ -224,6 +224,66 @@ async function lifecycle(
 }
 
 describe.skipIf(!RUN_DATABASE_TESTS)('atomic quota reservations on local Postgres', () => {
+  test('settles structured image model rejection once without user or guild usage', async () => {
+    const pool = await openPool();
+    const guildId = `quota-rejected-${randomUUID()}`;
+    const userId = `user-${randomUUID()}`;
+    const key = `draw-${randomUUID()}`;
+    const rejected = () =>
+      pool.query<LifecycleRow>(
+        `SELECT * FROM public.release_rejected_image_quota_usage($1, $2, $3, $4, $5, $6)`,
+        [key, guildId, userId, 400, 'model_not_found', 'req_synthetic_1']
+      );
+    try {
+      await installFixture(pool, guildId, generousLimits);
+      expect(
+        (
+          await reserve(pool, {
+            key,
+            guildId,
+            userId,
+            resource: 'images',
+            requested: 1,
+            minimum: 1
+          })
+        ).allowed
+      ).toBe(true);
+      await lifecycle(pool, 'mark_quota_usage_attempted', key);
+      await expect(
+        pool.query(
+          `SELECT * FROM public.release_rejected_image_quota_usage($1, $2, $3, 400, 'model_not_found', 'req_synthetic_1')`,
+          [key, guildId, 'other-user']
+        )
+      ).rejects.toThrow('not found for scope');
+      const [first, second] = await Promise.all([rejected(), rejected()]);
+      expect([first.rows[0]?.idempotent, second.rows[0]?.idempotent].sort()).toEqual([false, true]);
+      expect(first.rows[0]?.status).toBe('released');
+      await expect(lifecycle(pool, 'commit_quota_usage', key, 1)).rejects.toThrow();
+      const rows = await pool.query<{
+        status: string;
+        reason: string;
+        images_used: number;
+        total_images: number;
+      }>(
+        `SELECT r.status, r.reason, ut.images_used, gdu.total_images
+          FROM public.quota_usage_reservations r
+          JOIN public.usage_tracking ut USING (guild_id, user_id, usage_date)
+          JOIN public.guild_daily_usage gdu USING (guild_id, usage_date)
+          WHERE r.idempotency_key = $1`,
+        [key]
+      );
+      expect(rows.rows[0]).toMatchObject({
+        status: 'released',
+        reason: 'provider_model_not_found',
+        images_used: 0,
+        total_images: 0
+      });
+    } finally {
+      await cleanupFixtures(pool, [guildId]);
+      await pool.end();
+    }
+  }, 30_000);
+
   test('replays pre-existing quota and managed-policy schema without losing data', async () => {
     const pool = await openPool();
     const guildId = '5'.repeat(18);

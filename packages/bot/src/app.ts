@@ -68,6 +68,7 @@ import { deliverAssistantReply } from './services/assistant-delivery';
 import { hashPrompt } from './security/prompt-policy';
 import { sanitizeAssistantOutput, sanitizeDiscordMassMentions } from './security/output-sanitizer';
 import { QuotaMiddleware } from './middleware/quota';
+import { QuotaReservationReconciler } from './middleware/quota-reconciler';
 import { CostAggregator } from './services/cost-aggregator';
 import { selectMemoryContext } from './services/memory-selector';
 import { createCurrentStatusSearch, ownPriorUserTexts } from './services/current-status-search';
@@ -583,6 +584,7 @@ export async function startBot(): Promise<void> {
   const adminDb = new AdminAdapter(db.pool);
   const permissions = new PermissionManager(adminDb);
   const quotaMiddleware = new QuotaMiddleware(adminDb, permissions);
+  const quotaReconciler = new QuotaReservationReconciler(adminDb);
   const costAggregator = new CostAggregator(adminDb);
 
   const providers = new ProviderRegistry(config);
@@ -757,6 +759,7 @@ export async function startBot(): Promise<void> {
       });
       scopedReady = true;
       logger.info('Discord slash command startup mode completed', { mode: commandSyncMode });
+      if (commandSyncMode !== 'none') quotaReconciler.start(commandShutdown.signal);
     } catch (error) {
       logger.error('Failed to register slash commands:', error);
       if (commandSyncMode === 'guild-only') {

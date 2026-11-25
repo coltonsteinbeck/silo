@@ -469,6 +469,27 @@ describe('DrawCommand', () => {
       expect(JSON.stringify(interaction._getReplies())).not.toContain('private provider detail');
     });
 
+    test('renders a definitive model rejection without exposing provider evidence', async () => {
+      const { ImageModelRejectedBeforeGenerationError } =
+        await import('../../providers/image-rejection');
+      mockRegistry.getImageProvider = mock(() => ({
+        name: 'openai',
+        generateImage: mock(async () => {
+          throw new ImageModelRejectedBeforeGenerationError({
+            provider: 'openai',
+            status: 400,
+            code: 'model_not_found',
+            requestId: 'req_synthetic_1'
+          });
+        })
+      }));
+      const interaction = createMockInteraction({ options: { prompt: 'A sunset' } });
+      await command.execute(interaction as any);
+      const replies = JSON.stringify(interaction._getReplies());
+      expect(replies).toContain('unavailable for this model');
+      expect(replies).not.toContain('req_synthetic_1');
+    });
+
     test('blocks prompt via moderation preflight before provider call', async () => {
       const mockProvider = {
         name: 'openai',

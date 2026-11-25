@@ -1,4 +1,5 @@
 import OpenAI, { toFile } from 'openai';
+import { classifyOpenAIImageModelRejection } from './image-rejection';
 import { downloadMedia } from '../services/media-download';
 import type { ResponseCreateParamsNonStreaming } from 'openai/resources/responses/responses';
 import {
@@ -288,6 +289,8 @@ export class OpenAIProvider implements TextProvider, ImageProvider, WebSearchPro
         model: params.model
       };
     } catch (error) {
+      const rejectedModel = classifyOpenAIImageModelRejection(error);
+      if (rejectedModel) throw rejectedModel;
       const message = redactSecrets(error instanceof Error ? error.message : String(error));
       logger.error('[OpenAI] Image generation failed:', message);
       throw new Error(`OpenAI image generation failed: ${message}`, { cause: error });
