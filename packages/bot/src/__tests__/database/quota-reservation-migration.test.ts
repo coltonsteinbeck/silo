@@ -187,7 +187,9 @@ describe('rejected image reservation migration contract', () => {
     expect(rejectedImageMigration).toContain("p_provider_code IS DISTINCT FROM 'model_not_found'");
     expect(rejectedImageMigration).toContain('FROM PUBLIC, anon, authenticated');
     expect(rejectedImageMigration).toContain('TO service_role');
-    expect(rejectedImageMigration).toContain('DROP CONSTRAINT quota_usage_reservations_attempt_shape');
+    expect(rejectedImageMigration).toContain(
+      'DROP CONSTRAINT quota_usage_reservations_attempt_shape'
+    );
     expect(rejectedImageMigration.match(/r\.settlement_version = 1/g)).toHaveLength(2);
     expect(rejectedImageMigration).toContain('pg_catalog.pg_try_advisory_xact_lock');
     const guildLock = rejectedImageMigration.indexOf('FROM public.guild_daily_usage gdu');
