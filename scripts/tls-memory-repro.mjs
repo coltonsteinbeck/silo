@@ -9,6 +9,8 @@ import { fileURLToPath } from 'node:url';
 const LIMIT_KIB = 100 * 1024;
 const MAX_GROWTH_KIB = 15 * 1024;
 const COUNT = 3000;
+const SERVER_NAME = 'example.test';
+const CERT_FILE = 'cert.pem';
 
 function localAddress() {
   const address = Object.values(networkInterfaces()).flat().find(item => item?.internal && item.family === 'IPv4');
@@ -23,11 +25,12 @@ function rssKiB(pid) {
 async function worker(port, host) {
   if (Bun.version !== '1.4.5') throw new Error('The memory gate requires Bun 1.4.5');
   if (host !== localAddress()) throw new Error('The memory gate requires an internal interface');
+  const ca = await readFile(CERT_FILE);
   const samples = [];
   for (let i = 1; i <= COUNT; i++) {
     await new Promise((resolve, reject) => {
-      const socket = connect({ host, port, rejectUnauthorized: false }, () => {
-        socket.write('GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n');
+      const socket = connect({ host, port, ca, servername: SERVER_NAME, rejectUnauthorized: true }, () => {
+        socket.write(`GET / HTTP/1.1\r\nHost: ${SERVER_NAME}\r\nConnection: close\r\n\r\n`);
       });
       socket.on('data', () => {});
       socket.once('error', reject);
@@ -54,8 +57,8 @@ async function parent(binary) {
   let server;
   try {
     const key = join(directory, 'key.pem');
-    const cert = join(directory, 'cert.pem');
-    execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert, '-days', '1', '-subj', '/CN=example.test'], { stdio: 'ignore', timeout: 10000 });
+    const cert = join(directory, CERT_FILE);
+    execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert, '-days', '1', '-subj', `/CN=${SERVER_NAME}`], { stdio: 'ignore', timeout: 10000 });
     server = createServer({ key: await readFile(key), cert: await readFile(cert) }, (_request, response) => response.end('OK'));
     const host = localAddress();
     await new Promise((resolve, reject) => {
