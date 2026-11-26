@@ -134,6 +134,36 @@ describe('VoiceSessionManager guild voice coordination', () => {
     expect(manager.isUserSpeaking('guild', 'member')).toBe(false);
   });
 
+  test('rejects readiness after the speaker has already stopped', async () => {
+    const connecting = Promise.withResolvers<void>();
+    const ready = Promise.withResolvers<void>();
+    const disconnect = mock(async () => 1);
+    const onEnd = mock(async (_durationMs: number) => {});
+    const manager = new VoiceSessionManager({
+      joinVoice: mock(() => connection()) as never,
+      waitForState: mock(async value => value),
+      createRealtimeSession: () =>
+        ({
+          connect: () => {
+            connecting.resolve();
+            return ready.promise;
+          },
+          disconnect
+        }) as never
+    });
+    await manager.joinChannel(channel as never);
+
+    const speaking = manager.startSpeaking('guild', 'member', 'synthetic', { onEnd });
+    await connecting.promise;
+    await manager.stopSpeaking('guild', 'member');
+    ready.resolve();
+
+    await expect(speaking).rejects.toThrow('Voice connection stopped before speech started');
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    expect(onEnd).toHaveBeenCalledTimes(1);
+    expect(manager.isUserSpeaking('guild', 'member')).toBe(false);
+  });
+
   test('rechecks channel membership after marking quota and settles without connecting', async () => {
     let stillPresent = true;
     const connect = mock(async () => {});

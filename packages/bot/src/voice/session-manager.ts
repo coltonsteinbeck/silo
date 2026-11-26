@@ -274,6 +274,9 @@ export class VoiceSessionManager {
         timer.unref();
       }
       await realtimeSession.connect();
+      if (stopping || sessionInfo.activeSpeakers.get(userId) !== speaker) {
+        throw new Error('Voice connection stopped before speech started.');
+      }
       return realtimeSession;
     } catch (error) {
       await speaker.stop().catch(() => {});
