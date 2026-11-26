@@ -13,4 +13,5 @@ bun_binary="$(command -v bun)"
 shim_dir="$(mktemp -d)"
 trap 'rm -rf "$shim_dir"' EXIT
 ln -s "$bun_binary" "$shim_dir/node"
+export YOUTUBE_DL_HOST="${YOUTUBE_DL_HOST:-https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp}"
 PATH="$shim_dir:$PATH" bun install --frozen-lockfile "$@"

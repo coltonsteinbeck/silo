@@ -71,5 +71,35 @@
     "@discordjs/opus",
     "ffmpeg-static",
     "youtube-dl-exec"
-  ]
+  ],
+  "overrides": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@hono/node-server": "2.1.11",
+    "proxy-addr": "2.0.8",
+    "tar": "7.5.23",
+    "hono": "4.13.22",
+    "fast-uri": "3.1.9",
+    "body-parser": "2.4.0",
+    "form-data": "4.0.6",
+    "ip-address": "10.7.6",
+    "lodash": "4.18.1",
+    "protobufjs": "8.8.1",
+    "qs": "6.17.1",
+    "undici": "6.29.1",
+    "zod": "4.6.7",
+    "@humanfs/node": "0.16.8",
+    "@opentelemetry/exporter-trace-otlp-http": "0.223.0",
+    "@commitlint/config-validator": {
+      "ajv": "8.20.0"
+    },
+    "glob": {
+      "minimatch": "3.1.5"
+    },
+    "minimatch@^3": {
+      "brace-expansion": "1.1.22"
+    },
+    "minimatch@^10": "11.0.9",
+    "js-yaml": "4.3.2",
+    "ws": "8.23.0"
+  }
 }
