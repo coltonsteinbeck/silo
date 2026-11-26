@@ -391,12 +391,15 @@ export async function handleModalSubmit(
     }
 
     // System prompt modal
-    if (interaction.customId.startsWith('system_prompt_modal_')) {
-      const forVoice = interaction.customId.endsWith('_voice');
-      const prompt = interaction.fields.getTextInputValue('prompt_input').trim();
+    if (
+      interaction.customId === 'system_prompt_modal_text' ||
+      interaction.customId === 'system_prompt_modal_voice'
+    ) {
+      const forVoice = interaction.customId === 'system_prompt_modal_voice';
       const typeLabel = forVoice ? 'Voice' : 'Text';
 
-      if (!interaction.guildId) {
+      const guild = interaction.guild;
+      if (!guild) {
         await interaction.reply({
           content: 'This can only be used in a server.',
           flags: MessageFlags.Ephemeral
@@ -404,6 +407,22 @@ export async function handleModalSubmit(
         return;
       }
 
+      const permissions = new PermissionManager(adminDb);
+      const canEditPrompt = async () => {
+        const member = await guild.members.fetch({ user: interaction.user.id, force: true });
+        return permissions.isAdmin(guild.id, interaction.user.id, member);
+      };
+      const denyEdit = () =>
+        interaction.reply({
+          content: 'You need current server admin permissions to save this prompt.',
+          flags: MessageFlags.Ephemeral
+        });
+      if (!(await canEditPrompt())) {
+        await denyEdit();
+        return;
+      }
+
+      const prompt = interaction.fields.getTextInputValue('prompt_input').trim();
       const validation = systemPromptManager.validatePrompt(prompt);
       if (!validation.valid) {
         logger.warn('System prompt rejected by validation', {
@@ -454,8 +473,11 @@ export async function handleModalSubmit(
         return;
       }
 
-      // Save the prompt (empty string = null)
-      await adminDb.setSystemPrompt(interaction.guildId, sanitizedPrompt || null, {
+      if (!(await canEditPrompt())) {
+        await denyEdit();
+        return;
+      }
+      await adminDb.setSystemPrompt(guild.id, sanitizedPrompt || null, {
         forVoice,
         enabled: true,
         actorUserId: interaction.user.id
@@ -533,14 +555,6 @@ export async function startBot(): Promise<void> {
   });
   initializeLangfuseTracing(config);
   logger.info('Configuration loaded successfully');
-  try {
-    const dbUrl = new URL(config.database.url);
-    logger.info(
-      `Database target resolved: ${dbUrl.hostname}${dbUrl.port ? `:${dbUrl.port}` : ''}/${dbUrl.pathname.replace(/^\//, '') || 'postgres'}`
-    );
-  } catch {
-    logger.warn('Database target could not be parsed from configuration URL');
-  }
 
   // Initialize database
   const databaseTarget = new URL(config.database.url);

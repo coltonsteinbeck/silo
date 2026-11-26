@@ -12,6 +12,7 @@ import { logger } from '@silo/core';
 import {
   EmbedBuilder,
   MessageFlags,
+  PermissionFlagsBits,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
   type Message,
@@ -246,6 +247,12 @@ export class RadioManager {
       }
 
       if (existing) {
+        if (existing.voiceChannel.id !== channel.id) {
+          throw new RadioError(
+            'VOICE_ACTIVITY_CONFLICT',
+            'Radio is already playing in another voice channel.'
+          );
+        }
         await this.appendToQueue(interaction, existing, resolution);
         return;
       }
@@ -1029,6 +1036,23 @@ export class RadioManager {
     if (!this.ownsControls(interaction, queue)) {
       await interaction.reply({
         content: STALE_RADIO_CONTROLS_MESSAGE,
+        flags: MessageFlags.Ephemeral,
+        allowedMentions: noMentions
+      });
+      return true;
+    }
+
+    if (
+      !queue.voiceChannel
+        .permissionsFor(interaction.user)
+        ?.has([
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.Connect,
+          PermissionFlagsBits.Speak
+        ])
+    ) {
+      await interaction.reply({
+        content: 'You need access to the active voice channel to use its radio controls.',
         flags: MessageFlags.Ephemeral,
         allowedMentions: noMentions
       });

@@ -89,7 +89,7 @@ export function createCommands(
   // Voice commands
   const speak = new SpeakCommand(adminDb, quotaMiddleware);
   commands.set(speak.data.name, speak);
-  const stopSpeaking = new StopSpeakingCommand(quotaMiddleware);
+  const stopSpeaking = new StopSpeakingCommand();
   commands.set(stopSpeaking.data.name, stopSpeaking);
   const radio = new RadioCommand();
   commands.set(radio.data.name, radio);

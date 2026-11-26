@@ -83,4 +83,54 @@ describe('VoiceSessionManager guild voice coordination', () => {
     expect(created.destroy).toHaveBeenCalledTimes(1);
     expect(guildVoiceCoordinator.getActiveActivity('guild')).toBeNull();
   });
+
+  test('a paid speaker is bounded and settled exactly once when the provider closes', async () => {
+    let providerClosed: (() => void) | undefined;
+    const connect = mock(async () => {});
+    const disconnect = mock(async () => 1);
+    const beforeConnect = mock(async () => {});
+    const onEnd = mock(async (_durationMs: number) => {});
+    const manager = new VoiceSessionManager({
+      joinVoice: mock(() => connection()) as never,
+      waitForState: mock(async value => value),
+      createRealtimeSession: (_apiKey, _userId, options) => {
+        providerClosed = options?.onClose;
+        return { connect, disconnect } as never;
+      }
+    });
+
+    await manager.joinChannel(channel as never);
+    await manager.startSpeaking('guild', 'member', 'synthetic', {
+      beforeConnect,
+      onEnd,
+      maxDurationMs: 1000
+    });
+    await expect(manager.joinChannel({ ...channel, id: 'other' } as never)).rejects.toThrow(
+      'another channel'
+    );
+    providerClosed?.();
+    providerClosed?.();
+    await Promise.resolve();
+
+    expect(beforeConnect).toHaveBeenCalledTimes(1);
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(onEnd).toHaveBeenCalledTimes(1);
+    expect(manager.hasSession('guild')).toBe(false);
+  });
+
+  test('expiry disconnects and settles the bounded paid session', async () => {
+    const disconnect = mock(async () => 1);
+    const onEnd = mock(async (_durationMs: number) => {});
+    const manager = new VoiceSessionManager({
+      joinVoice: mock(() => connection()) as never,
+      waitForState: mock(async value => value),
+      createRealtimeSession: () => ({ connect: async () => {}, disconnect }) as never
+    });
+    await manager.joinChannel(channel as never);
+    await manager.startSpeaking('guild', 'member', 'synthetic', { onEnd, maxDurationMs: 1 });
+    await Bun.sleep(10);
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    expect(onEnd).toHaveBeenCalledTimes(1);
+    expect(manager.isUserSpeaking('guild', 'member')).toBe(false);
+  });
 });

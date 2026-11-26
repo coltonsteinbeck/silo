@@ -5,6 +5,7 @@
  */
 
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { GuildMember } from 'discord.js';
 import {
   createMockInteraction,
   createMockAdminAdapter,
@@ -63,6 +64,26 @@ describe('ModCommand', () => {
   });
 
   describe('execute', () => {
+    test('a Silo moderator still needs Discord permission to time out a member', async () => {
+      mockPermissions.canModerate = mock(async () => true);
+      mockAdminDb.logModAction = mock(async () => {});
+      const member = Object.create(GuildMember.prototype, {
+        permissions: { value: { has: () => false } }
+      });
+      const interaction = Object.assign(
+        createMockInteraction({ member, options: { subcommand: 'timeout' } }),
+        { guild: { id: 'guild' } }
+      );
+
+      await command.execute(interaction as any);
+
+      expect(interaction.options.getUser).not.toHaveBeenCalled();
+      expect(mockAdminDb.logModAction).not.toHaveBeenCalled();
+      expect(interaction._getReplies()[0]).toMatchObject({
+        content: 'You need the Discord Timeout Members permission.'
+      });
+    });
+
     test('rejects non-guild usage', async () => {
       const interaction = createMockInteraction({
         guildId: undefined

@@ -57,3 +57,26 @@ describe('runtime feedback modal routing', () => {
     }
   });
 });
+
+test('a former administrator cannot save an already opened prompt editor', async () => {
+  const fetchMember = mock(async () => ({ permissions: { has: () => false } }));
+  const readPrompt = mock(() => 'synthetic prompt');
+  const setSystemPrompt = mock(async () => {});
+  const reply = mock(async () => {});
+  await handleModalSubmit(
+    {
+      customId: 'system_prompt_modal_voice',
+      guild: { id: 'guild-a', members: { fetch: fetchMember } },
+      user: { id: 'user-a' },
+      fields: { getTextInputValue: readPrompt },
+      reply
+    } as unknown as ModalSubmitInteraction,
+    { getUserRole: async () => null, setSystemPrompt } as unknown as AdminAdapter
+  );
+  expect(fetchMember).toHaveBeenCalledWith({ user: 'user-a', force: true });
+  expect(readPrompt).not.toHaveBeenCalled();
+  expect(setSystemPrompt).not.toHaveBeenCalled();
+  expect(reply).toHaveBeenCalledWith(
+    expect.objectContaining({ content: expect.stringContaining('current server admin') })
+  );
+});

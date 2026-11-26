@@ -17,6 +17,7 @@ function createMockInteraction(options?: Parameters<typeof createBaseInteraction
   const interaction = createBaseInteraction(options);
   Object.assign(interaction, {
     id: 'interaction',
+    memberPermissions: { has: () => true },
     member: Object.assign(Object.create(GuildMember.prototype), {
       user: interaction.user,
       guild: { id: interaction.guildId }
@@ -84,6 +85,23 @@ describe('ThreadCommand', () => {
   });
 
   describe('execute', () => {
+    test('denies thread creation before reading context when Discord denies the member', async () => {
+      mockDb.getPromptContext = mock(async () => ({ messages: [] }));
+      const startThread = mock(async () => {});
+      const interaction = Object.assign(createMockInteraction(), {
+        channel: { type: 0, threads: { create: startThread } },
+        memberPermissions: { has: () => false }
+      });
+
+      await command.execute(interaction as any);
+
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        'You need permission to create public threads in this channel.'
+      );
+      expect(mockDb.getPromptContext).not.toHaveBeenCalled();
+      expect(startThread).not.toHaveBeenCalled();
+    });
+
     test('handles missing channel', async () => {
       const interaction = createMockInteraction({
         guildId: undefined
