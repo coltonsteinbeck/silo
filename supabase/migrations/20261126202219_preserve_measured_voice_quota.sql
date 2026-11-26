@@ -1,5 +1,23 @@
 -- Voice settlement can arrive after an outage from the runtime journal.
 -- Keep expired voice attempts pending until an actual amount is available.
+-- To revert the routines, first pause new voice starts and drain the journal.
+-- Confirm no attempted voice reservations still need a terminal measurement.
+-- Restore only the two CREATE OR REPLACE FUNCTION statements from
+-- 20261125234019_settle_rejected_image_reservations.sql in one transaction.
+-- Keep the identity row so a later deployment can reopen the same journal.
+
+CREATE TABLE public.voice_quota_database_identity (
+  singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+  database_id UUID NOT NULL DEFAULT gen_random_uuid()
+);
+
+INSERT INTO public.voice_quota_database_identity DEFAULT VALUES;
+ALTER TABLE public.voice_quota_database_identity ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE public.voice_quota_database_identity
+  FROM PUBLIC, anon, authenticated, service_role;
+GRANT SELECT ON TABLE public.voice_quota_database_identity TO service_role;
+CREATE POLICY voice_quota_backend_read ON public.voice_quota_database_identity
+  FOR SELECT TO service_role USING (TRUE);
 
 CREATE OR REPLACE FUNCTION public.settle_expired_quota_reservations_scope(
   p_guild_id TEXT,

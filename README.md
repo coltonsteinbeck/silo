@@ -443,15 +443,18 @@ the bot account's home directory.
 To override it, set `SILO_VOICE_QUOTA_DIRECTORY` to an absolute path outside the
 checkout. The bot account creates the directory or uses an existing directory it
 owns with mode `0700`. Use separate directories for separate deployments.
-Let the queue drain before changing the Discord application or database target.
+The journal follows the same PostgreSQL database across connection endpoint or
+credential changes. Preserve its database UUID when moving that database and
+use fresh journal storage for independent clones.
 
 On startup and during operation, the bot retries pending measurements and removes
 them after PostgreSQL confirms the exact charge. The journal stores reservation
-keys and minutes. Keep its SQLite files together and out of backups shared with
-other deployments or public artifacts. After a journal disk loss or an abrupt
-exit before a measurement exists, the reservation still holds capacity for its
-original quota day and remains available for operator review. PostgreSQL waits
-for a measurement before charging voice usage.
+keys and minutes. Keep its SQLite files together and out of public artifacts.
+If journal storage temporarily fails, the running bot retries the measurement
+and can save it directly to PostgreSQL. If the bot stops before either store
+accepts the measurement, the reservation holds capacity for its original quota
+day and remains available for operator review. PostgreSQL waits for a
+measurement before charging voice usage.
 
 ## Commands
 

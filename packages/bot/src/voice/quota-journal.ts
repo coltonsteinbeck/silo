@@ -7,28 +7,25 @@ import { logger } from '@silo/core';
 import type { AdminAdapter } from '../database/admin-adapter';
 
 const RETRY_INTERVAL_MS = 60_000;
+const COMMIT_TIMEOUT_MS = 5_000;
+const REPLAY_BATCH_SIZE = 25;
+
+class ConflictingMeasurement extends Error {}
 
 export class VoiceQuotaJournal {
   private readonly path: string;
+  private readonly unjournaled = new Map<string, number>();
   private draining = false;
 
   constructor(
     private readonly store: Pick<AdminAdapter, 'commitQuotaUsage'>,
     applicationId: string,
-    target: URL,
+    databaseId: string,
     directory = process.env.SILO_VOICE_QUOTA_DIRECTORY ??
       join(homedir(), '.local', 'state', 'silo', 'voice-quota')
   ) {
     const namespace = createHash('sha256')
-      .update(
-        JSON.stringify([
-          applicationId,
-          target.hostname,
-          target.port || '5432',
-          target.pathname,
-          target.username
-        ])
-      )
+      .update(JSON.stringify([applicationId, databaseId]))
       .digest('hex');
     this.path = join(directory, `${namespace}.sqlite`);
   }
@@ -76,6 +73,26 @@ export class VoiceQuotaJournal {
   }
 
   record(reservationKey: string, minutes: number): void {
+    const retained = this.unjournaled.get(reservationKey);
+    if (retained !== undefined && retained !== minutes) {
+      throw new ConflictingMeasurement('Conflicting terminal voice quota amount');
+    }
+    this.unjournaled.set(reservationKey, minutes);
+    try {
+      this.write(reservationKey, minutes);
+      this.unjournaled.delete(reservationKey);
+    } catch (error) {
+      if (error instanceof ConflictingMeasurement) {
+        this.unjournaled.delete(reservationKey);
+        throw error;
+      }
+      logger.warn('Voice quota measurement is waiting for journal storage', {
+        errorType: error instanceof Error ? error.name : 'unknown'
+      });
+    }
+  }
+
+  private write(reservationKey: string, minutes: number): void {
     const db = this.open();
     try {
       const stored = db
@@ -87,9 +104,22 @@ export class VoiceQuotaJournal {
       `
         )
         .get(reservationKey, minutes);
-      if (stored?.minutes !== minutes) throw new Error('Conflicting terminal voice quota amount');
+      if (stored?.minutes !== minutes) {
+        throw new ConflictingMeasurement('Conflicting terminal voice quota amount');
+      }
     } finally {
       db.close();
+    }
+  }
+
+  private async commit(key: string, minutes: number): Promise<void> {
+    const result = await this.store.commitQuotaUsage(key, minutes, COMMIT_TIMEOUT_MS);
+    if (
+      result.idempotencyKey !== key ||
+      result.status !== 'committed' ||
+      result.actualAmount !== minutes
+    ) {
+      throw new Error('Unexpected voice quota settlement result');
     }
   }
 
@@ -102,29 +132,37 @@ export class VoiceQuotaJournal {
   }
 
   async flush(now = Date.now()): Promise<void> {
-    if (this.draining || !existsSync(this.path)) return;
+    if (this.draining || (!this.unjournaled.size && !existsSync(this.path))) return;
     this.draining = true;
     let db: Database | undefined;
     try {
+      for (const [key, minutes] of [...this.unjournaled].slice(0, REPLAY_BATCH_SIZE)) {
+        try {
+          this.record(key, minutes);
+          if (this.unjournaled.has(key)) {
+            await this.commit(key, minutes);
+            this.unjournaled.delete(key);
+          }
+        } catch (error) {
+          if (this.unjournaled.delete(key)) this.unjournaled.set(key, minutes);
+          logger.warn('Unjournaled voice quota remains pending', {
+            errorType: error instanceof Error ? error.name : 'unknown'
+          });
+        }
+      }
+      if (!existsSync(this.path)) return;
       db = this.open();
       const pending = db
-        .query<{ reservation_key: string; minutes: number }, [number]>(
+        .query<{ reservation_key: string; minutes: number }, [number, number]>(
           `
         SELECT reservation_key, minutes FROM pending WHERE retry_at <= ?
-        ORDER BY retry_at, rowid LIMIT 25
+        ORDER BY retry_at, rowid LIMIT ?
       `
         )
-        .all(now);
+        .all(now, REPLAY_BATCH_SIZE);
       for (const { reservation_key: key, minutes } of pending) {
         try {
-          const result = await this.store.commitQuotaUsage(key, minutes);
-          if (
-            result.idempotencyKey !== key ||
-            result.status !== 'committed' ||
-            result.actualAmount !== minutes
-          ) {
-            throw new Error('Unexpected voice quota settlement result');
-          }
+          await this.commit(key, minutes);
           db.run('DELETE FROM pending WHERE reservation_key = ? AND minutes = ?', [key, minutes]);
         } catch (error) {
           db.run('UPDATE pending SET retry_at = ? WHERE reservation_key = ?', [

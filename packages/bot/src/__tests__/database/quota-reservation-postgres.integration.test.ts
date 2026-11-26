@@ -229,15 +229,56 @@ async function lifecycle(
 }
 
 describe.skipIf(!RUN_DATABASE_TESTS)('atomic quota reservations on local Postgres', () => {
+  test('voice replay timeouts discard the stalled PostgreSQL connection', async () => {
+    const pool = await openPool();
+    const guildId = `quota-timeout-${randomUUID()}`;
+    const key = `speak-${randomUUID()}`;
+    const lockingClient = await pool.connect();
+    try {
+      await installFixture(pool, guildId, generousLimits);
+      await reserve(pool, {
+        key,
+        guildId,
+        userId: 'voice-user',
+        resource: 'voice_minutes',
+        requested: 10,
+        minimum: 1
+      });
+      await lifecycle(pool, 'mark_quota_usage_attempted', key);
+      await lockingClient.query('BEGIN');
+      await lockingClient.query(
+        'SELECT 1 FROM public.quota_usage_reservations WHERE idempotency_key = $1 FOR UPDATE',
+        [key]
+      );
+      const removed = Promise.withResolvers<void>();
+      pool.once('remove', () => removed.resolve());
+      const admin = new AdminAdapter(pool);
+      await expect(admin.commitQuotaUsage(key, 2, 250)).rejects.toThrow('Query read timeout');
+      await removed.promise;
+      expect(pool.totalCount).toBe(1);
+      await lockingClient.query('ROLLBACK');
+      expect(await admin.commitQuotaUsage(key, 2, 250)).toMatchObject({
+        status: 'committed',
+        actualAmount: 2
+      });
+    } finally {
+      await lockingClient.query('ROLLBACK');
+      lockingClient.release();
+      await cleanupFixtures(pool, [guildId]);
+      await pool.end();
+    }
+  });
+
   test('recovers the journaled voice amount after PostgreSQL settlement fails and the worker restarts', async () => {
     const pool = await openPool();
     const directory = mkdtempSync(join(tmpdir(), 'silo-voice-quota-'));
     const guildId = `quota-voice-${randomUUID()}`;
     const userId = 'voice-user';
     const key = `speak-${randomUUID()}`;
-    const target = new URL(localConnectionString());
+    const admin = new AdminAdapter(pool);
     const application = 'voice-quota-test';
     try {
+      const databaseId = await admin.getVoiceQuotaDatabaseId();
       await installFixture(pool, guildId, generousLimits);
       const held = await reserve(pool, {
         key,
@@ -255,7 +296,7 @@ describe.skipIf(!RUN_DATABASE_TESTS)('atomic quota reservations on local Postgre
           }
         },
         application,
-        target,
+        databaseId,
         directory
       );
       unavailable.record(key, 2);
@@ -292,9 +333,9 @@ describe.skipIf(!RUN_DATABASE_TESTS)('atomic quota reservations on local Postgre
       });
 
       const restored = new VoiceQuotaJournal(
-        new AdminAdapter(pool),
+        admin,
         application,
-        target,
+        await admin.getVoiceQuotaDatabaseId(),
         directory
       );
       await restored.flush(Date.now() + 61_000);

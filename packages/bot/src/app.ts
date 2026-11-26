@@ -614,7 +614,15 @@ export async function startBot(): Promise<void> {
   const permissions = new PermissionManager(adminDb);
   const quotaMiddleware = new QuotaMiddleware(adminDb, permissions);
   const quotaReconciler = new QuotaReservationReconciler(adminDb);
-  const voiceQuotaJournal = new VoiceQuotaJournal(adminDb, config.discord.clientId, databaseTarget);
+  let voiceQuotaJournal: VoiceQuotaJournal | undefined;
+  if (commandSyncMode !== 'none') {
+    try {
+      const databaseId = await adminDb.getVoiceQuotaDatabaseId();
+      voiceQuotaJournal = new VoiceQuotaJournal(adminDb, config.discord.clientId, databaseId);
+    } catch {
+      logger.error('Voice quota database identity could not be loaded');
+    }
+  }
   const costAggregator = new CostAggregator(adminDb);
 
   const providers = new ProviderRegistry(config);
@@ -800,7 +808,7 @@ export async function startBot(): Promise<void> {
 
     if (commandSyncMode !== 'none') {
       quotaReconciler.start(commandShutdown.signal);
-      voiceQuotaJournal.start(commandShutdown.signal);
+      voiceQuotaJournal?.start(commandShutdown.signal);
     }
 
     if (commandSyncMode !== 'none')

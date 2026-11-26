@@ -1368,16 +1368,32 @@ export class AdminAdapter {
 
   async commitQuotaUsage(
     idempotencyKey: string,
-    actualAmount: number
+    actualAmount: number,
+    queryTimeoutMs?: number
   ): Promise<QuotaReservationLifecycleRow> {
-    const result = await this.pool.query(`SELECT * FROM commit_quota_usage($1, $2)`, [
-      idempotencyKey,
-      actualAmount
-    ]);
+    const text = 'SELECT * FROM commit_quota_usage($1, $2)';
+    const values = [idempotencyKey, actualAmount];
+    // On read timeout pg-pool removes the checked-out connection.
+    const query = { text, values, query_timeout: queryTimeoutMs };
+    const result =
+      queryTimeoutMs === undefined
+        ? await this.pool.query(text, values)
+        : await this.pool.query(query);
     if (!result.rows[0]) {
       throw new Error('Quota commit returned no result');
     }
     return mapQuotaLifecycleRow(result.rows[0]);
+  }
+
+  async getVoiceQuotaDatabaseId(): Promise<string> {
+    const query = {
+      text: 'SELECT database_id FROM public.voice_quota_database_identity WHERE singleton',
+      query_timeout: 5_000
+    };
+    const result = await this.pool.query<{ database_id: string }>(query);
+    const id = result.rows[0]?.database_id;
+    if (!id) throw new Error('Voice quota database identity is missing');
+    return id;
   }
 
   async recordQuotaUsageActual(idempotencyKey: string, actualAmount: number): Promise<void> {

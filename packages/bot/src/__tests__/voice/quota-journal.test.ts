@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { VoiceQuotaJournal } from '../../voice/quota-journal';
 
 let directory: string;
-const database = new URL('postgresql://fixture.invalid/silo');
+const database = 'silo-fixture-database';
 
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), 'silo-voice-quota-'));
@@ -13,7 +13,7 @@ beforeEach(() => {
 afterEach(() => rmSync(directory, { recursive: true, force: true }));
 
 test('retries ambiguous acknowledgements for the same amount, then removes the journaled entry', async () => {
-  const commit = mock(async (key: string, amount: number) => ({
+  const commit = mock(async (key: string, amount: number, _timeout?: number) => ({
     idempotencyKey: key,
     status: 'committed' as const,
     reservedAmount: 10,
@@ -23,8 +23,8 @@ test('retries ambiguous acknowledgements for the same amount, then removes the j
   }));
   const original = new VoiceQuotaJournal(
     {
-      commitQuotaUsage: async (key, amount) => {
-        await commit(key, amount);
+      commitQuotaUsage: async (key, amount, timeout) => {
+        await commit(key, amount, timeout);
         throw new Error('acknowledgement lost');
       }
     },
@@ -40,7 +40,7 @@ test('retries ambiguous acknowledgements for the same amount, then removes the j
   const otherTarget = new VoiceQuotaJournal(
     { commitQuotaUsage: commit },
     'app',
-    new URL('postgresql://fixture.invalid/other'),
+    'other-database',
     directory
   );
   await otherTarget.flush(Date.now() + 61_000);
@@ -51,8 +51,8 @@ test('retries ambiguous acknowledgements for the same amount, then removes the j
   await restarted.flush(Date.now() + 61_000);
 
   expect(commit.mock.calls).toEqual([
-    ['voice-reservation', 2],
-    ['voice-reservation', 2]
+    ['voice-reservation', 2, 5_000],
+    ['voice-reservation', 2, 5_000]
   ]);
 });
 
@@ -69,4 +69,33 @@ test('rejects a journal directory that is open to other accounts', () => {
     directory
   );
   expect(() => journal.assertReady()).toThrow('must be private');
+});
+
+test('retains the measurement when the journal and database are temporarily unavailable', async () => {
+  let databaseAvailable = false;
+  const commit = mock(async (key: string, amount: number, _timeout?: number) => {
+    if (!databaseAvailable) throw new Error('database unavailable');
+    return {
+      idempotencyKey: key,
+      status: 'committed' as const,
+      reservedAmount: 10,
+      actualAmount: amount,
+      usageDate: '2026-01-01',
+      idempotent: false
+    };
+  });
+  const journal = new VoiceQuotaJournal({ commitQuotaUsage: commit }, 'app', database, directory);
+  journal.assertReady();
+  chmodSync(directory, 0o755);
+  journal.record('voice-reservation', 2);
+  await journal.flush();
+  expect(commit).toHaveBeenCalledTimes(1);
+
+  chmodSync(directory, 0o700);
+  await journal.flush();
+  expect(commit).toHaveBeenCalledTimes(2);
+  databaseAvailable = true;
+  const restarted = new VoiceQuotaJournal({ commitQuotaUsage: commit }, 'app', database, directory);
+  await restarted.flush(Date.now() + 61_000);
+  expect(commit.mock.calls[2]).toEqual(['voice-reservation', 2, 5_000]);
 });
