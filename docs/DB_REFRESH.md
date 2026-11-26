@@ -8,7 +8,8 @@ non-production branch database.
 ## Before refreshing
 
 1. Verify the source and target independently and confirm the approved data
-   scope. Apply any required target migrations separately.
+   scope. Apply any required target migrations separately. Use PostgreSQL
+   backup and recovery tools that match the target server major version.
 2. Create or select an owner-only backup directory outside the repository.
    Verify its storage access and retention policy. The script rejects an
    unprotected location and requires a nonempty target backup before restore.

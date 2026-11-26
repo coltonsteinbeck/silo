@@ -16,6 +16,7 @@ test.each(['success', 'partial', 'cancelled'])(
       writeFileSync(
         dump,
         `#!/bin/bash
+if [ "$1" = --version ]; then echo 'pg_dump (PostgreSQL) 16.11'; exit 0; fi
 while [ "$1" != --file ] && [ "$#" -gt 0 ]; do shift; done
 [ "$#" -ge 2 ] || exit 2
 printf '%s\\n' '${marker}' > "$2"
@@ -24,7 +25,13 @@ if [ "$REFRESH_TEST_SCENARIO" = partial ] && [[ "$2" == *selected-data.sql ]]; t
 if [ "$REFRESH_TEST_SCENARIO" = cancelled ]; then kill -TERM "$PPID"; fi
 `
       );
-      writeFileSync(psql, `#!/bin/bash\necho '${marker}' >&2\n`);
+      writeFileSync(
+        psql,
+        `#!/bin/bash
+if [[ "$*" == *server_version_num* ]]; then echo '160011'; fi
+echo '${marker}' >&2
+`
+      );
       chmodSync(dump, 0o700);
       chmodSync(psql, 0o700);
 

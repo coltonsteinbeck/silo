@@ -480,7 +480,17 @@ ensure_sql_file_if_set "$POST_RESTORE_SQL_FILE" "POST_RESTORE_SQL_FILE"
 
 # Ensure target branch is reachable before dumping/restoring.
 echo "[check] Verifying target branch connectivity"
-psql "$BRANCH_DB_URL" -v ON_ERROR_STOP=1 -c 'SELECT 1;' >/dev/null
+target_version=$(psql "$BRANCH_DB_URL" -XAt -v ON_ERROR_STOP=1 -c 'SHOW server_version_num;')
+dump_version=$(pg_dump --version)
+if ! [[ "$target_version" =~ ^[0-9]{6,}$ &&
+  "$dump_version" =~ PostgreSQL[[:space:]]*\)[[:space:]]*([0-9]+)\. ]]; then
+  echo "Could not verify PostgreSQL server and backup tool versions."
+  exit 1
+fi
+if [ "${BASH_REMATCH[1]}" -ne "$((target_version / 10000))" ]; then
+  echo "The PostgreSQL backup tools must match the target server major version."
+  exit 1
+fi
 
 SOURCE_MIGRATION=""
 TARGET_MIGRATION=""
