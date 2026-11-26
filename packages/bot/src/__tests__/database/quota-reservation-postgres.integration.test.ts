@@ -255,6 +255,14 @@ describe.skipIf(!RUN_DATABASE_TESTS)('atomic quota reservations on local Postgre
           [key, guildId, 'other-user']
         )
       ).rejects.toThrow('not found for scope');
+      await expect(
+        pool.query(
+          `UPDATE public.quota_usage_reservations
+           SET status = 'released', reason = 'provider_model_not_found', finalized_at = NOW()
+           WHERE idempotency_key = $1`,
+          [key]
+        )
+      ).rejects.toThrow('quota_usage_reservations_rejection_evidence');
       const [first, second] = await Promise.all([rejected(), rejected()]);
       expect([first.rows[0]?.idempotent, second.rows[0]?.idempotent].sort()).toEqual([false, true]);
       expect(first.rows[0]?.status).toBe('released');
@@ -716,6 +724,33 @@ describe.skipIf(!RUN_DATABASE_TESTS)('atomic quota reservations on local Postgre
         [reconcileKey]
       );
       expect(reconciledReservation.rows[0]).toEqual({ status: 'committed', actual_amount: 9 });
+
+      const legacyImageKey = `${runId}:legacy-unattempted-image`;
+      await reserve(pool, {
+        key: legacyImageKey,
+        guildId: guildIds[3]!,
+        userId: 'legacy-image-user',
+        resource: 'images',
+        requested: 1,
+        minimum: 1
+      });
+      await pool.query(
+        `UPDATE public.quota_usage_reservations
+         SET settlement_version = NULL,
+             created_at = TIMESTAMPTZ '1900-01-01 00:00:00+00',
+             expires_at = TIMESTAMPTZ '1901-01-01 00:00:00+00'
+         WHERE idempotency_key = $1`,
+        [legacyImageKey]
+      );
+      const legacyReconciled = await pool.query(
+        'SELECT * FROM public.reconcile_expired_quota_reservations(1)'
+      );
+      expect(legacyReconciled.rows[0]).toMatchObject({ committed: 0, released: 1, failed: 0 });
+      const legacyImage = await pool.query(
+        `SELECT status, reason FROM public.quota_usage_reservations WHERE idempotency_key = $1`,
+        [legacyImageKey]
+      );
+      expect(legacyImage.rows[0]).toEqual({ status: 'released', reason: 'expired_before_attempt' });
 
       const lazyKey = `${runId}:lazy-expired`;
       await reserve(pool, {

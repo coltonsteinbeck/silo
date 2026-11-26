@@ -519,6 +519,35 @@ describe('QuotaMiddleware', () => {
       expect(mockAdminDb.releaseQuotaUsage).not.toHaveBeenCalled();
     });
 
+    test('surfaces model rejection for credit remediation when the release cannot be written', async () => {
+      mockAdminDb.releaseRejectedImageQuotaUsage = mock(async () => {
+        throw new Error('database unavailable');
+      });
+      const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
+      const rejection = new ImageModelRejectedBeforeGenerationError({
+        provider: 'openai',
+        status: 404,
+        code: 'model_not_found',
+        requestId: 'req_synthetic_2'
+      });
+      await expect(
+        middleware.executeReserved({
+          operationKey: 'draw:synthetic:failed-settlement',
+          guildId: 'guild1',
+          userId: 'user1',
+          member: { id: 'user1' } as never,
+          usageType: 'images',
+          requestedAmount: 1,
+          execute: async () => {
+            throw rejection;
+          },
+          getActualAmount: () => 1
+        })
+      ).rejects.toThrow('Image credit settlement needs review');
+      expect(mockAdminDb.commitQuotaUsage).not.toHaveBeenCalled();
+      expect(mockAdminDb.releaseQuotaUsage).not.toHaveBeenCalled();
+    });
+
     test('keeps an attempted reservation pending when provider outcome is ambiguous', async () => {
       const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
 

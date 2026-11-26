@@ -1,5 +1,7 @@
 import {
   ActionRowBuilder,
+  DiscordAPIError,
+  RESTJSONErrorCodes,
   AttachmentBuilder,
   ButtonBuilder,
   ButtonInteraction,
@@ -16,7 +18,7 @@ import { Command } from './types';
 import { executeCommandMedia, MediaQuotaDeniedError } from './media-execution';
 import { ImageModelRejectedBeforeGenerationError } from '../providers/image-rejection';
 import { ProviderRegistry } from '../providers/registry';
-import { QuotaMiddleware } from '../middleware/quota';
+import { ImageQuotaSettlementPendingError, QuotaMiddleware } from '../middleware/quota';
 import { AdminAdapter } from '../database/admin-adapter';
 import { screenExternalUrl, type UrlPolicyOptions } from '../services/url-context';
 import {
@@ -221,6 +223,14 @@ export class DrawCommand implements Command {
     context: 'generation' | 'regeneration' | 'edit'
   ): string {
     if (error instanceof MediaQuotaDeniedError) return error.message;
+    if (error instanceof ImageQuotaSettlementPendingError) {
+      return 'The provider rejected this image. Credit settlement needs review. Contact a server administrator before retrying.';
+    }
+    if (error instanceof DiscordAPIError) {
+      return error.code === RESTJSONErrorCodes.UnknownMessage
+        ? 'The original Discord message is gone. Run /draw to start again.'
+        : 'The image could not be delivered to Discord.';
+    }
     if (error instanceof ImageModelRejectedBeforeGenerationError) {
       return `Image ${context} is unavailable for this model. Please contact an administrator.`;
     }
@@ -295,6 +305,7 @@ export class DrawCommand implements Command {
     const config = DRAW_MODEL_CONFIG[model];
     const configured = this.registry.getConfiguredImageModel(config.provider);
     if (config.provider === 'openai') {
+      if (configured === 'gpt-image-2.5-flare-2026-09-08') return configured;
       if (!configured || this.resolveModel(configured) === 'gpt-image-2.5-flare') {
         return 'gpt-image-2.5-flare';
       }
@@ -946,7 +957,7 @@ export class DrawCommand implements Command {
           logger.warn('Failed to edit original draw message after modal submit', {
             sessionId: session.id,
             messageId: session.messageId,
-            error
+            errorType: error instanceof Error ? error.name : 'unknown'
           });
           throw error;
         }

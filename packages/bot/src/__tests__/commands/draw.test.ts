@@ -1,4 +1,4 @@
-import { GuildMember } from 'discord.js';
+import { DiscordAPIError, GuildMember, RESTJSONErrorCodes } from 'discord.js';
 import * as mediaDownload from '../../services/media-download';
 /**
  * Tests for Draw Command
@@ -131,6 +131,28 @@ describe('DrawCommand', () => {
         });
       }
     );
+
+    test('passes a configured Flare snapshot to the provider at the basic cost', async () => {
+      const model = 'gpt-image-2.5-flare-2026-09-08';
+      const provider = {
+        name: 'openai',
+        generateImage: mock(async () => ({ url: 'data:image/png;base64,AQID' }))
+      };
+      mockRegistry.getImageProvider = mock(() => provider);
+      mockRegistry.getConfiguredImageModel = mock(() => model);
+      const executeReserved = mock(
+        async (request: { requestedAmount: number; execute: () => Promise<unknown> }) => {
+          expect(request.requestedAmount).toBe(1);
+          return { allowed: true, value: await request.execute() };
+        }
+      );
+      command = new DrawCommand(mockRegistry, { executeReserved } as never);
+      await command.execute(createMockInteraction({ options: { prompt: 'A sunset' } }) as never);
+      expect(provider.generateImage).toHaveBeenCalledWith(
+        'A sunset',
+        expect.objectContaining({ model })
+      );
+    });
 
     test('rejects unknown configured OpenAI model before reserving or calling provider', async () => {
       const provider = { name: 'openai', generateImage: mock(async () => ({ url: 'unused' })) };
@@ -664,7 +686,14 @@ describe('DrawCommand', () => {
     test('reports failure when original message edit fails and logs warning context', async () => {
       const sessionId = 'session-1';
       const messageId = 'message-1';
-      const editError = new Error('message no longer editable');
+      const editError = new DiscordAPIError(
+        { message: 'Unknown Message', code: RESTJSONErrorCodes.UnknownMessage },
+        RESTJSONErrorCodes.UnknownMessage,
+        404,
+        'PATCH',
+        'https://discord.com/api/v10/channels/test/messages/test',
+        {}
+      );
 
       const warnMock = mock(() => {});
       const originalWarn = logger.warn;
@@ -723,11 +752,11 @@ describe('DrawCommand', () => {
         expect(warnCall?.[1]).toMatchObject({
           sessionId,
           messageId,
-          error: editError
+          errorType: editError.name
         });
 
         expect(interaction.editReply).toHaveBeenCalledWith({
-          content: expect.stringContaining('Image edit failed:')
+          content: expect.stringContaining('The original Discord message is gone. Run /draw')
         });
       } finally {
         (logger as any).warn = originalWarn;

@@ -218,7 +218,12 @@ export function isCurrentStatusQuestion(text: string, previousUserText?: string 
   if (CURRENT_STATUS_RECHECK.test(normalized)) {
     return !previousUserText || isCurrentStatusQuestion(previousUserText);
   }
-  if (/\b(?:in|during|back in|from)\s+(?:19|20)\d{2}\b/i.test(normalized)) return false;
+  if (
+    /\b(?:in|during|back in|from)\s+(?:19|20)\d{2}\b/i.test(normalized) &&
+    !/\b(?:yet|now|current(?:ly)?|today)\b/i.test(normalized)
+  ) {
+    return false;
+  }
   return (
     (CURRENT_STATUS_CUE.test(normalized) && CURRENT_STATUS_SUBJECT.test(normalized)) ||
     IMPLICIT_RELEASE_STATUS.test(normalized)

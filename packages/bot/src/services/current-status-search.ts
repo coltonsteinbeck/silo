@@ -9,9 +9,12 @@ import { withLangfuseGeneration } from '../telemetry/langfuse-client';
 import { toLangfuseUsage } from '../telemetry/langfuse-usage';
 import { formatSearchAnswer } from '../commands/search';
 import { isCurrentStatusQuestion } from './conversation-context';
+import { selectLatestTaskDefiningUserText } from './response-quality';
 
 const RECHECK =
   /^(?:(?:can|could|would)\s+you\s+)?(?:please\s+)?(?:check|look|verify|search)(?:\s+(?:that|it|this))?\s+again\s*[?.!]*$/i;
+const DEPENDENT_TOPIC =
+  /^(?:is|are|was|were|has|have|did|does|will|can)\s+(?:it|they|that|this|those|these)\b/i;
 const UNVERIFIED = 'I can’t verify that current status from fresh sources right now.';
 
 export function ownPriorUserTexts(
@@ -23,18 +26,29 @@ export function ownPriorUserTexts(
     .map(message => message.content);
 }
 
+export function isCurrentStatusFollowup(text: string): boolean {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  return (
+    RECHECK.test(normalized) ||
+    (DEPENDENT_TOPIC.test(normalized) && isCurrentStatusQuestion(normalized))
+  );
+}
+
 export function currentStatusSearchQuery(
   currentText: string,
   priorUserTexts: string[]
 ): string | null {
   const current = currentText.replace(/\s+/g, ' ').trim();
   if (!current || current.length > 1800) return null;
-  if (!RECHECK.test(current)) return isCurrentStatusQuestion(current) ? current : null;
-  const priorTopic = [...priorUserTexts]
-    .reverse()
-    .map(text => text.replace(/\s+/g, ' ').trim())
-    .find(text => !RECHECK.test(text) && isCurrentStatusQuestion(text));
-  return priorTopic && priorTopic.length <= 1800 ? priorTopic : null;
+  if (!isCurrentStatusFollowup(current)) return isCurrentStatusQuestion(current) ? current : null;
+  const priorTopic = selectLatestTaskDefiningUserText(
+    priorUserTexts.filter(text => !isCurrentStatusFollowup(text))
+  );
+  if (!priorTopic || !isCurrentStatusQuestion(priorTopic)) return null;
+  const query = RECHECK.test(current)
+    ? priorTopic
+    : `Prior topic: ${priorTopic}\nFollow-up: ${current}`;
+  return query.length <= 1800 ? query : null;
 }
 
 export interface CurrentStatusSearchInput {

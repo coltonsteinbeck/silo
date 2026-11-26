@@ -20,19 +20,20 @@ ALTER TABLE public.quota_usage_reservations
     (status IN ('attempted', 'committed') AND attempted_at IS NOT NULL)
     OR (status = 'reserved' AND attempted_at IS NULL)
     OR (status = 'released' AND (
-      (reason = 'provider_model_not_found' AND attempted_at IS NOT NULL)
-      OR (reason <> 'provider_model_not_found' AND attempted_at IS NULL)
+      (reason IS NOT DISTINCT FROM 'provider_model_not_found' AND attempted_at IS NOT NULL)
+      OR (reason IS DISTINCT FROM 'provider_model_not_found' AND attempted_at IS NULL)
     ))
   );
 
 ALTER TABLE public.quota_usage_reservations
   ADD CONSTRAINT quota_usage_reservations_rejection_evidence CHECK (
     (rejection_provider IS NULL AND rejection_status IS NULL
-      AND rejection_code IS NULL AND rejection_request_id IS NULL)
+      AND rejection_code IS NULL AND rejection_request_id IS NULL
+      AND reason IS DISTINCT FROM 'provider_model_not_found')
     OR
     (rejection_provider IS NOT NULL AND rejection_status IS NOT NULL
       AND rejection_code IS NOT NULL AND rejection_request_id IS NOT NULL
-      AND status = 'released' AND reason = 'provider_model_not_found'
+      AND status = 'released' AND reason IS NOT DISTINCT FROM 'provider_model_not_found'
       AND resource = 'images' AND attempted_at IS NOT NULL
       AND reported_actual_amount IS NULL AND actual_amount IS NULL
       AND rejection_provider = 'openai'
@@ -198,7 +199,7 @@ BEGIN
       AND r.resource = p_resource
       AND r.status IN ('reserved', 'attempted')
       AND r.expires_at <= NOW()
-      AND (r.resource <> 'images' OR r.settlement_version = 1)
+      AND (r.status = 'reserved' OR r.resource <> 'images' OR r.settlement_version = 1)
     ORDER BY r.user_id, r.idempotency_key
     LIMIT p_limit
   LOOP
@@ -269,7 +270,7 @@ BEGIN
     FROM public.quota_usage_reservations r
     WHERE r.status IN ('reserved', 'attempted')
       AND r.expires_at <= NOW()
-      AND (r.resource <> 'images' OR r.settlement_version = 1)
+      AND (r.status = 'reserved' OR r.resource <> 'images' OR r.settlement_version = 1)
     ORDER BY r.expires_at, r.idempotency_key
     LIMIT p_limit
   LOOP

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { GuildMember } from 'discord.js';
 import type { AdminAdapter } from '../database/admin-adapter';
 import type { PermissionManager } from '../permissions/manager';
@@ -9,6 +10,13 @@ import { ImageModelRejectedBeforeGenerationError } from '../providers/image-reje
 export type UsageType =
   'text_tokens' | 'images' | 'voice_minutes' | 'vision_tokens' | 'video_tokens';
 export type RoleTier = 'admin' | 'moderator' | 'trusted' | 'member' | 'restricted';
+
+export class ImageQuotaSettlementPendingError extends Error {
+  constructor(cause: ImageModelRejectedBeforeGenerationError) {
+    super('Image credit settlement needs review', { cause });
+    this.name = 'ImageQuotaSettlementPendingError';
+  }
+}
 
 interface QuotaCheckResult {
   allowed: boolean;
@@ -382,10 +390,15 @@ export class QuotaMiddleware {
         } catch (settlementError) {
           logger.error('Rejected image reservation settlement failed', {
             event: 'image_model_rejection_settlement_failed',
-            guildId: params.guildId,
-            type: params.usageType,
+            reservationDigest: createHash('sha256')
+              .update(reservation.idempotencyKey)
+              .digest('hex'),
+            providerStatus: error.evidence.status,
+            providerCode: error.evidence.code,
+            providerRequestId: error.evidence.requestId,
             errorType: settlementError instanceof Error ? settlementError.name : 'unknown'
           });
+          throw new ImageQuotaSettlementPendingError(error);
         }
         throw error;
       }

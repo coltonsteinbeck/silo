@@ -71,6 +71,19 @@ describe('bounded current-status search', () => {
     expect(currentStatusSearchQuery('Tell me a story about Sample Game', [topic])).toBeNull();
     expect(currentStatusSearchQuery('Check again.', [])).toBeNull();
     expect(
+      currentStatusSearchQuery('Check again.', [topic, 'What is 2 + 2?', 'Check again.'])
+    ).toBeNull();
+    expect(currentStatusSearchQuery('Is it available yet?', [topic])).toBe(
+      `Prior topic: ${topic}\nFollow-up: Is it available yet?`
+    );
+    expect(currentStatusSearchQuery('Is it available yet?', [])).toBeNull();
+    expect(currentStatusSearchQuery('Has Sample Game launched in 2026 yet?', [])).toBe(
+      'Has Sample Game launched in 2026 yet?'
+    );
+    expect(
+      currentStatusSearchQuery('What was the latest Sample Game release in 2020?', [])
+    ).toBeNull();
+    expect(
       ownPriorUserTexts(
         [
           { role: 'user', userId: 'other', content: 'Has Other Game released yet?' },

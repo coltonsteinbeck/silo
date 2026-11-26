@@ -71,7 +71,11 @@ import { QuotaMiddleware } from './middleware/quota';
 import { QuotaReservationReconciler } from './middleware/quota-reconciler';
 import { CostAggregator } from './services/cost-aggregator';
 import { selectMemoryContext } from './services/memory-selector';
-import { createCurrentStatusSearch, ownPriorUserTexts } from './services/current-status-search';
+import {
+  createCurrentStatusSearch,
+  isCurrentStatusFollowup,
+  ownPriorUserTexts
+} from './services/current-status-search';
 import {
   assembleConversationContext,
   buildEffectiveUserPrompt,
@@ -759,7 +763,6 @@ export async function startBot(): Promise<void> {
       });
       scopedReady = true;
       logger.info('Discord slash command startup mode completed', { mode: commandSyncMode });
-      if (commandSyncMode !== 'none') quotaReconciler.start(commandShutdown.signal);
     } catch (error) {
       logger.error('Failed to register slash commands:', error);
       if (commandSyncMode === 'guild-only') {
@@ -767,6 +770,8 @@ export async function startBot(): Promise<void> {
         process.exit(1);
       }
     }
+
+    if (commandSyncMode !== 'none') quotaReconciler.start(commandShutdown.signal);
 
     if (commandSyncMode !== 'none')
       void (async () => {
@@ -1913,7 +1918,9 @@ export async function startBot(): Promise<void> {
             !lowContextHistoryDisabled;
           const historyForPrompt = includeConversationHistory ? prunedHistoryForPrompt : [];
           const priorOwnUserTexts = ownPriorUserTexts(historyForPrompt, message.author.id);
-          const previousUserTask = selectLatestTaskDefiningUserText(priorOwnUserTexts);
+          const previousUserTask = selectLatestTaskDefiningUserText(
+            priorOwnUserTexts.filter(text => !isCurrentStatusFollowup(text))
+          );
           const currentStatusQuestion = isCurrentStatusQuestion(processedContent, previousUserTask);
           const currentStatusSearchResult =
             currentImageUrls.length === 0 &&
@@ -3188,7 +3195,7 @@ export async function startBot(): Promise<void> {
             }
           }
 
-          if (!userRequestedRichFormatting) {
+          if (!userRequestedRichFormatting && generationSource !== 'current_status_search') {
             responseContent = responseContent
               .replace(/(\*\*|__|\*|_|~~|`)/g, '')
               .replace(/^#{1,6}\s+/gm, '')
