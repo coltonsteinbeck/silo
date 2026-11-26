@@ -41,13 +41,18 @@ export function currentStatusSearchQuery(
   const current = currentText.replace(/\s+/g, ' ').trim();
   if (!current || current.length > 1800) return null;
   if (!isCurrentStatusFollowup(current)) return isCurrentStatusQuestion(current) ? current : null;
+  const priorTexts = priorUserTexts.map(text => text.replace(/\s+/g, ' ').trim());
   const priorTopic = selectLatestTaskDefiningUserText(
-    priorUserTexts.filter(text => !isCurrentStatusFollowup(text))
+    priorTexts.filter(text => !isCurrentStatusFollowup(text))
   );
   if (!priorTopic || !isCurrentStatusQuestion(priorTopic)) return null;
-  const query = RECHECK.test(current)
-    ? priorTopic
-    : `Prior topic: ${priorTopic}\nFollow-up: ${current}`;
+  const followups = priorTexts
+    .slice(priorTexts.lastIndexOf(priorTopic) + 1)
+    .filter(text => !RECHECK.test(text) && isCurrentStatusFollowup(text));
+  if (!RECHECK.test(current)) followups.push(current);
+  const query = followups.length
+    ? [`Prior topic: ${priorTopic}`, ...followups.map(text => `Follow-up: ${text}`)].join('\n')
+    : priorTopic;
   return query.length <= 1800 ? query : null;
 }
 

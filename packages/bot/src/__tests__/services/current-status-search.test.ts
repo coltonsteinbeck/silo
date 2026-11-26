@@ -77,6 +77,22 @@ describe('bounded current-status search', () => {
       `Prior topic: ${topic}\nFollow-up: Is it available yet?`
     );
     expect(currentStatusSearchQuery('Is it available yet?', [])).toBeNull();
+    const canadaQuestion = 'Is it available now in Canada?';
+    const betaQuestion = 'Is it available yet for beta users?';
+    expect(
+      currentStatusSearchQuery('Check again.', [
+        topic,
+        canadaQuestion,
+        'Check again.',
+        betaQuestion
+      ])
+    ).toBe(`Prior topic: ${topic}\nFollow-up: ${canadaQuestion}\nFollow-up: ${betaQuestion}`);
+    expect(
+      currentStatusSearchQuery('Check again.', [topic, canadaQuestion, 'What is 2 + 2?'])
+    ).toBeNull();
+    expect(
+      currentStatusSearchQuery('Check again.', [topic, ...Array(80).fill(canadaQuestion)])
+    ).toBeNull();
     expect(currentStatusSearchQuery('Has Sample Game launched in 2026 yet?', [])).toBe(
       'Has Sample Game launched in 2026 yet?'
     );

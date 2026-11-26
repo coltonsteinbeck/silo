@@ -14,6 +14,8 @@ import {
 } from '@silo/core/test-setup';
 import { logger } from '@silo/core';
 import { DrawCommand } from '../../commands/draw';
+import { ImageQuotaSettlementPendingError } from '../../middleware/quota';
+import { ImageModelRejectedBeforeGenerationError } from '../../providers/image-rejection';
 import type { PromptModerationGuard } from '../../security/command-prompt-moderation';
 
 function createMockInteraction(options?: Parameters<typeof createBaseInteraction>[0]) {
@@ -491,9 +493,35 @@ describe('DrawCommand', () => {
       expect(JSON.stringify(interaction._getReplies())).not.toContain('private provider detail');
     });
 
+    test('preserves a credit-settlement warning when the image deadline expires', async () => {
+      const deadline = new AbortController();
+      const timeout = spyOn(AbortSignal, 'timeout').mockReturnValue(deadline.signal);
+      mockRegistry.getImageProvider = mock(() => ({ name: 'openai' }));
+      command = new DrawCommand(mockRegistry, {
+        executeReserved: async () => {
+          deadline.abort();
+          throw new ImageQuotaSettlementPendingError(
+            new ImageModelRejectedBeforeGenerationError({
+              provider: 'openai',
+              status: 404,
+              code: 'model_not_found',
+              requestId: 'req_synthetic_3'
+            })
+          );
+        }
+      } as never);
+      try {
+        const interaction = createMockInteraction({ options: { prompt: 'A sunset' } });
+        await command.execute(interaction as never);
+        const replies = JSON.stringify(interaction._getReplies());
+        expect(replies).toContain('Credit settlement needs review');
+        expect(replies).not.toContain('req_synthetic_3');
+      } finally {
+        timeout.mockRestore();
+      }
+    });
+
     test('renders a definitive model rejection without exposing provider evidence', async () => {
-      const { ImageModelRejectedBeforeGenerationError } =
-        await import('../../providers/image-rejection');
       mockRegistry.getImageProvider = mock(() => ({
         name: 'openai',
         generateImage: mock(async () => {

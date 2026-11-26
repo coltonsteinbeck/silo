@@ -678,7 +678,10 @@ export class DrawCommand implements Command {
         references
       });
     } catch (error) {
-      if (signal.aborted) {
+      if (
+        signal.aborted &&
+        (this.shutdownSignal?.aborted || !(error instanceof ImageQuotaSettlementPendingError))
+      ) {
         if (!this.shutdownSignal?.aborted)
           await interaction.editReply({
             content: 'Image generation timed out. Please try again in a moment.'
@@ -822,7 +825,10 @@ export class DrawCommand implements Command {
       session.prompt = promptDecision.processedPrompt;
       this.sessions.set(session.id, session);
     } catch (error) {
-      if (signal.aborted) {
+      if (
+        signal.aborted &&
+        (this.shutdownSignal?.aborted || !(error instanceof ImageQuotaSettlementPendingError))
+      ) {
         if (!this.shutdownSignal?.aborted)
           await interaction.followUp({
             content: 'Image regeneration timed out. Please try again in a moment.',
@@ -971,7 +977,10 @@ export class DrawCommand implements Command {
       this.sessions.set(session.id, session);
       await interaction.editReply({ content: 'Image updated successfully.' });
     } catch (error) {
-      if (signal.aborted) {
+      if (
+        signal.aborted &&
+        (this.shutdownSignal?.aborted || !(error instanceof ImageQuotaSettlementPendingError))
+      ) {
         if (!this.shutdownSignal?.aborted)
           await interaction.editReply({
             content: 'Image edit timed out. Please try again in a moment.'
