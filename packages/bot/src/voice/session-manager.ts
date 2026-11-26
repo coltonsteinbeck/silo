@@ -197,6 +197,7 @@ export class VoiceSessionManager {
       onAudioResponse?: (audio: Buffer) => void;
       maxDurationMs?: number;
       beforeConnect?: () => Promise<void>;
+      authorizeConnection?: () => void;
       onEnd?: (durationMs: number) => Promise<void>;
     }
   ): Promise<RealtimeSession> {
@@ -267,6 +268,7 @@ export class VoiceSessionManager {
       if (stopping || this.sessions.get(guildId) !== sessionInfo) {
         throw new Error('Voice connection changed before speech started.');
       }
+      options?.authorizeConnection?.();
       if (options?.maxDurationMs) {
         timer = setTimeout(() => void speaker.stop().catch(() => {}), options.maxDurationMs);
         timer.unref();

@@ -3,6 +3,7 @@ import {
   SlashCommandBuilder,
   GuildMember,
   ChannelType,
+  PermissionFlagsBits,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
@@ -266,6 +267,13 @@ export class ConfigCommand implements Command {
             }
 
             case 'edit': {
+              if (!member.permissions.has(PermissionFlagsBits.Administrator)) {
+                await interaction.reply({
+                  content: 'You need Discord Administrator permission to edit the system prompt.',
+                  ephemeral: true
+                });
+                return;
+              }
               // Show modal quickly to avoid interaction timeout; prompt prefill is best-effort.
               const promptLookupPromise = this.adminDb
                 .getSystemPrompt(interaction.guildId, forVoice)

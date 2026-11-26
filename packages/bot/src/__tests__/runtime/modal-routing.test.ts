@@ -71,7 +71,7 @@ test('a former administrator cannot save an already opened prompt editor', async
       fields: { getTextInputValue: readPrompt },
       reply
     } as unknown as ModalSubmitInteraction,
-    { getUserRole: async () => null, setSystemPrompt } as unknown as AdminAdapter
+    { getUserRole: async () => ({ roleTier: 'admin' }), setSystemPrompt } as unknown as AdminAdapter
   );
   expect(fetchMember).toHaveBeenCalledWith({ user: 'user-a', force: true });
   expect(readPrompt).not.toHaveBeenCalled();

@@ -450,4 +450,6 @@ All configuration in `.env`:
 
 ## License
 
-MIT
+Silo's source is available under the [MIT License](LICENSE). Dependencies and
+external media tools have their own licenses. Keep their notices with any
+redistributed build or container.

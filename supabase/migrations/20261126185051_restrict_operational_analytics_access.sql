@@ -20,6 +20,9 @@ BEGIN
         'public.archived_migration_022_backup'::regclass
     ]
     LOOP
+        -- The migration is transactional. Replace only this policy so replay
+        -- restores the intended predicate even if a prior definition drifted.
+        EXECUTE format('DROP POLICY IF EXISTS operational_backend_access ON %s', relation);
         EXECUTE format($policy$
             CREATE POLICY operational_backend_access ON %s
             USING (current_user NOT IN ('anon', 'authenticated', 'authenticator'))

@@ -133,4 +133,32 @@ describe('VoiceSessionManager guild voice coordination', () => {
     expect(onEnd).toHaveBeenCalledTimes(1);
     expect(manager.isUserSpeaking('guild', 'member')).toBe(false);
   });
+
+  test('rechecks channel membership after marking quota and settles without connecting', async () => {
+    let stillPresent = true;
+    const connect = mock(async () => {});
+    const onEnd = mock(async (_durationMs: number) => {});
+    const manager = new VoiceSessionManager({
+      joinVoice: mock(() => connection()) as never,
+      waitForState: mock(async value => value),
+      createRealtimeSession: () => ({ connect, disconnect: async () => 0 }) as never
+    });
+    await manager.joinChannel(channel as never);
+
+    await expect(
+      manager.startSpeaking('guild', 'member', 'synthetic', {
+        beforeConnect: async () => {
+          stillPresent = false;
+        },
+        authorizeConnection: () => {
+          if (!stillPresent) throw new Error('requester left');
+        },
+        onEnd
+      })
+    ).rejects.toThrow('requester left');
+
+    expect(connect).not.toHaveBeenCalled();
+    expect(onEnd).toHaveBeenCalledTimes(1);
+    expect(manager.hasSession('guild')).toBe(false);
+  });
 });

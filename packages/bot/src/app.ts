@@ -5,6 +5,7 @@ import {
   Events,
   REST,
   MessageFlags,
+  PermissionFlagsBits,
   InteractionReplyOptions,
   ButtonInteraction,
   ModalSubmitInteraction,
@@ -410,11 +411,15 @@ export async function handleModalSubmit(
       const permissions = new PermissionManager(adminDb);
       const canEditPrompt = async () => {
         const member = await guild.members.fetch({ user: interaction.user.id, force: true });
-        return permissions.isAdmin(guild.id, interaction.user.id, member);
+        return (
+          member.permissions.has(PermissionFlagsBits.Administrator) &&
+          (await permissions.isAdmin(guild.id, interaction.user.id, member))
+        );
       };
       const denyEdit = () =>
         interaction.reply({
-          content: 'You need current server admin permissions to save this prompt.',
+          content:
+            'You need current server admin permissions, including Discord Administrator, to save this prompt.',
           flags: MessageFlags.Ephemeral
         });
       if (!(await canEditPrompt())) {

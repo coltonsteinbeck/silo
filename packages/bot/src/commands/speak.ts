@@ -211,8 +211,13 @@ export class SpeakCommand implements Command {
           if (member.voice.channelId !== voiceChannel.id) {
             throw new Error('The requester left the voice channel.');
           }
-          attemptStarted = true;
           await quota.markQuotaAttempted(reserved);
+          attemptStarted = true;
+        },
+        authorizeConnection: () => {
+          if (member.voice.channelId !== voiceChannel.id) {
+            throw new Error('The requester left the voice channel before speech started.');
+          }
         },
         onEnd: async durationMs => {
           const minutes = Math.max(
@@ -248,6 +253,8 @@ export class SpeakCommand implements Command {
       logger.error('[SpeakCommand] Error:', error);
 
       if (reservation && !attemptStarted) {
+        // The database releases only a still-reserved row. An ambiguous
+        // attempt transition remains eligible for conservative reconciliation.
         await quota.releaseUnattemptedQuota(reservation, 'voice_start_cancelled').catch(() => {
           logger.warn('Unattempted voice reservation release is pending');
         });
