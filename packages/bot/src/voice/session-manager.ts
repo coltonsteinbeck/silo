@@ -47,6 +47,7 @@ const defaultRuntime: VoiceSessionRuntimeDependencies = {
  */
 export class VoiceSessionManager {
   private sessions: Map<string, SessionInfo> = new Map(); // guildId -> SessionInfo
+  private shuttingDown = false;
 
   constructor(private readonly runtime: VoiceSessionRuntimeDependencies = defaultRuntime) {}
 
@@ -77,6 +78,7 @@ export class VoiceSessionManager {
    * Join a voice channel and prepare for realtime sessions
    */
   async joinChannel(channel: VoiceBasedChannel): Promise<VoiceConnection> {
+    if (this.shuttingDown) throw new Error('Voice is shutting down.');
     const guildId = channel.guild.id;
 
     // Check if already in this channel
@@ -148,6 +150,12 @@ export class VoiceSessionManager {
       );
     }
 
+    if (this.shuttingDown) {
+      guildVoiceCoordinator.release(guildId, reservation.token);
+      connection.destroy();
+      throw new Error('Voice is shutting down.');
+    }
+
     // Handle disconnection
     connection.on(VoiceConnectionStatus.Disconnected, async () => {
       try {
@@ -201,6 +209,7 @@ export class VoiceSessionManager {
       onEnd?: (durationMs: number) => void;
     }
   ): Promise<RealtimeSession> {
+    if (this.shuttingDown) throw new Error('Voice is shutting down.');
     const sessionInfo = this.sessions.get(guildId);
     if (!sessionInfo) {
       throw new Error('No voice connection in this guild. Join a voice channel first.');
@@ -304,7 +313,8 @@ export class VoiceSessionManager {
     return true;
   }
 
-  stopAll(): void {
+  shutdown(): void {
+    this.shuttingDown = true;
     for (const { activeSpeakers } of this.sessions.values()) {
       for (const speaker of activeSpeakers.values()) {
         void speaker.stop().catch(() => {});

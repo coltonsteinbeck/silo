@@ -176,12 +176,34 @@ describe('VoiceSessionManager guild voice coordination', () => {
     await manager.startSpeaking('guild', 'first', 'synthetic', { onEnd });
     await manager.startSpeaking('guild', 'second', 'synthetic', { onEnd });
 
-    manager.stopAll();
+    manager.shutdown();
 
     expect(onEnd).toHaveBeenCalledTimes(2);
     expect(disconnect).not.toHaveBeenCalled();
+    await expect(manager.startSpeaking('guild', 'third', 'synthetic', { onEnd })).rejects.toThrow(
+      'Voice is shutting down'
+    );
     await manager.stopSpeaking('guild', 'second');
     expect(onEnd).toHaveBeenCalledTimes(2);
+  });
+
+  test('a pending voice join cannot claim the guild after shutdown', async () => {
+    const created = connection();
+    const ready = Promise.withResolvers<void>();
+    const manager = new VoiceSessionManager({
+      joinVoice: mock(() => created) as never,
+      waitForState: async value => {
+        await ready.promise;
+        return value;
+      }
+    });
+    const joining = manager.joinChannel(channel as never);
+    manager.shutdown();
+    ready.resolve();
+
+    await expect(joining).rejects.toThrow('Voice is shutting down');
+    expect(created.destroy).toHaveBeenCalledTimes(1);
+    expect(guildVoiceCoordinator.getActiveActivity('guild')).toBeNull();
   });
 
   test('rechecks channel membership after marking quota and settles without connecting', async () => {

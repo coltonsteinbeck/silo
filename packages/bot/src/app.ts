@@ -578,7 +578,7 @@ export async function startBot(): Promise<void> {
   });
   const commandShutdown = new AbortController();
   // Lease loss exits immediately after aborting, so voice usage must be written synchronously.
-  commandShutdown.signal.addEventListener('abort', () => voiceSessionManager.stopAll(), {
+  commandShutdown.signal.addEventListener('abort', () => voiceSessionManager.shutdown(), {
     once: true
   });
   const runtimeLease = await RuntimeLeaderLease.acquire(
