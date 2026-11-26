@@ -1,5 +1,11 @@
 .git/
 .env*
+.*-local/
+backups/
+exports/
+dumps/
+supabase/.temp/
+supabase/.supabase/
 node_modules/
 packages/*/node_modules/
 dist/

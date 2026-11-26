@@ -4,6 +4,26 @@ Self-hosted Discord bot framework with customizable AI providers, advanced memor
 
 ## Quick Start
 
+For a contributor setup with no Discord token, provider keys, or hosted database:
+
+```bash
+bash scripts/install-locked.sh
+bun --no-env-file test
+bun run type-check
+bun run build
+```
+
+Use the pinned Bun version in `.bun-version`. For schema work, start the
+loopback-only database and apply the migrations:
+
+```bash
+docker compose up -d --wait postgres
+bun run migrate:local --db-url 'postgresql://silo:silo_dev@127.0.0.1:5432/silo'
+```
+
+The connection string above is for the disposable development database. See
+[Contributing](CONTRIBUTING.md) for development and review checks.
+
 ### Prerequisites
 
 - Bun 1.4.5 (the validated release runtime)

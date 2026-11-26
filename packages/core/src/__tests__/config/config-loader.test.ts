@@ -15,6 +15,8 @@ import {
   TextRoutingSchema
 } from '../../config/schema';
 
+const syntheticClientId = '1234567890'.repeat(2).slice(0, 18);
+
 describe('ConfigSchema', () => {
   describe('ProviderConfigSchema', () => {
     test('accepts empty provider config', () => {
@@ -233,7 +235,7 @@ describe('ConfigLoader', () => {
     test('loads valid configuration from environment', () => {
       cleanup = withEnv({
         DISCORD_TOKEN: 'a'.repeat(60),
-        DISCORD_CLIENT_ID: '123456789012345678',
+        DISCORD_CLIENT_ID: syntheticClientId,
         DATABASE_URL: 'postgresql://user:pass@localhost:5432/testdb',
         REDIS_URL: 'redis://localhost:6379'
       });
@@ -241,7 +243,7 @@ describe('ConfigLoader', () => {
       const config = ConfigLoader.load();
 
       expect(config.discord.token).toBe('a'.repeat(60));
-      expect(config.discord.clientId).toBe('123456789012345678');
+      expect(config.discord.clientId).toBe(syntheticClientId);
       expect(config.database.url).toBe('postgresql://user:pass@localhost:5432/testdb');
     });
 
@@ -272,7 +274,7 @@ describe('ConfigLoader', () => {
     test('loads provider configs when API keys present', () => {
       cleanup = withEnv({
         DISCORD_TOKEN: 'a'.repeat(60),
-        DISCORD_CLIENT_ID: '123456789012345678',
+        DISCORD_CLIENT_ID: syntheticClientId,
         DATABASE_URL: 'postgresql://localhost/db',
         REDIS_URL: 'redis://localhost:6379',
         OPENAI_API_KEY: 'sk-test-key',
@@ -295,7 +297,7 @@ describe('ConfigLoader', () => {
     test('skips provider when API key not present', () => {
       cleanup = withEnv({
         DISCORD_TOKEN: 'a'.repeat(60),
-        DISCORD_CLIENT_ID: '123456789012345678',
+        DISCORD_CLIENT_ID: syntheticClientId,
         DATABASE_URL: 'postgresql://localhost/db',
         REDIS_URL: 'redis://localhost:6379',
         OPENAI_API_KEY: undefined,
@@ -311,7 +313,7 @@ describe('ConfigLoader', () => {
     test('parses feature flags correctly', () => {
       cleanup = withEnv({
         DISCORD_TOKEN: 'a'.repeat(60),
-        DISCORD_CLIENT_ID: '123456789012345678',
+        DISCORD_CLIENT_ID: syntheticClientId,
         DATABASE_URL: 'postgresql://localhost/db',
         REDIS_URL: 'redis://localhost:6379',
         ENABLE_RAG: 'true',
@@ -329,7 +331,7 @@ describe('ConfigLoader', () => {
     test('parses numeric rate limits', () => {
       cleanup = withEnv({
         DISCORD_TOKEN: 'a'.repeat(60),
-        DISCORD_CLIENT_ID: '123456789012345678',
+        DISCORD_CLIENT_ID: syntheticClientId,
         DATABASE_URL: 'postgresql://localhost/db',
         REDIS_URL: 'redis://localhost:6379',
         RATE_LIMIT_COMMANDS_PER_USER: '20',
@@ -351,7 +353,7 @@ describe('ConfigLoader', () => {
         DATABASE_DEV_URL: undefined,
         DATABASE_LOCAL_URL: undefined,
         DISCORD_TOKEN: 'a'.repeat(60),
-        DISCORD_CLIENT_ID: '123456789012345678',
+        DISCORD_CLIENT_ID: syntheticClientId,
         REDIS_URL: 'redis://localhost:6379'
       });
 
@@ -363,7 +365,7 @@ describe('ConfigLoader', () => {
     test('returns true for valid config', () => {
       cleanup = withEnv({
         DISCORD_TOKEN: 'a'.repeat(60),
-        DISCORD_CLIENT_ID: '123456789012345678',
+        DISCORD_CLIENT_ID: syntheticClientId,
         DATABASE_URL: 'postgresql://localhost/db',
         REDIS_URL: 'redis://localhost:6379'
       });

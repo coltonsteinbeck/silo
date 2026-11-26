@@ -53,7 +53,7 @@ export function findRepoHygieneViolations(files: string[]): HygieneViolation[] {
       continue;
     }
 
-    if (/^\.[a-z][a-z0-9-]*-local(?:\/|$)/i.test(normalized)) {
+    if (/(?:^|\/)\.[a-z][a-z0-9-]*-local(?:\/|$)/i.test(normalized)) {
       violations.push({
         file: normalized,
         reason: 'private workflow bundles must not be committed'
@@ -78,7 +78,7 @@ export function findRepoHygieneViolations(files: string[]): HygieneViolation[] {
     }
 
     if (blockedDataArtifactPattern.test(basename)) {
-      if (normalized.startsWith('supabase/migrations/') && /\.sql$/i.test(basename)) {
+      if (/^supabase\/migrations\/[^/]+\.sql$/i.test(normalized)) {
         continue;
       }
 
