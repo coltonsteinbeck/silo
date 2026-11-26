@@ -15,6 +15,8 @@ globalThis.fetch = (() => {
   throw new Error('Network fetch is forbidden in the offline startup fixture');
 }) as unknown as typeof fetch;
 
+const startupMembershipChange = process.argv[2];
+const scoped = startupMembershipChange === 'join' || startupMembershipChange === 'leave';
 const appId = 'fixture-application';
 const guildId = 'fixture-guild';
 const databaseUrl = 'postgresql://fixture:fixture@fixture.invalid/isolated_fixture';
@@ -22,7 +24,7 @@ const token = 'synthetic-token-'.repeat(5);
 Object.assign(process.env, {
   APP_ENV: 'development',
   NODE_ENV: 'development',
-  DISCORD_COMMAND_SYNC_MODE: 'none',
+  DISCORD_COMMAND_SYNC_MODE: scoped ? 'guild-only' : 'none',
   DISCORD_CLIENT_ID: appId,
   DISCORD_GUILD_ID: guildId,
   DISCORD_TOKEN: token,
@@ -65,12 +67,18 @@ class FixtureClient extends EventEmitter {
     calls.push('client-destroy');
   }
 }
-class ForbiddenRest {
+class FixtureRest {
   constructor() {
-    throw new Error('Discord REST must not be constructed');
+    if (!scoped) throw new Error('Discord REST must not be constructed');
+  }
+  setToken() {
+    return this;
+  }
+  async put() {
+    calls.push('guild-command-write-mocked');
   }
 }
-mock.module('discord.js', () => ({ ...discord, Client: FixtureClient, REST: ForbiddenRest }));
+mock.module('discord.js', () => ({ ...discord, Client: FixtureClient, REST: FixtureRest }));
 
 const source = (file: string) => new URL(`../../${file}`, import.meta.url).pathname;
 mock.module(source('database/postgres.ts'), () => ({
@@ -129,6 +137,16 @@ mock.module(source('security/index.ts'), () => ({
     setClient: () => calls.push('guild-manager-client-mocked'),
     ensureGuildsRegistered: async () => {
       calls.push('guild-sync-mocked');
+      const client = FixtureClient.latest;
+      assert(client);
+      if (startupMembershipChange === 'join') {
+        const otherGuild = { id: 'fixture-other-guild' };
+        client.guilds.cache.set(otherGuild.id, otherGuild);
+        client.emit(discord.Events.GuildCreate, otherGuild);
+      } else if (startupMembershipChange === 'leave') {
+        client.guilds.cache.delete(guildId);
+        client.emit(discord.Events.GuildDelete, { id: guildId });
+      }
       return { synced: 0, skipped: 1 };
     }
   },
@@ -154,6 +172,8 @@ globalThis.setInterval = ((...args: Parameters<typeof setInterval>) => {
 }) as typeof setInterval;
 
 const fixtureDirectory = mkdtempSync('/tmp/silo-offline-startup-');
+const cleanupDirectory = () => rmSync(fixtureDirectory, { recursive: true, force: true });
+process.once('exit', cleanupDirectory);
 process.chdir(fixtureDirectory);
 
 try {
@@ -164,6 +184,7 @@ try {
   }
   await Bun.sleep(25);
   assert(FixtureClient.latest, 'fixture client not created');
+  assert(!scoped, 'Startup continued after guild membership changed');
   for (const required of [
     'process-lock-mocked',
     'database-adapter-created',
@@ -192,5 +213,6 @@ try {
   globalThis.fetch = nativeFetch;
   FixtureClient.latest?.destroy();
   process.chdir('/tmp');
-  rmSync(fixtureDirectory, { recursive: true, force: true });
+  process.off('exit', cleanupDirectory);
+  cleanupDirectory();
 }

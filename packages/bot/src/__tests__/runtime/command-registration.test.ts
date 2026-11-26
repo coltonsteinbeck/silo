@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from 'bun:test';
+import { fileURLToPath } from 'node:url';
 import { Routes, type REST } from 'discord.js';
 import {
   acceptsScopedGuildEvent,
@@ -77,6 +78,22 @@ describe('development command sync scope', () => {
     expect(acceptsScopedGuildEvent('legacy', otherGuildId, guildId)).toBe(true);
     expect(acceptsScopedGuildEvent('legacy', null, guildId)).toBe(true);
   });
+
+  test('stops when membership changes while scoped startup is in progress', () => {
+    const fixture = fileURLToPath(new URL('./offline-startup-smoke.fixture.ts', import.meta.url));
+    for (const [event, diagnostic] of [
+      ['join', 'Scoped Discord runtime joined an unexpected guild'],
+      ['leave', 'Scoped Discord runtime left its expected guild']
+    ] as const) {
+      const result = Bun.spawnSync([process.execPath, '--no-env-file', fixture, event], {
+        stdout: 'pipe',
+        stderr: 'pipe',
+        timeout: 15_000
+      });
+      expect(result.exitCode).toBe(1);
+      expect(result.stdout.toString() + result.stderr.toString()).toContain(diagnostic);
+    }
+  }, 20_000);
 
   test('no-registration mode never constructs or calls REST', async () => {
     await expect(

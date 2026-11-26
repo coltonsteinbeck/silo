@@ -1008,21 +1008,12 @@ export async function startBot(): Promise<void> {
 
   // Handle guild join
   client.on(Events.GuildCreate, async guild => {
-    if (!scopedReady) return;
-    if (commandSyncMode === 'none') {
-      if (guild.id !== config.discord.guildId) {
-        commandShutdown.abort();
-        logger.error('Scoped Discord runtime joined an unexpected guild');
-        process.exit(1);
-      }
-      return;
-    }
-    if (!admitsEvent(guild.id)) {
+    if (!acceptsScopedGuildEvent(commandSyncMode, guild.id, config.discord.guildId)) {
       commandShutdown.abort();
       logger.error('Scoped Discord runtime joined an unexpected guild');
       process.exit(1);
-      return;
     }
+    if (!admitsEvent(guild.id)) return;
     if (commandShutdown.signal.aborted || !(await runtimeLease.verify())) return;
     const metadataInput = {
       guildId: guild.id,
@@ -1073,17 +1064,8 @@ export async function startBot(): Promise<void> {
 
   // Handle guild leave/kick
   client.on(Events.GuildDelete, async guild => {
-    if (!scopedReady) return;
-    if (commandSyncMode === 'none') {
-      if (guild.id === config.discord.guildId) {
-        commandShutdown.abort();
-        logger.error('Scoped Discord runtime left its expected guild');
-        process.exit(1);
-      }
-      return;
-    }
     if (commandSyncMode !== 'legacy') {
-      if (admitsEvent(guild.id)) {
+      if (acceptsScopedGuildEvent(commandSyncMode, guild.id, config.discord.guildId)) {
         commandShutdown.abort();
         logger.error('Scoped Discord runtime left its expected guild');
         process.exit(1);
