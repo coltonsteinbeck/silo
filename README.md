@@ -206,6 +206,9 @@ For rollout and trace details, see [docs/AGENT_GRAPH.md](docs/AGENT_GRAPH.md).
 
 ### Docker Deployment
 
+For the standalone Docker command below, set `SILO_VOICE_QUOTA_DIRECTORY` in
+`.env` to `/var/lib/voice-quota/journal` so the journal uses the mounted volume.
+
 ```bash
 # Build a release image from a clean, committed checkout
 bash scripts/build-release-image.sh silo-bot:latest
@@ -214,6 +217,7 @@ bash scripts/build-release-image.sh silo-bot:latest
 docker run -d \
   --name silo \
   --env-file .env \
+  --mount type=volume,source=silo_voice_quota,target=/var/lib/voice-quota \
   --restart unless-stopped \
   silo-bot:latest
 
@@ -431,6 +435,23 @@ All configuration in `.env`:
 - Database connection
 - Feature flags
 - Rate limits
+
+Voice sessions save measured minutes in a private, local settlement journal before
+writing to PostgreSQL. Keep its directory on persistent storage across process
+and container restarts. The default is `.local/state/silo/voice-quota` inside
+the bot account's home directory.
+To override it, set `SILO_VOICE_QUOTA_DIRECTORY` to an absolute path outside the
+checkout. The bot account creates the directory or uses an existing directory it
+owns with mode `0700`. Use separate directories for separate deployments.
+Let the queue drain before changing the Discord application or database target.
+
+On startup and during operation, the bot retries pending measurements and removes
+them after PostgreSQL confirms the exact charge. The journal stores reservation
+keys and minutes. Keep its SQLite files together and out of backups shared with
+other deployments or public artifacts. After a journal disk loss or an abrupt
+exit before a measurement exists, the reservation still holds capacity for its
+original quota day and remains available for operator review. PostgreSQL waits
+for a measurement before charging voice usage.
 
 ## Commands
 

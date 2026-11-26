@@ -19,6 +19,7 @@ import {
 } from '../security';
 import { QuotaMiddleware } from '../middleware/quota';
 import type { QuotaReservationRow } from '../database/admin-adapter';
+import type { VoiceQuotaJournal } from '../voice/quota-journal';
 
 const MAX_VOICE_SESSION_MINUTES = 10;
 
@@ -52,7 +53,8 @@ export class SpeakCommand implements Command {
 
   constructor(
     private adminDb: AdminAdapter,
-    private quotaMiddleware?: QuotaMiddleware
+    private quotaMiddleware?: QuotaMiddleware,
+    private voiceQuotaJournal?: VoiceQuotaJournal
   ) {}
 
   async execute(interaction: ChatInputCommandInteraction) {
@@ -135,7 +137,16 @@ export class SpeakCommand implements Command {
     }
 
     const quota = this.quotaMiddleware;
-    if (!quota) {
+    const journal = this.voiceQuotaJournal;
+    if (!quota || !journal) {
+      await interaction.reply({ content: 'Voice quota is unavailable.', ephemeral: true });
+      return;
+    }
+
+    try {
+      journal.assertReady();
+    } catch {
+      logger.error('Voice quota journal is unavailable');
       await interaction.reply({ content: 'Voice quota is unavailable.', ephemeral: true });
       return;
     }
@@ -219,12 +230,13 @@ export class SpeakCommand implements Command {
             throw new Error('The requester left the voice channel before speech started.');
           }
         },
-        onEnd: async durationMs => {
+        onEnd: durationMs => {
           const minutes = Math.max(
             1,
             Math.min(reserved.reservedAmount, Math.ceil(durationMs / 60_000))
           );
-          await quota.commitQuota(reserved, minutes);
+          journal.record(reserved.idempotencyKey, minutes);
+          void journal.flush();
         }
       });
 

@@ -80,6 +80,8 @@ ENV/
 # Database
 *.db
 *.sqlite
+*.sqlite-wal
+*.sqlite-shm
 *.sqlite3
 
 # Models

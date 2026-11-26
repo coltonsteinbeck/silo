@@ -164,6 +164,26 @@ describe('VoiceSessionManager guild voice coordination', () => {
     expect(manager.isUserSpeaking('guild', 'member')).toBe(false);
   });
 
+  test('the runtime records every active speaker before asynchronous shutdown', async () => {
+    const disconnect = mock(async () => 0);
+    const onEnd = mock((_durationMs: number) => {});
+    const manager = new VoiceSessionManager({
+      joinVoice: mock(() => connection()) as never,
+      waitForState: mock(async value => value),
+      createRealtimeSession: () => ({ connect: async () => {}, disconnect }) as never
+    });
+    await manager.joinChannel(channel as never);
+    await manager.startSpeaking('guild', 'first', 'synthetic', { onEnd });
+    await manager.startSpeaking('guild', 'second', 'synthetic', { onEnd });
+
+    manager.stopAll();
+
+    expect(onEnd).toHaveBeenCalledTimes(2);
+    expect(disconnect).not.toHaveBeenCalled();
+    await manager.stopSpeaking('guild', 'second');
+    expect(onEnd).toHaveBeenCalledTimes(2);
+  });
+
   test('rechecks channel membership after marking quota and settles without connecting', async () => {
     let stillPresent = true;
     const connect = mock(async () => {});

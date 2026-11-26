@@ -70,6 +70,8 @@ import { hashPrompt } from './security/prompt-policy';
 import { sanitizeAssistantOutput, sanitizeDiscordMassMentions } from './security/output-sanitizer';
 import { QuotaMiddleware } from './middleware/quota';
 import { QuotaReservationReconciler } from './middleware/quota-reconciler';
+import { VoiceQuotaJournal } from './voice/quota-journal';
+import { voiceSessionManager } from './voice';
 import { CostAggregator } from './services/cost-aggregator';
 import { selectMemoryContext } from './services/memory-selector';
 import {
@@ -575,6 +577,10 @@ export async function startBot(): Promise<void> {
     maxConnections: config.database.maxConnections
   });
   const commandShutdown = new AbortController();
+  // Lease loss exits immediately after aborting, so voice usage must be written synchronously.
+  commandShutdown.signal.addEventListener('abort', () => voiceSessionManager.stopAll(), {
+    once: true
+  });
   const runtimeLease = await RuntimeLeaderLease.acquire(
     new PostgresClient({
       ...db.pool.options,
@@ -608,6 +614,7 @@ export async function startBot(): Promise<void> {
   const permissions = new PermissionManager(adminDb);
   const quotaMiddleware = new QuotaMiddleware(adminDb, permissions);
   const quotaReconciler = new QuotaReservationReconciler(adminDb);
+  const voiceQuotaJournal = new VoiceQuotaJournal(adminDb, config.discord.clientId, databaseTarget);
   const costAggregator = new CostAggregator(adminDb);
 
   const providers = new ProviderRegistry(config);
@@ -644,7 +651,8 @@ export async function startBot(): Promise<void> {
       const runtimeConfig = await adminDb.getServerRuntimeConfig(guildId);
       return (await resolveRuntimePrompt(guildId, runtimeConfig.systemPrompt)).promptPolicy
         .promptHash;
-    }
+    },
+    voiceQuotaJournal
   );
   const drawCommand = commands.get('draw');
   const radioCommand = commands.get('radio');
@@ -790,7 +798,10 @@ export async function startBot(): Promise<void> {
       }
     }
 
-    if (commandSyncMode !== 'none') quotaReconciler.start(commandShutdown.signal);
+    if (commandSyncMode !== 'none') {
+      quotaReconciler.start(commandShutdown.signal);
+      voiceQuotaJournal.start(commandShutdown.signal);
+    }
 
     if (commandSyncMode !== 'none')
       void (async () => {

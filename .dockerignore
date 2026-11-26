@@ -22,6 +22,8 @@ logs/
 *.ndjson
 *.parquet
 *.sqlite
+*.sqlite-wal
+*.sqlite-shm
 *.sqlite3
 *.db
 *.sql

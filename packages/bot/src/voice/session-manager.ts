@@ -198,7 +198,7 @@ export class VoiceSessionManager {
       maxDurationMs?: number;
       beforeConnect?: () => Promise<void>;
       authorizeConnection?: () => void;
-      onEnd?: (durationMs: number) => Promise<void>;
+      onEnd?: (durationMs: number) => void;
     }
   ): Promise<RealtimeSession> {
     const sessionInfo = this.sessions.get(guildId);
@@ -213,23 +213,27 @@ export class VoiceSessionManager {
 
     let startedAt: number | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    let settlement: Promise<void> | undefined;
+    let endRecorded = false;
+    const recordEnd = () => {
+      if (startedAt === undefined || endRecorded) return;
+      endRecorded = true;
+      try {
+        options?.onEnd?.(performance.now() - startedAt);
+      } catch (error) {
+        logger.error('Could not persist measured voice quota', {
+          errorType: error instanceof Error ? error.name : 'unknown'
+        });
+      }
+    };
     const finish = () => {
       if (timer) clearTimeout(timer);
+      recordEnd();
       if (sessionInfo.activeSpeakers.get(userId) === speaker) {
         sessionInfo.activeSpeakers.delete(userId);
         if (sessionInfo.activeSpeakers.size === 0 && this.sessions.get(guildId) === sessionInfo) {
           void this.leaveGuild(guildId).catch(() => {});
         }
       }
-      if (startedAt !== undefined && !settlement) {
-        settlement = Promise.resolve()
-          .then(() => options?.onEnd?.(performance.now() - startedAt!))
-          .catch(error =>
-            logger.error('Voice quota settlement pending', { errorType: error?.name })
-          );
-      }
-      return settlement;
     };
     const createRealtimeSession =
       this.runtime.createRealtimeSession ?? ((...args) => new RealtimeSession(...args));
@@ -249,17 +253,19 @@ export class VoiceSessionManager {
         void speaker.stop().catch(() => {});
       },
       onClose: () => {
-        void finish();
+        finish();
       }
     });
     let stopping: Promise<void> | undefined;
     const speaker = {
       session: realtimeSession,
-      stop: () =>
-        (stopping ??= realtimeSession
-          .disconnect()
+      stop: () => {
+        recordEnd();
+        return (stopping ??= Promise.resolve()
+          .then(() => realtimeSession.disconnect())
           .then(() => undefined)
-          .finally(finish))
+          .finally(finish));
+      }
     };
     sessionInfo.activeSpeakers.set(userId, speaker);
     try {
@@ -280,7 +286,7 @@ export class VoiceSessionManager {
       return realtimeSession;
     } catch (error) {
       await speaker.stop().catch(() => {});
-      await finish();
+      finish();
       throw error;
     }
   }
@@ -296,6 +302,14 @@ export class VoiceSessionManager {
     if (!speaker) return false;
     await speaker.stop();
     return true;
+  }
+
+  stopAll(): void {
+    for (const { activeSpeakers } of this.sessions.values()) {
+      for (const speaker of activeSpeakers.values()) {
+        void speaker.stop().catch(() => {});
+      }
+    }
   }
 
   /**

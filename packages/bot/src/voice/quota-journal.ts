@@ -1,0 +1,148 @@
+import { Database } from 'bun:sqlite';
+import { createHash } from 'node:crypto';
+import { chmodSync, existsSync, lstatSync, mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, isAbsolute, join } from 'node:path';
+import { logger } from '@silo/core';
+import type { AdminAdapter } from '../database/admin-adapter';
+
+const RETRY_INTERVAL_MS = 60_000;
+
+export class VoiceQuotaJournal {
+  private readonly path: string;
+  private draining = false;
+
+  constructor(
+    private readonly store: Pick<AdminAdapter, 'commitQuotaUsage'>,
+    applicationId: string,
+    target: URL,
+    directory = process.env.SILO_VOICE_QUOTA_DIRECTORY ??
+      join(homedir(), '.local', 'state', 'silo', 'voice-quota')
+  ) {
+    const namespace = createHash('sha256')
+      .update(
+        JSON.stringify([
+          applicationId,
+          target.hostname,
+          target.port || '5432',
+          target.pathname,
+          target.username
+        ])
+      )
+      .digest('hex');
+    this.path = join(directory, `${namespace}.sqlite`);
+  }
+
+  private open(): Database {
+    const directory = dirname(this.path);
+    if (!isAbsolute(directory)) throw new Error('Voice quota directory must be absolute');
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const metadata = lstatSync(directory);
+    if (
+      !metadata.isDirectory() ||
+      metadata.uid !== process.getuid?.() ||
+      (metadata.mode & 0o077) !== 0
+    ) {
+      throw new Error('Voice quota directory must be private to the bot account');
+    }
+    const file = lstatSync(this.path, { throwIfNoEntry: false });
+    if (file && (!file.isFile() || file.uid !== metadata.uid)) {
+      throw new Error('Voice quota journal must be a regular file owned by the bot account');
+    }
+    const db = new Database(this.path, { strict: true });
+    try {
+      chmodSync(this.path, 0o600);
+      db.exec('PRAGMA busy_timeout = 1000');
+      const mode = db.query<{ journal_mode: string }, []>('PRAGMA journal_mode = WAL').get();
+      if (mode?.journal_mode !== 'wal') throw new Error('Voice quota journal requires WAL support');
+      // A terminal measurement must survive process exit before the PostgreSQL write.
+      db.exec('PRAGMA synchronous = FULL');
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS pending (
+          reservation_key TEXT PRIMARY KEY NOT NULL,
+          minutes INTEGER NOT NULL CHECK (minutes > 0),
+          retry_at INTEGER NOT NULL DEFAULT 0
+        )
+      `);
+      return db;
+    } catch (error) {
+      db.close();
+      throw error;
+    }
+  }
+
+  assertReady(): void {
+    this.open().close();
+  }
+
+  record(reservationKey: string, minutes: number): void {
+    const db = this.open();
+    try {
+      const stored = db
+        .query<{ minutes: number }, [string, number]>(
+          `
+        INSERT INTO pending (reservation_key, minutes) VALUES (?, ?)
+        ON CONFLICT (reservation_key) DO UPDATE SET minutes = pending.minutes
+        RETURNING minutes
+      `
+        )
+        .get(reservationKey, minutes);
+      if (stored?.minutes !== minutes) throw new Error('Conflicting terminal voice quota amount');
+    } finally {
+      db.close();
+    }
+  }
+
+  start(signal: AbortSignal): void {
+    if (signal.aborted) return;
+    void this.flush();
+    const timer = setInterval(() => void this.flush(), RETRY_INTERVAL_MS);
+    timer.unref();
+    signal.addEventListener('abort', () => clearInterval(timer), { once: true });
+  }
+
+  async flush(now = Date.now()): Promise<void> {
+    if (this.draining || !existsSync(this.path)) return;
+    this.draining = true;
+    let db: Database | undefined;
+    try {
+      db = this.open();
+      const pending = db
+        .query<{ reservation_key: string; minutes: number }, [number]>(
+          `
+        SELECT reservation_key, minutes FROM pending WHERE retry_at <= ?
+        ORDER BY retry_at, rowid LIMIT 25
+      `
+        )
+        .all(now);
+      for (const { reservation_key: key, minutes } of pending) {
+        try {
+          const result = await this.store.commitQuotaUsage(key, minutes);
+          if (
+            result.idempotencyKey !== key ||
+            result.status !== 'committed' ||
+            result.actualAmount !== minutes
+          ) {
+            throw new Error('Unexpected voice quota settlement result');
+          }
+          db.run('DELETE FROM pending WHERE reservation_key = ? AND minutes = ?', [key, minutes]);
+        } catch (error) {
+          db.run('UPDATE pending SET retry_at = ? WHERE reservation_key = ?', [
+            Date.now() + RETRY_INTERVAL_MS,
+            key
+          ]);
+          logger.warn('Measured voice quota remains queued', {
+            errorType: error instanceof Error ? error.name : 'unknown'
+          });
+        }
+      }
+    } catch (error) {
+      logger.error('Voice quota journal replay failed', {
+        errorType: error instanceof Error ? error.name : 'unknown'
+      });
+    } finally {
+      db?.close();
+      this.draining = false;
+    }
+  }
+}

@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PostgresAdapter } from '../../database/postgres';
+import { AdminAdapter } from '../../database/admin-adapter';
+import { VoiceQuotaJournal } from '../../voice/quota-journal';
 import { Pool, type PoolClient } from 'pg';
 import { readFileSync } from 'node:fs';
 
@@ -224,6 +229,99 @@ async function lifecycle(
 }
 
 describe.skipIf(!RUN_DATABASE_TESTS)('atomic quota reservations on local Postgres', () => {
+  test('recovers the journaled voice amount after PostgreSQL settlement fails and the worker restarts', async () => {
+    const pool = await openPool();
+    const directory = mkdtempSync(join(tmpdir(), 'silo-voice-quota-'));
+    const guildId = `quota-voice-${randomUUID()}`;
+    const userId = 'voice-user';
+    const key = `speak-${randomUUID()}`;
+    const target = new URL(localConnectionString());
+    const application = 'voice-quota-test';
+    try {
+      await installFixture(pool, guildId, generousLimits);
+      const held = await reserve(pool, {
+        key,
+        guildId,
+        userId,
+        resource: 'voice_minutes',
+        requested: 10,
+        minimum: 1
+      });
+      await lifecycle(pool, 'mark_quota_usage_attempted', key);
+      const unavailable = new VoiceQuotaJournal(
+        {
+          commitQuotaUsage: async () => {
+            throw new Error('database unavailable');
+          }
+        },
+        application,
+        target,
+        directory
+      );
+      unavailable.record(key, 2);
+      await unavailable.flush();
+      await pool.query(
+        `UPDATE public.quota_usage_reservations
+         SET created_at = NOW() - INTERVAL '3 hours', expires_at = NOW() - INTERVAL '1 second'
+         WHERE idempotency_key = $1`,
+        [key]
+      );
+
+      // A fresh admission and the scheduled reconciler must both leave the measurement pending.
+      await reserve(pool, {
+        key: `${key}-next`,
+        guildId,
+        userId,
+        resource: 'voice_minutes',
+        requested: 1,
+        minimum: 1
+      });
+      await pool.query('SELECT * FROM public.reconcile_expired_quota_reservations(100)');
+      const inspect = async () =>
+        (
+          await pool.query(
+            `SELECT status, actual_amount, reported_actual_amount
+         FROM public.quota_usage_reservations WHERE idempotency_key = $1`,
+            [key]
+          )
+        ).rows[0];
+      expect(await inspect()).toEqual({
+        status: 'attempted',
+        actual_amount: null,
+        reported_actual_amount: null
+      });
+
+      const restored = new VoiceQuotaJournal(
+        new AdminAdapter(pool),
+        application,
+        target,
+        directory
+      );
+      await restored.flush(Date.now() + 61_000);
+      await restored.flush(Date.now() + 61_000);
+      expect(await inspect()).toEqual({
+        status: 'committed',
+        actual_amount: 2,
+        reported_actual_amount: 2
+      });
+      const counters = await pool.query(
+        `SELECT u.voice_minutes_used, u.voice_requests, g.total_voice_minutes
+         FROM public.usage_tracking u JOIN public.guild_daily_usage g USING (guild_id, usage_date)
+         WHERE u.guild_id = $1 AND u.user_id = $2 AND u.usage_date = $3`,
+        [guildId, userId, held.usage_date]
+      );
+      expect(counters.rows[0]).toEqual({
+        voice_minutes_used: 2,
+        voice_requests: 1,
+        total_voice_minutes: 2
+      });
+    } finally {
+      await cleanupFixtures(pool, [guildId]);
+      await pool.end();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test('settles structured image model rejection once without user or guild usage', async () => {
     const pool = await openPool();
     const guildId = `quota-rejected-${randomUUID()}`;
