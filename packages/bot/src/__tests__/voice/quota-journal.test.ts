@@ -71,6 +71,31 @@ test('rejects a journal directory that is open to other accounts', () => {
   expect(() => journal.assertReady()).toThrow('must be private');
 });
 
+test('a failed identity read blocks voice until a later refresh succeeds', async () => {
+  let attempts = 0;
+  const resolveDatabaseId = mock(async () => {
+    if (++attempts === 1)
+      throw Object.assign(new Error('connection refused'), { code: 'ECONNREFUSED' });
+    return database;
+  });
+  const journal = new VoiceQuotaJournal(
+    {
+      commitQuotaUsage: async () => {
+        throw new Error('unexpected settlement');
+      }
+    },
+    'app',
+    resolveDatabaseId,
+    directory
+  );
+
+  await journal.flush();
+  expect(() => journal.assertReady()).toThrow('Voice quota database identity is unavailable');
+  await Bun.sleep(0);
+  expect(resolveDatabaseId).toHaveBeenCalledTimes(2);
+  expect(() => journal.assertReady()).not.toThrow();
+});
+
 test('retains the measurement when the journal and database are temporarily unavailable', async () => {
   let databaseAvailable = false;
   const commit = mock(async (key: string, amount: number, _timeout?: number) => {

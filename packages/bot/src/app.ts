@@ -614,15 +614,12 @@ export async function startBot(): Promise<void> {
   const permissions = new PermissionManager(adminDb);
   const quotaMiddleware = new QuotaMiddleware(adminDb, permissions);
   const quotaReconciler = new QuotaReservationReconciler(adminDb);
-  let voiceQuotaJournal: VoiceQuotaJournal | undefined;
-  if (commandSyncMode !== 'none') {
-    try {
-      const databaseId = await adminDb.getVoiceQuotaDatabaseId();
-      voiceQuotaJournal = new VoiceQuotaJournal(adminDb, config.discord.clientId, databaseId);
-    } catch {
-      logger.error('Voice quota database identity could not be loaded');
-    }
-  }
+  const voiceQuotaJournal =
+    commandSyncMode === 'none'
+      ? undefined
+      : new VoiceQuotaJournal(adminDb, config.discord.clientId, () =>
+          adminDb.getVoiceQuotaDatabaseId()
+        );
   const costAggregator = new CostAggregator(adminDb);
 
   const providers = new ProviderRegistry(config);

@@ -13,25 +13,31 @@ const REPLAY_BATCH_SIZE = 25;
 class ConflictingMeasurement extends Error {}
 
 export class VoiceQuotaJournal {
-  private readonly path: string;
+  private path?: string;
   private readonly unjournaled = new Map<string, number>();
   private draining = false;
 
   constructor(
     private readonly store: Pick<AdminAdapter, 'commitQuotaUsage'>,
-    applicationId: string,
-    databaseId: string,
-    directory = process.env.SILO_VOICE_QUOTA_DIRECTORY ??
+    private readonly applicationId: string,
+    private readonly databaseId: string | (() => Promise<string>),
+    private readonly directory = process.env.SILO_VOICE_QUOTA_DIRECTORY ??
       join(homedir(), '.local', 'state', 'silo', 'voice-quota')
   ) {
+    if (typeof databaseId === 'string') this.path = this.pathFor(databaseId);
+  }
+
+  private pathFor(databaseId: string): string {
     const namespace = createHash('sha256')
-      .update(JSON.stringify([applicationId, databaseId]))
+      .update(JSON.stringify([this.applicationId, databaseId]))
       .digest('hex');
-    this.path = join(directory, `${namespace}.sqlite`);
+    return join(this.directory, `${namespace}.sqlite`);
   }
 
   private open(): Database {
-    const directory = dirname(this.path);
+    const path = this.path;
+    if (!path) throw new Error('Voice quota database identity is unavailable');
+    const directory = dirname(path);
     if (!isAbsolute(directory)) throw new Error('Voice quota directory must be absolute');
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     const metadata = lstatSync(directory);
@@ -42,13 +48,13 @@ export class VoiceQuotaJournal {
     ) {
       throw new Error('Voice quota directory must be private to the bot account');
     }
-    const file = lstatSync(this.path, { throwIfNoEntry: false });
+    const file = lstatSync(path, { throwIfNoEntry: false });
     if (file && (!file.isFile() || file.uid !== metadata.uid)) {
       throw new Error('Voice quota journal must be a regular file owned by the bot account');
     }
-    const db = new Database(this.path, { strict: true });
+    const db = new Database(path, { strict: true });
     try {
-      chmodSync(this.path, 0o600);
+      chmodSync(path, 0o600);
       db.exec('PRAGMA busy_timeout = 1000');
       const mode = db.query<{ journal_mode: string }, []>('PRAGMA journal_mode = WAL').get();
       if (mode?.journal_mode !== 'wal') throw new Error('Voice quota journal requires WAL support');
@@ -69,6 +75,7 @@ export class VoiceQuotaJournal {
   }
 
   assertReady(): void {
+    if (!this.path) void this.flush();
     this.open().close();
   }
 
@@ -132,10 +139,16 @@ export class VoiceQuotaJournal {
   }
 
   async flush(now = Date.now()): Promise<void> {
-    if (this.draining || (!this.unjournaled.size && !existsSync(this.path))) return;
+    if (this.draining) return;
     this.draining = true;
     let db: Database | undefined;
     try {
+      if (!this.path) {
+        const databaseId =
+          typeof this.databaseId === 'function' ? await this.databaseId() : this.databaseId;
+        this.path = this.pathFor(databaseId);
+      }
+      if (!this.unjournaled.size && !existsSync(this.path)) return;
       for (const [key, minutes] of [...this.unjournaled].slice(0, REPLAY_BATCH_SIZE)) {
         try {
           this.record(key, minutes);
@@ -175,9 +188,16 @@ export class VoiceQuotaJournal {
         }
       }
     } catch (error) {
-      logger.error('Voice quota journal replay failed', {
-        errorType: error instanceof Error ? error.name : 'unknown'
-      });
+      const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+      logger.error(
+        this.path
+          ? 'Voice quota journal replay failed'
+          : 'Voice quota database identity could not be loaded',
+        {
+          errorType: error instanceof Error ? error.name : 'unknown',
+          errorCode: typeof code === 'string' && /^[A-Z0-9_]{2,32}$/.test(code) ? code : undefined
+        }
+      );
     } finally {
       db?.close();
       this.draining = false;
