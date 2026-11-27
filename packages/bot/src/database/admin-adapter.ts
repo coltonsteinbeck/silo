@@ -1396,6 +1396,16 @@ export class AdminAdapter {
     return id;
   }
 
+  async recoverVoiceQuotaStart(key: string, fallback: number): Promise<boolean> {
+    const query = {
+      text: 'SELECT public.recover_voice_quota_start($1, $2) AS settled',
+      values: [key, fallback],
+      query_timeout: 5_000
+    };
+    const result = await this.pool.query<{ settled: boolean }>(query);
+    return result.rows[0]?.settled === true;
+  }
+
   async recordQuotaUsageActual(idempotencyKey: string, actualAmount: number): Promise<void> {
     const result = await this.pool.query(
       `SELECT record_quota_usage_actual($1, $2) AS actual_amount`,
@@ -1440,9 +1450,12 @@ export class AdminAdapter {
     processed: number;
     failed: number;
   }> {
-    const result = await this.pool.query(`SELECT * FROM reconcile_expired_quota_reservations($1)`, [
-      limit
-    ]);
+    const query = {
+      text: 'SELECT * FROM reconcile_expired_quota_reservations($1)',
+      values: [limit],
+      query_timeout: 15_000
+    };
+    const result = await this.pool.query(query);
     const row = result.rows[0] ?? {};
     return {
       released: asFiniteQuotaNumber(row.released),
@@ -1458,7 +1471,8 @@ export class AdminAdapter {
     staleAttempted: number;
     oldestAttemptedSeconds: number;
   }> {
-    const result = await this.pool.query(`
+    const query = {
+      text: `
       SELECT
         count(*) FILTER (WHERE status = 'reserved') AS reserved,
         count(*) FILTER (WHERE status = 'attempted') AS attempted,
@@ -1467,7 +1481,10 @@ export class AdminAdapter {
           FILTER (WHERE status = 'attempted'), 0) AS oldest_attempted_seconds
       FROM public.quota_usage_reservations
       WHERE status IN ('reserved', 'attempted')
-    `);
+      `,
+      query_timeout: 5_000
+    };
+    const result = await this.pool.query(query);
     const row = result.rows[0] ?? {};
     return {
       reserved: asFiniteQuotaNumber(row.reserved),

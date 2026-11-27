@@ -155,7 +155,8 @@ export class SpeakCommand implements Command {
 
     const hadExistingGuildSession = voiceSessionManager.hasSession(guildId);
     let reservation: QuotaReservationRow | undefined;
-    let attemptStarted = false;
+    let journaledStart = false;
+    let providerStarted = false;
 
     try {
       // Get OpenAI API key from environment
@@ -222,13 +223,27 @@ export class SpeakCommand implements Command {
           if (member.voice.channelId !== voiceChannel.id) {
             throw new Error('The requester left the voice channel.');
           }
+          journal.begin(reserved.idempotencyKey);
+          journaledStart = true;
           await quota.markQuotaAttempted(reserved);
-          attemptStarted = true;
         },
         authorizeConnection: () => {
-          if (member.voice.channelId !== voiceChannel.id) {
-            throw new Error('The requester left the voice channel before speech started.');
+          if (
+            member.voice.channelId !== voiceChannel.id ||
+            !voiceChannel
+              .permissionsFor(interaction.user)
+              ?.has([
+                PermissionFlagsBits.ViewChannel,
+                PermissionFlagsBits.Connect,
+                PermissionFlagsBits.Speak
+              ])
+          ) {
+            throw new Error(
+              'The requester lost access to the voice channel before speech started.'
+            );
           }
+          journal.authorize(reserved.idempotencyKey, reserved.reservedAmount);
+          providerStarted = true;
         },
         onEnd: durationMs => {
           const minutes = Math.max(
@@ -264,12 +279,15 @@ export class SpeakCommand implements Command {
     } catch (error) {
       logger.error('[SpeakCommand] Error:', error);
 
-      if (reservation && !attemptStarted) {
-        // The database releases only a still-reserved row. An ambiguous
-        // attempt transition remains eligible for conservative reconciliation.
-        await quota.releaseUnattemptedQuota(reservation, 'voice_start_cancelled').catch(() => {
-          logger.warn('Unattempted voice reservation release is pending');
-        });
+      if (reservation && !providerStarted) {
+        if (journaledStart) {
+          journal.cancel(reservation.idempotencyKey);
+          void journal.flush();
+        } else {
+          await quota.releaseUnattemptedQuota(reservation, 'voice_start_cancelled').catch(() => {
+            logger.warn('Unattempted voice reservation release is pending');
+          });
+        }
       }
 
       if (

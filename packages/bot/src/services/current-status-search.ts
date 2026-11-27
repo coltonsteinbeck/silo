@@ -103,11 +103,21 @@ export function createCurrentStatusSearch(options: {
     let searchAttempted = false;
     try {
       signal.throwIfAborted();
-      const limits = await options.permissions.getRateLimits(
+      const getLimits = options.permissions.getRateLimits(
         input.guildId,
         input.userId,
         input.member
       );
+      const { promise: deadline, reject } = Promise.withResolvers<never>();
+      const onAbort = () => reject(signal.reason);
+      signal.addEventListener('abort', onAbort, { once: true });
+      let limits;
+      try {
+        if (signal.aborted) onAbort();
+        limits = await Promise.race([getLimits, deadline]);
+      } finally {
+        signal.removeEventListener('abort', onAbort);
+      }
       signal.throwIfAborted();
       if (!limiter.check(`${input.guildId}:${input.userId}`, limits.search).allowed) {
         return { content: UNVERIFIED, searched: false };

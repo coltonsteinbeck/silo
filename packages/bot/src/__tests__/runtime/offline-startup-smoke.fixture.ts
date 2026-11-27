@@ -364,6 +364,8 @@ try {
     ])
       assert(!calls.includes(forbidden), `passive startup unexpectedly ran: ${forbidden}`);
   }
+  assert(!calls.includes('scheduler-init-mocked'), 'scoped startup initialized guild eviction');
+  assert(!calls.includes('scheduler-start-mocked'), 'scoped startup started guild eviction');
   assert(!calls.includes('client-destroy'));
   process.stdout.write(JSON.stringify({ status: 'offline-startup-passed', steps: calls }) + '\n');
 } finally {

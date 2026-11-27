@@ -1,11 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PostgresAdapter } from '../../database/postgres';
 import { AdminAdapter } from '../../database/admin-adapter';
-import { VoiceQuotaJournal } from '../../voice/quota-journal';
+import { settleVoiceQuotaOnLeaseLoss, VoiceQuotaJournal } from '../../voice/quota-journal';
 import { Pool, type PoolClient } from 'pg';
 import { readFileSync } from 'node:fs';
 
@@ -269,6 +269,70 @@ describe.skipIf(!RUN_DATABASE_TESTS)('atomic quota reservations on local Postgre
     }
   });
 
+  test('recovers abandoned voice starts and preserves a lease-loss measurement', async () => {
+    const pool = await openPool();
+    const directory = mkdtempSync(join(tmpdir(), 'silo-voice-start-'));
+    const guildId = `quota-voice-${randomUUID()}`;
+    const admin = new AdminAdapter(pool);
+    const app = 'voice-start-test';
+    const key = (suffix: string) => `${guildId}-${suffix}`;
+    try {
+      await installFixture(pool, guildId, generousLimits);
+      const databaseId = await admin.getVoiceQuotaDatabaseId();
+      const journal = new VoiceQuotaJournal(admin, app, databaseId, directory);
+      for (const suffix of ['cancelled', 'abandoned', 'measured']) {
+        await reserve(pool, {
+          key: key(suffix),
+          guildId,
+          userId: `user-${suffix}`,
+          resource: 'voice_minutes',
+          requested: 10,
+          minimum: 1
+        });
+        journal.begin(key(suffix));
+        await lifecycle(pool, 'mark_quota_usage_attempted', key(suffix));
+        if (suffix !== 'cancelled') journal.authorize(key(suffix), 10);
+      }
+      const expired = Date.now() + 15 * 60_000;
+      await journal.flush(expired);
+      const read = async () =>
+        (
+          await pool.query(
+            `SELECT idempotency_key, status, actual_amount FROM public.quota_usage_reservations
+         WHERE guild_id = $1 ORDER BY idempotency_key`,
+            [guildId]
+          )
+        ).rows;
+      expect((await read()).map(row => row.status)).toEqual([
+        'attempted',
+        'attempted',
+        'attempted'
+      ]);
+      chmodSync(directory, 0o755);
+      journal.record(key('measured'), 2);
+      journal.finishOnLeaseLoss(measurements =>
+        settleVoiceQuotaOnLeaseLoss(
+          { connectionString: localConnectionString(), ssl: false },
+          measurements
+        )
+      );
+      expect((await read())[2]).toMatchObject({ status: 'committed', actual_amount: 2 });
+      chmodSync(directory, 0o700);
+      const restarted = new VoiceQuotaJournal(admin, app, databaseId, directory);
+      await restarted.flush(expired);
+      await restarted.flush(expired);
+      expect(await read()).toEqual([
+        { idempotency_key: key('abandoned'), status: 'committed', actual_amount: 10 },
+        { idempotency_key: key('cancelled'), status: 'released', actual_amount: null },
+        { idempotency_key: key('measured'), status: 'committed', actual_amount: 2 }
+      ]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+      await cleanupFixtures(pool, [guildId]);
+      await pool.end();
+    }
+  });
+
   test('recovers the journaled voice amount after PostgreSQL settlement fails and the worker restarts', async () => {
     const pool = await openPool();
     const directory = mkdtempSync(join(tmpdir(), 'silo-voice-quota-'));
@@ -291,6 +355,7 @@ describe.skipIf(!RUN_DATABASE_TESTS)('atomic quota reservations on local Postgre
       await lifecycle(pool, 'mark_quota_usage_attempted', key);
       const unavailable = new VoiceQuotaJournal(
         {
+          recoverVoiceQuotaStart: admin.recoverVoiceQuotaStart.bind(admin),
           commitQuotaUsage: async () => {
             throw new Error('database unavailable');
           }

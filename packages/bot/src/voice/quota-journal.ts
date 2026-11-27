@@ -1,9 +1,11 @@
 import { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { logger } from '@silo/core';
+import type { ClientConfig } from 'pg';
 import type { AdminAdapter } from '../database/admin-adapter';
 
 const RETRY_INTERVAL_MS = 60_000;
@@ -15,10 +17,12 @@ class ConflictingMeasurement extends Error {}
 export class VoiceQuotaJournal {
   private path?: string;
   private readonly unjournaled = new Map<string, number>();
+  private readonly active = new Set<string>();
+  private readonly ownedMeasurements = new Set<string>();
   private draining = false;
 
   constructor(
-    private readonly store: Pick<AdminAdapter, 'commitQuotaUsage'>,
+    private readonly store: Pick<AdminAdapter, 'commitQuotaUsage' | 'recoverVoiceQuotaStart'>,
     private readonly applicationId: string,
     private readonly databaseId: string | (() => Promise<string>),
     private readonly directory = process.env.SILO_VOICE_QUOTA_DIRECTORY ??
@@ -67,6 +71,13 @@ export class VoiceQuotaJournal {
           retry_at INTEGER NOT NULL DEFAULT 0
         )
       `);
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS voice_starts (
+          reservation_key TEXT PRIMARY KEY NOT NULL,
+          fallback_minutes INTEGER NOT NULL DEFAULT 0,
+          recover_at INTEGER NOT NULL DEFAULT 0
+        )
+      `);
       return db;
     } catch (error) {
       db.close();
@@ -79,18 +90,54 @@ export class VoiceQuotaJournal {
     this.open().close();
   }
 
+  begin(key: string): void {
+    const db = this.open();
+    try {
+      const result = db.run(
+        `INSERT INTO voice_starts (reservation_key)
+         SELECT ? WHERE NOT EXISTS (SELECT 1 FROM pending WHERE reservation_key = ?)`,
+        [key, key]
+      );
+      if (result.changes !== 1) throw new Error('Voice quota already has a terminal measurement');
+      this.active.add(key);
+    } finally {
+      db.close();
+    }
+  }
+
+  authorize(key: string, reservedMinutes: number): void {
+    if (!this.active.has(key)) throw new Error('Voice quota start is no longer active');
+    const db = this.open();
+    try {
+      const result = db.run(
+        'UPDATE voice_starts SET fallback_minutes = ?, recover_at = ? WHERE reservation_key = ?',
+        [reservedMinutes, Date.now() + reservedMinutes * 60_000 + RETRY_INTERVAL_MS, key]
+      );
+      if (result.changes !== 1) throw new Error('Voice quota start is missing');
+    } finally {
+      db.close();
+    }
+  }
+
+  cancel(key: string): void {
+    this.active.delete(key);
+  }
+
   record(reservationKey: string, minutes: number): void {
     const retained = this.unjournaled.get(reservationKey);
     if (retained !== undefined && retained !== minutes) {
       throw new ConflictingMeasurement('Conflicting terminal voice quota amount');
     }
+    if (this.active.delete(reservationKey)) this.ownedMeasurements.add(reservationKey);
     this.unjournaled.set(reservationKey, minutes);
     try {
       this.write(reservationKey, minutes);
       this.unjournaled.delete(reservationKey);
+      this.ownedMeasurements.delete(reservationKey);
     } catch (error) {
       if (error instanceof ConflictingMeasurement) {
         this.unjournaled.delete(reservationKey);
+        this.ownedMeasurements.delete(reservationKey);
         throw error;
       }
       logger.warn('Voice quota measurement is waiting for journal storage', {
@@ -102,18 +149,21 @@ export class VoiceQuotaJournal {
   private write(reservationKey: string, minutes: number): void {
     const db = this.open();
     try {
-      const stored = db
-        .query<{ minutes: number }, [string, number]>(
-          `
+      db.transaction(() => {
+        const stored = db
+          .query<{ minutes: number }, [string, number]>(
+            `
         INSERT INTO pending (reservation_key, minutes) VALUES (?, ?)
         ON CONFLICT (reservation_key) DO UPDATE SET minutes = pending.minutes
         RETURNING minutes
       `
-        )
-        .get(reservationKey, minutes);
-      if (stored?.minutes !== minutes) {
-        throw new ConflictingMeasurement('Conflicting terminal voice quota amount');
-      }
+          )
+          .get(reservationKey, minutes);
+        if (stored?.minutes !== minutes) {
+          throw new ConflictingMeasurement('Conflicting terminal voice quota amount');
+        }
+        db.run('DELETE FROM voice_starts WHERE reservation_key = ?', [reservationKey]);
+      })();
     } finally {
       db.close();
     }
@@ -152,9 +202,11 @@ export class VoiceQuotaJournal {
       for (const [key, minutes] of [...this.unjournaled].slice(0, REPLAY_BATCH_SIZE)) {
         try {
           this.record(key, minutes);
-          if (this.unjournaled.has(key)) {
+          // Only this runtime's admitted sessions can settle without checking SQLite.
+          if (this.unjournaled.has(key) && this.ownedMeasurements.has(key)) {
             await this.commit(key, minutes);
             this.unjournaled.delete(key);
+            this.ownedMeasurements.delete(key);
           }
         } catch (error) {
           if (this.unjournaled.delete(key)) this.unjournaled.set(key, minutes);
@@ -187,6 +239,23 @@ export class VoiceQuotaJournal {
           });
         }
       }
+      const abandoned = db
+        .query<{ reservation_key: string; fallback_minutes: number }, [number, string, number]>(
+          `SELECT reservation_key, fallback_minutes FROM voice_starts
+           WHERE recover_at <= ?
+             AND reservation_key NOT IN (SELECT value FROM json_each(?))
+           ORDER BY recover_at, rowid LIMIT ?`
+        )
+        .all(now, JSON.stringify([...this.active, ...this.unjournaled.keys()]), REPLAY_BATCH_SIZE);
+      for (const { reservation_key: key, fallback_minutes: minutes } of abandoned) {
+        try {
+          if (await this.store.recoverVoiceQuotaStart(key, minutes)) {
+            db.run('DELETE FROM voice_starts WHERE reservation_key = ?', [key]);
+          }
+        } catch {
+          logger.warn('Abandoned voice quota recovery will retry');
+        }
+      }
     } catch (error) {
       const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
       logger.error(
@@ -203,4 +272,38 @@ export class VoiceQuotaJournal {
       this.draining = false;
     }
   }
+
+  finishOnLeaseLoss(settle: (measurements: [string, number][]) => void): void {
+    const measurements = [...this.unjournaled]
+      .filter(([key]) => this.ownedMeasurements.has(key))
+      .slice(0, REPLAY_BATCH_SIZE);
+    if (measurements.length) settle(measurements);
+  }
+}
+
+export function settleVoiceQuotaOnLeaseLoss(
+  config: Pick<ClientConfig, 'connectionString' | 'ssl'>,
+  measurements: [string, number][]
+): void {
+  // Keep the bot event loop stopped until exit. The child can only settle quota.
+  const driver = createRequire(import.meta.url).resolve('pg');
+  const worker = `
+    import pg from ${JSON.stringify(driver)};
+    const { config, measurements } = await Bun.stdin.json();
+    const client = new pg.Client({ ...config, connectionTimeoutMillis: 3000, query_timeout: 3000 });
+    await client.connect();
+    try {
+      for (const [key, minutes] of measurements) {
+        await client.query('SELECT public.commit_quota_usage($1, $2)', [key, minutes]);
+      }
+    } finally { await client.end(); }
+  `;
+  const result = Bun.spawnSync([process.execPath, '--no-env-file', '-e', worker], {
+    stdin: Buffer.from(JSON.stringify({ config, measurements })),
+    stdout: 'ignore',
+    stderr: 'ignore',
+    timeout: COMMIT_TIMEOUT_MS,
+    env: { PATH: process.env.PATH }
+  });
+  if (!result.success) logger.error('Voice quota settlement on lease loss could not be confirmed');
 }

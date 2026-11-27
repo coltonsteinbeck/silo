@@ -15,7 +15,12 @@ const sourced = {
 };
 
 function fixture(
-  options: { enabled?: boolean; response?: typeof sourced; providerError?: Error } = {}
+  options: {
+    enabled?: boolean;
+    response?: typeof sourced;
+    providerError?: Error;
+    shutdownSignal?: AbortSignal;
+  } = {}
 ) {
   const member = Object.assign(Object.create(GuildMember.prototype), {
     user: { id: 'user' },
@@ -49,6 +54,7 @@ function fixture(
     quota: { executeReserved } as any,
     permissions: { getRateLimits } as any,
     enabled: options.enabled ?? true,
+    shutdownSignal: options.shutdownSignal,
     moderate: moderate as any,
     evaluate: evaluate as any
   });
@@ -64,6 +70,23 @@ function fixture(
 }
 
 describe('bounded current-status search', () => {
+  test('returns the fallback when shutdown interrupts a stalled rate-limit lookup', async () => {
+    const shutdown = new AbortController();
+    const { lookup, input, getRateLimits, executeReserved, searchWeb } = fixture({
+      shutdownSignal: shutdown.signal
+    });
+    getRateLimits.mockImplementation(() => new Promise(() => {}));
+    const result = lookup(input);
+    expect(getRateLimits).toHaveBeenCalledTimes(1);
+    shutdown.abort();
+    expect(await result).toMatchObject({
+      searched: false,
+      content: expect.stringContaining('verify')
+    });
+    expect(executeReserved).not.toHaveBeenCalled();
+    expect(searchWeb).not.toHaveBeenCalled();
+  });
+
   test('resolves a repeated recheck from a prior user topic, not an assistant claim', () => {
     expect(currentStatusSearchQuery(topic, [])).toBe(topic);
     expect(currentStatusSearchQuery('Please check again.', [topic, 'Check again.'])).toBe(topic);

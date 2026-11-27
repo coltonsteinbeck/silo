@@ -1,10 +1,13 @@
 -- Keep operational relations on backend connections. Preserve explicit grants
 -- to existing backend roles and ownership of the daily materialized view.
--- Before applying to a database with customized operational_backend_access
--- policies, its owner should retain the existing definitions in a private
--- schema backup. A committed application replaces those definitions. To
--- recover one, the database owner should review and apply its definition from
--- that backup and verify that the API roles still have no relation access.
+-- Before applying, retain a schema-only backup for the affected relations,
+-- including RLS flags, policies, relation and column grants, and grant options.
+-- For a reversal, restore those exact settings from the backup in one reviewed
+-- transaction: replace operational_backend_access with the prior policies,
+-- restore ENABLE/DISABLE and FORCE/NO FORCE RLS on the five tables, and restore
+-- the prior ACLs on all six relations, including the materialized view.
+-- Verify effective privileges against the backup before committing. Restoring
+-- a prior API grant intentionally removes this protection for that role.
 ALTER TABLE public.guild_metrics_hourly ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.guild_cost_summary ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.provider_pricing ENABLE ROW LEVEL SECURITY;

@@ -240,6 +240,17 @@ export class ConfigCommand implements Command {
           const forVoice = promptType === 'voice';
           const typeLabel = forVoice ? 'voice' : 'text';
 
+          if (
+            (action === 'edit' || action === 'clear') &&
+            !member.permissions.has(PermissionFlagsBits.Administrator)
+          ) {
+            await interaction.reply({
+              content: `You need Discord Administrator permission to ${action} the system prompt.`,
+              ephemeral: true
+            });
+            return;
+          }
+
           switch (action) {
             case 'view': {
               const { prompt, enabled } = await this.adminDb.getSystemPrompt(
@@ -267,13 +278,6 @@ export class ConfigCommand implements Command {
             }
 
             case 'edit': {
-              if (!member.permissions.has(PermissionFlagsBits.Administrator)) {
-                await interaction.reply({
-                  content: 'You need Discord Administrator permission to edit the system prompt.',
-                  ephemeral: true
-                });
-                return;
-              }
               // Show modal quickly to avoid interaction timeout; prompt prefill is best-effort.
               const promptLookupPromise = this.adminDb
                 .getSystemPrompt(interaction.guildId, forVoice)

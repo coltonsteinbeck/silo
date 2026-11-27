@@ -6,6 +6,7 @@ import { VoiceQuotaJournal } from '../../voice/quota-journal';
 
 let directory: string;
 const database = 'silo-fixture-database';
+const recoverVoiceQuotaStart = async () => false;
 
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), 'silo-voice-quota-'));
@@ -23,6 +24,7 @@ test('retries ambiguous acknowledgements for the same amount, then removes the j
   }));
   const original = new VoiceQuotaJournal(
     {
+      recoverVoiceQuotaStart,
       commitQuotaUsage: async (key, amount, timeout) => {
         await commit(key, amount, timeout);
         throw new Error('acknowledgement lost');
@@ -38,7 +40,7 @@ test('retries ambiguous acknowledgements for the same amount, then removes the j
   await original.flush();
 
   const otherTarget = new VoiceQuotaJournal(
-    { commitQuotaUsage: commit },
+    { commitQuotaUsage: commit, recoverVoiceQuotaStart },
     'app',
     'other-database',
     directory
@@ -46,7 +48,12 @@ test('retries ambiguous acknowledgements for the same amount, then removes the j
   await otherTarget.flush(Date.now() + 61_000);
   expect(commit).toHaveBeenCalledTimes(1);
 
-  const restarted = new VoiceQuotaJournal({ commitQuotaUsage: commit }, 'app', database, directory);
+  const restarted = new VoiceQuotaJournal(
+    { commitQuotaUsage: commit, recoverVoiceQuotaStart },
+    'app',
+    database,
+    directory
+  );
   await restarted.flush(Date.now() + 61_000);
   await restarted.flush(Date.now() + 61_000);
 
@@ -60,6 +67,7 @@ test('rejects a journal directory that is open to other accounts', () => {
   chmodSync(directory, 0o755);
   const journal = new VoiceQuotaJournal(
     {
+      recoverVoiceQuotaStart,
       commitQuotaUsage: async () => {
         throw new Error('unexpected settlement');
       }
@@ -80,6 +88,7 @@ test('a failed identity read blocks voice until a later refresh succeeds', async
   });
   const journal = new VoiceQuotaJournal(
     {
+      recoverVoiceQuotaStart,
       commitQuotaUsage: async () => {
         throw new Error('unexpected settlement');
       }
@@ -109,8 +118,15 @@ test('retains the measurement when the journal and database are temporarily unav
       idempotent: false
     };
   });
-  const journal = new VoiceQuotaJournal({ commitQuotaUsage: commit }, 'app', database, directory);
+  const journal = new VoiceQuotaJournal(
+    { commitQuotaUsage: commit, recoverVoiceQuotaStart },
+    'app',
+    database,
+    directory
+  );
   journal.assertReady();
+  journal.begin('voice-reservation');
+  journal.authorize('voice-reservation', 10);
   chmodSync(directory, 0o755);
   journal.record('voice-reservation', 2);
   await journal.flush();
@@ -120,7 +136,56 @@ test('retains the measurement when the journal and database are temporarily unav
   await journal.flush();
   expect(commit).toHaveBeenCalledTimes(2);
   databaseAvailable = true;
-  const restarted = new VoiceQuotaJournal({ commitQuotaUsage: commit }, 'app', database, directory);
+  const restarted = new VoiceQuotaJournal(
+    { commitQuotaUsage: commit, recoverVoiceQuotaStart },
+    'app',
+    database,
+    directory
+  );
   await restarted.flush(Date.now() + 61_000);
   expect(commit.mock.calls[2]).toEqual(['voice-reservation', 2, 5_000]);
+});
+
+test('lease loss hands off only the measurement from this runtime’s admitted session', () => {
+  const journal = new VoiceQuotaJournal(
+    { commitQuotaUsage: mock(), recoverVoiceQuotaStart },
+    'app',
+    database,
+    directory
+  );
+  journal.begin('owned');
+  journal.authorize('owned', 10);
+  chmodSync(directory, 0o755);
+  journal.record('unknown', 5);
+  journal.record('owned', 2);
+  const settle = mock();
+  journal.finishOnLeaseLoss(settle);
+  expect(settle.mock.calls).toEqual([[[['owned', 2]]]]);
+});
+
+test('an unwritable journal cannot override its first measurement with an unverified amount', async () => {
+  const commitQuotaUsage = mock(async (key: string, amount: number) => ({
+    idempotencyKey: key,
+    status: 'committed' as const,
+    reservedAmount: 10,
+    actualAmount: amount,
+    usageDate: '2026-01-01',
+    idempotent: false
+  }));
+  const journal = new VoiceQuotaJournal(
+    { commitQuotaUsage, recoverVoiceQuotaStart },
+    'app',
+    database,
+    directory
+  );
+  journal.record('existing', 2);
+  chmodSync(directory, 0o755);
+  journal.record('existing', 3);
+  await journal.flush();
+  expect(commitQuotaUsage).not.toHaveBeenCalled();
+  chmodSync(directory, 0o700);
+  await journal.flush();
+  expect(commitQuotaUsage.mock.calls.map(([key, amount]) => [key, amount])).toEqual([
+    ['existing', 2]
+  ]);
 });

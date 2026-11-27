@@ -70,7 +70,7 @@ import { hashPrompt } from './security/prompt-policy';
 import { sanitizeAssistantOutput, sanitizeDiscordMassMentions } from './security/output-sanitizer';
 import { QuotaMiddleware } from './middleware/quota';
 import { QuotaReservationReconciler } from './middleware/quota-reconciler';
-import { VoiceQuotaJournal } from './voice/quota-journal';
+import { settleVoiceQuotaOnLeaseLoss, VoiceQuotaJournal } from './voice/quota-journal';
 import { voiceSessionManager } from './voice';
 import { CostAggregator } from './services/cost-aggregator';
 import { selectMemoryContext } from './services/memory-selector';
@@ -577,7 +577,8 @@ export async function startBot(): Promise<void> {
     maxConnections: config.database.maxConnections
   });
   const commandShutdown = new AbortController();
-  // Lease loss exits immediately after aborting, so voice usage must be written synchronously.
+  let voiceQuotaJournal: VoiceQuotaJournal | undefined;
+  // Stop callbacks synchronously write terminal voice measurements.
   commandShutdown.signal.addEventListener('abort', () => voiceSessionManager.shutdown(), {
     once: true
   });
@@ -591,8 +592,16 @@ export async function startBot(): Promise<void> {
     () => {
       commandShutdown.abort();
       logger.error('Runtime leader lease lost; terminating to prevent duplicate bot activity');
-      // Exit immediately: pending handlers must not deliver after session ownership is lost.
-      process.exit(1);
+      try {
+        voiceQuotaJournal?.finishOnLeaseLoss(measurements =>
+          settleVoiceQuotaOnLeaseLoss(
+            { connectionString: db.pool.options.connectionString, ssl: db.pool.options.ssl },
+            measurements
+          )
+        );
+      } finally {
+        process.exit(1);
+      }
     }
   );
   logger.info('Runtime leader lease acquired');
@@ -614,7 +623,7 @@ export async function startBot(): Promise<void> {
   const permissions = new PermissionManager(adminDb);
   const quotaMiddleware = new QuotaMiddleware(adminDb, permissions);
   const quotaReconciler = new QuotaReservationReconciler(adminDb);
-  const voiceQuotaJournal =
+  voiceQuotaJournal =
     commandSyncMode === 'none'
       ? undefined
       : new VoiceQuotaJournal(adminDb, config.discord.clientId, () =>
@@ -774,8 +783,10 @@ export async function startBot(): Promise<void> {
       } catch (error) {
         logger.error('Guild sync failed:', error);
       }
+    }
 
-      // Start inactivity scheduler (only in hosted mode)
+    if (commandSyncMode === 'legacy') {
+      // These selectors operate across the database, outside guild event admission.
       inactivityScheduler.init(db.pool, client);
       inactivityScheduler.start();
     }

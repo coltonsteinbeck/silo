@@ -21,3 +21,24 @@ test('requires verified TLS for hosted Supabase and permits plain local developm
   ).toThrow('server certificate verification');
   expect(resolvePostgresTransport('postgresql://127.0.0.1/silo').ssl).toBe(false);
 });
+
+test('uses the effective driver host and honors verified environment TLS', () => {
+  expect(
+    resolvePostgresTransport('postgresql://local/silo?host=db.example.supabase.co').ssl
+  ).toEqual({ rejectUnauthorized: true });
+  expect(
+    resolvePostgresTransport('postgresql://db.example.test/silo', false, 'verify-full').ssl
+  ).toEqual({ rejectUnauthorized: true });
+  expect(resolvePostgresTransport('postgresql://dev.example.test/silo', false, 'disable').ssl).toBe(
+    false
+  );
+});
+
+test.each(['?ssl=no-verify', '?sslmode=no-verify'])(
+  'rejects insecure TLS URL options %s',
+  query => {
+    expect(() => resolvePostgresTransport(`postgresql://db.example.test/silo${query}`)).toThrow(
+      'server certificate verification'
+    );
+  }
+);

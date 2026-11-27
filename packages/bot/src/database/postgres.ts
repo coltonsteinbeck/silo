@@ -13,12 +13,27 @@ import {
   logger
 } from '@silo/core';
 
-export function resolvePostgresTransport(connectionString: string, ssl?: boolean) {
+export function resolvePostgresTransport(
+  connectionString: string,
+  ssl?: boolean,
+  environmentMode = process.env.PGSSLMODE
+) {
   const url = new URL(connectionString);
-  const hostedSupabase = /\.(?:supabase\.co|pooler\.supabase\.com)$/i.test(url.hostname);
-  const mode = url.searchParams.get('sslmode');
-  if (hostedSupabase || ssl || (mode !== null && mode !== 'disable')) {
-    if (mode === 'disable' || mode === 'no-verify' || url.searchParams.get('ssl') === '0') {
+  const host = url.searchParams.getAll('host').at(-1) || decodeURIComponent(url.hostname);
+  const hostedSupabase = /\.(?:supabase\.co|pooler\.supabase\.com)\.?$/i.test(host);
+  const mode = url.searchParams.getAll('sslmode').at(-1) || environmentMode;
+  const urlSsl = url.searchParams.getAll('ssl').at(-1);
+  if (mode === 'no-verify' || urlSsl === 'no-verify') {
+    throw new Error('Database TLS requires server certificate verification.');
+  }
+  if (
+    hostedSupabase ||
+    ssl ||
+    (mode && mode !== 'disable') ||
+    urlSsl === 'true' ||
+    urlSsl === '1'
+  ) {
+    if (mode === 'disable' || urlSsl === '0') {
       throw new Error('Database TLS requires server certificate verification.');
     }
     url.searchParams.set('sslmode', 'verify-full');

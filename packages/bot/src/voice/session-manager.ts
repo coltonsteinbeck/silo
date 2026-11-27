@@ -279,17 +279,21 @@ export class VoiceSessionManager {
     sessionInfo.activeSpeakers.set(userId, speaker);
     try {
       await options?.beforeConnect?.();
-      startedAt = performance.now();
       if (stopping || this.sessions.get(guildId) !== sessionInfo) {
         throw new Error('Voice connection changed before speech started.');
       }
       options?.authorizeConnection?.();
+      startedAt = performance.now();
       if (options?.maxDurationMs) {
         timer = setTimeout(() => void speaker.stop().catch(() => {}), options.maxDurationMs);
         timer.unref();
       }
       await realtimeSession.connect();
-      if (stopping || sessionInfo.activeSpeakers.get(userId) !== speaker) {
+      if (
+        stopping ||
+        this.sessions.get(guildId) !== sessionInfo ||
+        sessionInfo.activeSpeakers.get(userId) !== speaker
+      ) {
         throw new Error('Voice connection stopped before speech started.');
       }
       return realtimeSession;

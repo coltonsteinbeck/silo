@@ -30,6 +30,7 @@ function createVoiceInteraction() {
   };
   return {
     ...createMockInteraction({ guildId: voice.guild.id, userId: member.id, member }),
+    member,
     id: 'fixture-interaction'
   };
 }
@@ -89,84 +90,113 @@ describe('SpeakCommand', () => {
       }
     });
 
-    test('/speak reserves before connecting and /stopspeaking records the measured minutes', async () => {
-      const interaction = createVoiceInteraction();
-      const activity: string[] = [];
-      const quota = {
-        reserveQuota: async () => {
-          activity.push('reserve');
-          return {
-            allowed: true,
-            reservation: { idempotencyKey: 'voice-key', reservedAmount: 10 }
-          };
-        },
-        markQuotaAttempted: async () => {
-          activity.push('attempt');
-        }
-      } as unknown as QuotaMiddleware;
-      const record = mock((_key: string, _minutes: number) => {});
-      const journal = {
-        assertReady: () => {
-          activity.push('journal');
-        },
-        record,
-        flush: async () => {}
-      } as unknown as VoiceQuotaJournal;
-      const manager = new VoiceSessionManager({
-        joinVoice: (() => {
-          activity.push('join');
-          return Object.assign(new EventEmitter(), { state: { status: 'ready' }, destroy: mock() });
-        }) as never,
-        waitForState: async connection => connection,
-        createRealtimeSession: () =>
-          ({
-            connect: async () => {
-              activity.push('connect');
-            },
-            disconnect: async () => 0,
-            attachConnection: mock(),
-            sendGreeting: mock()
-          }) as never
-      });
-      const spies = [
-        spyOn(voiceSessionManager, 'isUserSpeaking').mockImplementation(
-          manager.isUserSpeaking.bind(manager)
-        ),
-        spyOn(voiceSessionManager, 'joinChannel').mockImplementation(
-          manager.joinChannel.bind(manager)
-        ),
-        spyOn(voiceSessionManager, 'startSpeaking').mockImplementation(
-          manager.startSpeaking.bind(manager)
-        ),
-        spyOn(voiceSessionManager, 'stopSpeaking').mockImplementation(
-          manager.stopSpeaking.bind(manager)
-        ),
-        spyOn(voiceSessionManager, 'getActiveSpeakerCount').mockImplementation(
-          manager.getActiveSpeakerCount.bind(manager)
-        ),
-        spyOn(voiceSessionManager, 'leaveGuild').mockImplementation(
-          manager.leaveGuild.bind(manager)
-        )
-      ];
-      const priorKey = process.env.OPENAI_API_KEY;
-      process.env.OPENAI_API_KEY = 'synthetic-fixture';
-      try {
-        await new SpeakCommand(mockAdminDb, quota, journal).execute(interaction as never);
-        expect(activity).toEqual(['journal', 'reserve', 'join', 'attempt', 'connect']);
-        expect(record).not.toHaveBeenCalled();
-        await new StopSpeakingCommand().execute(interaction as never);
-        expect(record.mock.calls).toEqual([['voice-key', 1]]);
-        expect(interaction._getReplies()).toContainEqual({
-          content: 'Voice session ended. Silo has left the voice channel.',
-          ephemeral: false
+    test.each(['allowed', 'permission revoked', 'left channel'])(
+      '/speak rechecks access after quota admission: %s',
+      async access => {
+        const interaction = createVoiceInteraction();
+        const activity: string[] = [];
+        const quota = {
+          reserveQuota: async () => {
+            activity.push('reserve');
+            return {
+              allowed: true,
+              reservation: { idempotencyKey: 'voice-key', reservedAmount: 10 }
+            };
+          },
+          markQuotaAttempted: async () => {
+            activity.push('attempt');
+            if (access === 'permission revoked') {
+              interaction.member.voice.channel.permissionsFor = () => ({ has: () => false });
+            }
+            if (access === 'left channel') interaction.member.voice.channelId = 'another-channel';
+          }
+        } as unknown as QuotaMiddleware;
+        const record = mock((_key: string, _minutes: number) => {});
+        const cancel = mock();
+        const journal = {
+          assertReady: () => {
+            activity.push('journal');
+          },
+          begin: () => activity.push('begin'),
+          authorize: () => activity.push('authorize'),
+          cancel,
+          record,
+          flush: async () => {}
+        } as unknown as VoiceQuotaJournal;
+        const manager = new VoiceSessionManager({
+          joinVoice: (() => {
+            activity.push('join');
+            return Object.assign(new EventEmitter(), {
+              state: { status: 'ready' },
+              destroy: mock()
+            });
+          }) as never,
+          waitForState: async connection => connection,
+          createRealtimeSession: () =>
+            ({
+              connect: async () => {
+                activity.push('connect');
+              },
+              disconnect: async () => 0,
+              attachConnection: mock(),
+              sendGreeting: mock()
+            }) as never
         });
-      } finally {
-        await manager.leaveGuild(interaction.guildId);
-        for (const spy of spies) spy.mockRestore();
-        if (priorKey === undefined) delete process.env.OPENAI_API_KEY;
-        else process.env.OPENAI_API_KEY = priorKey;
+        const spies = [
+          spyOn(voiceSessionManager, 'isUserSpeaking').mockImplementation(
+            manager.isUserSpeaking.bind(manager)
+          ),
+          spyOn(voiceSessionManager, 'joinChannel').mockImplementation(
+            manager.joinChannel.bind(manager)
+          ),
+          spyOn(voiceSessionManager, 'startSpeaking').mockImplementation(
+            manager.startSpeaking.bind(manager)
+          ),
+          spyOn(voiceSessionManager, 'stopSpeaking').mockImplementation(
+            manager.stopSpeaking.bind(manager)
+          ),
+          spyOn(voiceSessionManager, 'getActiveSpeakerCount').mockImplementation(
+            manager.getActiveSpeakerCount.bind(manager)
+          ),
+          spyOn(voiceSessionManager, 'leaveGuild').mockImplementation(
+            manager.leaveGuild.bind(manager)
+          )
+        ];
+        const priorKey = process.env.OPENAI_API_KEY;
+        process.env.OPENAI_API_KEY = 'synthetic-fixture';
+        try {
+          await new SpeakCommand(mockAdminDb, quota, journal).execute(interaction as never);
+          if (access !== 'allowed') {
+            expect(activity).toEqual(['journal', 'reserve', 'join', 'begin', 'attempt']);
+            expect(cancel).toHaveBeenCalledWith('voice-key');
+            expect(record).not.toHaveBeenCalled();
+            return;
+          }
+          expect(activity).toEqual([
+            'journal',
+            'reserve',
+            'join',
+            'begin',
+            'attempt',
+            'authorize',
+            'connect'
+          ]);
+          expect(cancel).not.toHaveBeenCalled();
+          expect(record).not.toHaveBeenCalled();
+          await new StopSpeakingCommand().execute(interaction as never);
+          expect(record.mock.calls).toEqual([['voice-key', 1]]);
+          expect(interaction._getReplies()).toContainEqual({
+            content: 'Voice session ended. Silo has left the voice channel.',
+            ephemeral: false
+          });
+        } finally {
+          await manager.leaveGuild(interaction.guildId);
+          for (const spy of spies) spy.mockRestore();
+          if (priorKey === undefined) delete process.env.OPENAI_API_KEY;
+          else process.env.OPENAI_API_KEY = priorKey;
+        }
       }
-    });
+    );
 
     test('rejects when user is not in voice channel', async () => {
       const mockMember = {

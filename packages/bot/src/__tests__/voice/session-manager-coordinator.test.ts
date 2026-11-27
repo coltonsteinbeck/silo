@@ -164,6 +164,38 @@ describe('VoiceSessionManager guild voice coordination', () => {
     expect(manager.isUserSpeaking('guild', 'member')).toBe(false);
   });
 
+  test('a speaker cannot become ready after its guild stops owning the session', async () => {
+    const closing = Promise.withResolvers<void>();
+    const connecting = Promise.withResolvers<void>();
+    const ready = Promise.withResolvers<void>();
+    const manager = new VoiceSessionManager({
+      joinVoice: mock(() => connection()) as never,
+      waitForState: async value => value,
+      createRealtimeSession: (_key, user) =>
+        (user === 'first'
+          ? { connect: async () => {}, disconnect: () => closing.promise }
+          : {
+              connect: () => {
+                connecting.resolve();
+                return ready.promise;
+              },
+              disconnect: async () => {}
+            }) as never
+    });
+    await manager.joinChannel(channel as never);
+    await manager.startSpeaking('guild', 'first', 'synthetic');
+    const starting = manager.startSpeaking('guild', 'second', 'synthetic');
+    await connecting.promise;
+    const leaving = manager.leaveGuild('guild');
+    try {
+      ready.resolve();
+      await expect(starting).rejects.toThrow('Voice connection stopped before speech started');
+    } finally {
+      closing.resolve();
+      await leaving;
+    }
+  });
+
   test('the runtime records every active speaker before asynchronous shutdown', async () => {
     const disconnect = mock(async () => 0);
     const onEnd = mock((_durationMs: number) => {});
@@ -206,7 +238,7 @@ describe('VoiceSessionManager guild voice coordination', () => {
     expect(guildVoiceCoordinator.getActiveActivity('guild')).toBeNull();
   });
 
-  test('rechecks channel membership after marking quota and settles without connecting', async () => {
+  test('does not measure voice when authorization rejects before the provider call', async () => {
     let stillPresent = true;
     const connect = mock(async () => {});
     const onEnd = mock(async (_durationMs: number) => {});
@@ -230,7 +262,7 @@ describe('VoiceSessionManager guild voice coordination', () => {
     ).rejects.toThrow('requester left');
 
     expect(connect).not.toHaveBeenCalled();
-    expect(onEnd).toHaveBeenCalledTimes(1);
+    expect(onEnd).not.toHaveBeenCalled();
     expect(manager.hasSession('guild')).toBe(false);
   });
 });
