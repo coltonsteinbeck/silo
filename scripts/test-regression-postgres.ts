@@ -37,7 +37,6 @@ const child = Bun.spawn(
   {
     env: {
       PATH: process.env.PATH,
-      OPENAI_BASE_URL: 'https://provider.invalid/v1',
       RUN_QUOTA_DB_TESTS: 'true',
       RUN_INGRESS_DB_TESTS: 'true',
       QUOTA_TEST_DATABASE_URL: input,

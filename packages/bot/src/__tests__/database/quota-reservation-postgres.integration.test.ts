@@ -1083,14 +1083,17 @@ test.skipIf(!RUN_DATABASE_TESTS).each([
     const guildId = `draw-fixture-${randomUUID()}`;
     const interactionId = randomUUID();
     const prompt = 'A blue square on a white background';
-    const endpoint = 'https://provider.invalid/v1/images/generations';
+    const baseURL = 'https://provider.invalid/v1';
+    const endpoint = `${baseURL}/images/generations`;
     const png =
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nX0AAAAASUVORK5CYII=';
     const outbound: Array<{ method: string; url: string; body: unknown }> = [];
     const { fetch: originalFetch, Request } = globalThis;
+    const originalBaseURL = process.env.OPENAI_BASE_URL;
     try {
       await installFixture(pool, guildId, generousLimits);
       // Capture the installed SDK's HTTP request without opening a network connection.
+      process.env.OPENAI_BASE_URL = baseURL;
       globalThis.fetch = (async (input, init) => {
         const request =
           input instanceof Request ? new Request(input, init) : new Request(String(input), init);
@@ -1167,6 +1170,8 @@ test.skipIf(!RUN_DATABASE_TESTS).each([
       expect(usage.rows[0]?.image_requests ?? 0).toBe(expectedUsage);
     } finally {
       globalThis.fetch = originalFetch;
+      if (originalBaseURL === undefined) delete process.env.OPENAI_BASE_URL;
+      else process.env.OPENAI_BASE_URL = originalBaseURL;
       try {
         await cleanupFixtures(pool, [guildId]);
       } finally {
