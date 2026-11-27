@@ -2,10 +2,12 @@ import { logger } from '@silo/core';
 import { awaitTracingShutdown } from './runtime/tracing-shutdown';
 import { loadVoiceEncryptionSupport } from './runtime/voice-encryption';
 import { shutdownLangfuseTracing } from './telemetry/langfuse-client';
+import { assertReleaseBunRuntime } from './runtime/bun-version';
 
 const STARTUP_TRACING_SHUTDOWN_TIMEOUT_MS = 1000;
 
 try {
+  logger.info('Bun runtime verified', { version: assertReleaseBunRuntime() });
   loadVoiceEncryptionSupport(logger);
   const { startBot } = await import('./app');
   await startBot();

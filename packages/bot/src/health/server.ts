@@ -8,6 +8,7 @@ import { Client, TextChannel } from 'discord.js';
 import { PostgresAdapter } from '../database/postgres';
 import { AdminAdapter } from '../database/admin-adapter';
 import { logger } from '@silo/core';
+import { withLangfuseRootTrace } from '../telemetry/langfuse-client';
 
 interface HealthStatus {
   status: 'healthy' | 'unhealthy';
@@ -31,6 +32,7 @@ export class HealthServer {
   private healthchecksUrl: string | null = null;
   private pingInterval: Timer | null = null;
   private discordNotifyInterval: Timer | null = null;
+  private resourceSampleInterval: Timer | null = null;
   private adminDb: AdminAdapter | null = null;
   private startTime = Date.now();
   private lastHealthchecksStatus: 'healthy' | 'unhealthy' | null = null;
@@ -42,6 +44,7 @@ export class HealthServer {
   private readonly healthchecksStartupGraceMs = 3 * 60_000;
   private readonly healthchecksFailureThreshold = 3;
   private readonly healthchecksRequestTimeoutMs = 5_000;
+  private readonly resourceSampleIntervalMs = 5 * 60_000;
 
   constructor(
     private client: Client,
@@ -99,11 +102,21 @@ export class HealthServer {
     // Start Discord channel health notifications
     this.startDiscordHealthNotifications();
 
+    this.recordRuntimeResources();
+    this.resourceSampleInterval = setInterval(
+      () => this.recordRuntimeResources(),
+      this.resourceSampleIntervalMs
+    );
+
     // Note: Graceful shutdown (SIGTERM/SIGINT) is handled in index.ts
     // which calls healthServer.stop() for proper cleanup
   }
 
   async stop(): Promise<void> {
+    if (this.resourceSampleInterval) {
+      clearInterval(this.resourceSampleInterval);
+      this.resourceSampleInterval = null;
+    }
     if (this.pingInterval) {
       clearInterval(this.pingInterval);
       this.pingInterval = null;
@@ -122,6 +135,30 @@ export class HealthServer {
 
     // Notify Discord channels of shutdown
     await this.notifyDiscordChannels('shutdown');
+  }
+
+  private recordRuntimeResources(): void {
+    const memory = process.memoryUsage();
+    const sample = {
+      bunVersion: Bun.version,
+      uptimeSeconds: Math.floor(process.uptime()),
+      rssBytes: memory.rss,
+      heapUsedBytes: memory.heapUsed,
+      externalBytes: memory.external,
+      poolTotal: this.db.pool.totalCount,
+      poolIdle: this.db.pool.idleCount,
+      poolWaiting: this.db.pool.waitingCount
+    };
+    logger.info('Runtime resource sample', sample);
+    void withLangfuseRootTrace(
+      {
+        name: 'runtime.resource.sample',
+        traceName: 'runtime.resource.sample',
+        metadata: sample,
+        tags: ['runtime']
+      },
+      async () => undefined
+    ).catch(error => logger.debug('Runtime resource trace failed', error));
   }
 
   private async getHealthStatus(): Promise<HealthStatus> {

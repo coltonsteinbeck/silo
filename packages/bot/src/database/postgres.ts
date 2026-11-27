@@ -13,6 +13,35 @@ import {
   logger
 } from '@silo/core';
 
+export function resolvePostgresTransport(
+  connectionString: string,
+  ssl?: boolean,
+  environmentMode = process.env.PGSSLMODE
+) {
+  const url = new URL(connectionString);
+  const host = url.searchParams.getAll('host').at(-1) || decodeURIComponent(url.hostname);
+  const hostedSupabase = /\.(?:supabase\.co|pooler\.supabase\.com)\.?$/i.test(host);
+  const mode = url.searchParams.getAll('sslmode').at(-1) || environmentMode;
+  const urlSsl = url.searchParams.getAll('ssl').at(-1);
+  if (mode === 'no-verify' || urlSsl === 'no-verify') {
+    throw new Error('Database TLS requires server certificate verification.');
+  }
+  if (
+    hostedSupabase ||
+    ssl ||
+    (mode && mode !== 'disable') ||
+    urlSsl === 'true' ||
+    urlSsl === '1'
+  ) {
+    if (mode === 'disable' || urlSsl === '0') {
+      throw new Error('Database TLS requires server certificate verification.');
+    }
+    url.searchParams.set('sslmode', 'verify-full');
+    return { connectionString: url.toString(), ssl: { rejectUnauthorized: true } };
+  }
+  return { connectionString, ssl: false };
+}
+
 // Type for database rows returned from queries
 interface UserMemoryRow {
   id: string;
@@ -218,11 +247,13 @@ export class PostgresAdapter implements DatabaseAdapter {
 
   constructor(connectionUrl: string, options?: { ssl?: boolean; maxConnections?: number }) {
     this.pool = new Pool({
-      connectionString: connectionUrl,
+      ...resolvePostgresTransport(connectionUrl, options?.ssl),
       connectionTimeoutMillis: 10000,
-      idleTimeoutMillis: 30000,
-      max: options?.maxConnections ?? 10,
-      ...(options?.ssl ? { ssl: { rejectUnauthorized: false } } : {})
+      // The 60-second health heartbeat should reuse an application connection.
+      // Idle clients still close after two minutes; the leader lease uses its own session.
+      idleTimeoutMillis: 120000,
+      maxLifetimeSeconds: 3600,
+      max: options?.maxConnections ?? 10
     });
 
     // Ensure search_path includes public schema on every new connection

@@ -12,6 +12,7 @@ import { logger } from '@silo/core';
 import {
   EmbedBuilder,
   MessageFlags,
+  PermissionFlagsBits,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
   type Message,
@@ -246,6 +247,12 @@ export class RadioManager {
       }
 
       if (existing) {
+        if (existing.voiceChannel.id !== channel.id) {
+          throw new RadioError(
+            'VOICE_ACTIVITY_CONFLICT',
+            'Radio is already playing in another voice channel.'
+          );
+        }
         await this.appendToQueue(interaction, existing, resolution);
         return;
       }
@@ -1035,6 +1042,24 @@ export class RadioManager {
       return true;
     }
 
+    const hasControlAccess = () =>
+      queue.voiceChannel
+        .permissionsFor(interaction.user)
+        ?.has([
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.Connect,
+          PermissionFlagsBits.Speak
+        ]);
+    const accessDenied = {
+      content: 'You need access to the active voice channel to use its radio controls.',
+      flags: MessageFlags.Ephemeral,
+      allowedMentions: noMentions
+    } as const;
+    if (!hasControlAccess()) {
+      await interaction.reply(accessDenied);
+      return true;
+    }
+
     return withLangfuseSpan(
       {
         name: 'radio.control',
@@ -1076,6 +1101,10 @@ export class RadioManager {
 
         await interaction.deferUpdate();
         if (queue.advanceCompletion) await queue.advanceCompletion;
+        if (!hasControlAccess()) {
+          await interaction.followUp(accessDenied);
+          return true;
+        }
         if (action === 'stop') {
           const stopped = await this.stopQueue(guildId, 'button', queue);
           await interaction.editReply(
@@ -1089,6 +1118,7 @@ export class RadioManager {
           if (this.queues.get(guildId) !== queue || queue.stopRequested || queue.isFinished) {
             return null;
           }
+          if (!hasControlAccess()) return 'access-denied' as const;
           switch (action) {
             case 'pause': {
               queue.mutationGeneration += 1;
@@ -1126,6 +1156,10 @@ export class RadioManager {
           }
         });
 
+        if (payload === 'access-denied') {
+          await interaction.followUp(accessDenied);
+          return true;
+        }
         if (payload === 'no-next') {
           await interaction.followUp({
             content: 'No more songs in the queue!',

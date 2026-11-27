@@ -7,6 +7,88 @@ type FetchOptions = NonNullable<Parameters<typeof fetch>[1]>;
 const snowflake = /^[0-9]{15,22}$/;
 const tokenPattern = /^[A-Za-z0-9._-]{20,200}$/;
 const webhookName = 'Silo Patch Notes';
+const releaseColor = 0x5865f2;
+const sectionHeading = /^(?:\*\*)?(added|changed|fixed)(?:\*\*)?:?$/i;
+
+function formatCommands(value: string): string {
+  return value
+    .split(/(`[^`]*`)/g)
+    .map((part, index) =>
+      index % 2 === 0
+        ? part.replace(/(^|[\s(])\/(\w[\w-]{0,31})(?=$|[\s.,!?;:)])/g, '$1`/$2`')
+        : part
+    )
+    .join('');
+}
+
+function formatNotes(notes: string): string {
+  const sections: { heading?: string; lines: string[] }[] = [{ lines: [] }];
+  for (const raw of notes.trim().split(/\r?\n/)) {
+    const line = raw.trim();
+    const heading = line.match(sectionHeading)?.[1];
+    if (heading) {
+      sections.push({
+        heading: heading[0]!.toUpperCase() + heading.slice(1).toLowerCase(),
+        lines: []
+      });
+    } else if (line) {
+      const section = sections[sections.length - 1]!;
+      const entry = formatCommands(
+        section.heading ? line.replace(/^(?:[-*•]\s+|\d+[.)]\s+)/, '') : line
+      );
+      section.lines.push(section.heading ? `• ${entry}` : entry);
+    } else if (sections[sections.length - 1]!.lines.at(-1) !== '') {
+      sections[sections.length - 1]!.lines.push('');
+    }
+  }
+  return sections
+    .map(section => ({ ...section, body: section.lines.join('\n').trim() }))
+    .filter(section => section.body)
+    .map(section => `**${section.heading ?? 'Notes'}**\n${section.body}`)
+    .join('\n\n');
+}
+
+export function buildPatchNotesEmbed(
+  version: string,
+  notes: string,
+  date: Date
+): {
+  title: string;
+  color: number;
+  description: string;
+  footer: { text: string };
+} {
+  if (!/^v?\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(version) || version.length > 80) {
+    throw new Error('Use a release version such as 1.2.3.');
+  }
+  if (!notes.trim() || notes.length > 1800) {
+    throw new Error('Patch notes must contain 1–1800 characters.');
+  }
+  if (Number.isNaN(date.getTime())) throw new Error('Patch-note date is invalid.');
+  const normalizedVersion = version.replace(/^v/, '');
+  const title = `Silo v${normalizedVersion} is live`;
+  const description = sanitizeDiscordMassMentions(formatNotes(notes));
+  if (!description) throw new Error('Patch notes must include a change or note.');
+  const timestamp = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short'
+  }).format(date);
+  const footer = { text: `Production • Silo v${normalizedVersion} • ${timestamp}` };
+  if (
+    title.length > 256 ||
+    description.length > 4096 ||
+    footer.text.length > 2048 ||
+    title.length + description.length + footer.text.length > 6000
+  ) {
+    throw new Error('Patch notes exceed Discord embed limits.');
+  }
+  return { title, color: releaseColor, description, footer };
+}
 
 function encryptionKey(value: string): Buffer {
   const key = Buffer.from(value, 'base64');
@@ -81,7 +163,8 @@ export class PatchNotesService {
   constructor(
     private db: AdminAdapter,
     private bot: { id: string; token: string },
-    private keyValue: string
+    private keyValue: string,
+    private now: () => Date = () => new Date()
   ) {
     encryptionKey(keyValue);
     if (!snowflake.test(bot.id) || !bot.token) throw new Error('Patch-note bot is not ready.');
@@ -140,13 +223,13 @@ export class PatchNotesService {
     version: string,
     notes: string
   ): Promise<'delivered' | 'already-attempted'> {
-    if (!/^v?\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(version) || version.length > 80) {
-      throw new Error('Use a release version such as 1.2.3.');
-    }
+    const embed = buildPatchNotesEmbed(version, notes, this.now());
     version = version.replace(/^v/, '');
-    const content = sanitizeDiscordMassMentions(`Silo ${version}\n${notes.trim()}`);
-    if (!notes.trim() || notes.length > 1800 || content.length > 2000)
-      throw new Error('Patch notes must contain 1–1800 characters.');
+    const canonicalContent = JSON.stringify({
+      title: embed.title,
+      color: embed.color,
+      description: embed.description
+    });
     const webhook = await this.db.getPatchNotesWebhook(guildId);
     if (!webhook) throw new Error('Set up a patch-note webhook first.');
     if (webhook.guildId !== guildId) throw new Error('Webhook guild mismatch.');
@@ -165,7 +248,7 @@ export class PatchNotesService {
       !(await this.db.claimPatchNotesDelivery(
         guildId,
         version,
-        createHash('sha256').update(content).digest('hex'),
+        createHash('sha256').update(canonicalContent).digest('hex'),
         userId
       ))
     ) {
@@ -175,7 +258,7 @@ export class PatchNotesService {
     const message = await discord(`${path}?wait=true`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content, allowed_mentions: { parse: [] } })
+      body: JSON.stringify({ embeds: [embed], allowed_mentions: { parse: [] } })
     });
     if (
       !snowflake.test(message.id ?? '') ||

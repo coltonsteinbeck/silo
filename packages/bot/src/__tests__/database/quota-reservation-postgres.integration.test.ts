@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
+import { chmodSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PostgresAdapter } from '../../database/postgres';
+import { AdminAdapter } from '../../database/admin-adapter';
+import { settleVoiceQuotaOnLeaseLoss, VoiceQuotaJournal } from '../../voice/quota-journal';
 import { Pool, type PoolClient } from 'pg';
 import { readFileSync } from 'node:fs';
 
@@ -224,6 +229,321 @@ async function lifecycle(
 }
 
 describe.skipIf(!RUN_DATABASE_TESTS)('atomic quota reservations on local Postgres', () => {
+  test('voice replay timeouts discard the stalled PostgreSQL connection', async () => {
+    const pool = await openPool();
+    const guildId = `quota-timeout-${randomUUID()}`;
+    const key = `speak-${randomUUID()}`;
+    const lockingClient = await pool.connect();
+    try {
+      await installFixture(pool, guildId, generousLimits);
+      await reserve(pool, {
+        key,
+        guildId,
+        userId: 'voice-user',
+        resource: 'voice_minutes',
+        requested: 10,
+        minimum: 1
+      });
+      await lifecycle(pool, 'mark_quota_usage_attempted', key);
+      await lockingClient.query('BEGIN');
+      await lockingClient.query(
+        'SELECT 1 FROM public.quota_usage_reservations WHERE idempotency_key = $1 FOR UPDATE',
+        [key]
+      );
+      const removed = Promise.withResolvers<void>();
+      pool.once('remove', () => removed.resolve());
+      const admin = new AdminAdapter(pool);
+      await expect(admin.commitQuotaUsage(key, 2, 250)).rejects.toThrow('Query read timeout');
+      await removed.promise;
+      expect(pool.totalCount).toBe(1);
+      await lockingClient.query('ROLLBACK');
+      expect(await admin.commitQuotaUsage(key, 2, 250)).toMatchObject({
+        status: 'committed',
+        actualAmount: 2
+      });
+    } finally {
+      await lockingClient.query('ROLLBACK');
+      lockingClient.release();
+      await cleanupFixtures(pool, [guildId]);
+      await pool.end();
+    }
+  });
+
+  test('recovers abandoned voice starts and preserves a lease-loss measurement', async () => {
+    const pool = await openPool();
+    const directory = mkdtempSync(join(tmpdir(), 'silo-voice-start-'));
+    const guildId = `quota-voice-${randomUUID()}`;
+    const admin = new AdminAdapter(pool);
+    const app = 'voice-start-test';
+    const key = (suffix: string) => `${guildId}-${suffix}`;
+    try {
+      await installFixture(pool, guildId, generousLimits);
+      const databaseId = await admin.getVoiceQuotaDatabaseId();
+      const journal = new VoiceQuotaJournal(admin, app, databaseId, directory);
+      for (const suffix of ['cancelled', 'abandoned', 'measured']) {
+        await reserve(pool, {
+          key: key(suffix),
+          guildId,
+          userId: `user-${suffix}`,
+          resource: 'voice_minutes',
+          requested: 10,
+          minimum: 1
+        });
+        journal.begin(key(suffix));
+        await lifecycle(pool, 'mark_quota_usage_attempted', key(suffix));
+        if (suffix !== 'cancelled') journal.authorize(key(suffix), 10);
+      }
+      const expired = Date.now() + 15 * 60_000;
+      await journal.flush(expired);
+      const read = async () =>
+        (
+          await pool.query(
+            `SELECT idempotency_key, status, actual_amount FROM public.quota_usage_reservations
+         WHERE guild_id = $1 ORDER BY idempotency_key`,
+            [guildId]
+          )
+        ).rows;
+      expect((await read()).map(row => row.status)).toEqual([
+        'attempted',
+        'attempted',
+        'attempted'
+      ]);
+      chmodSync(directory, 0o755);
+      journal.record(key('measured'), 2);
+      journal.finishOnLeaseLoss(measurements =>
+        settleVoiceQuotaOnLeaseLoss({ connectionString: localConnectionString(), ssl: false }, [
+          [key('missing'), 1],
+          ...measurements
+        ])
+      );
+      expect((await read())[2]).toMatchObject({ status: 'committed', actual_amount: 2 });
+      chmodSync(directory, 0o700);
+      const restarted = new VoiceQuotaJournal(admin, app, databaseId, directory);
+      await restarted.flush(expired);
+      await restarted.flush(expired);
+      expect(await read()).toEqual([
+        { idempotency_key: key('abandoned'), status: 'committed', actual_amount: 10 },
+        { idempotency_key: key('cancelled'), status: 'released', actual_amount: null },
+        { idempotency_key: key('measured'), status: 'committed', actual_amount: 2 }
+      ]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+      await cleanupFixtures(pool, [guildId]);
+      await pool.end();
+    }
+  });
+
+  test('recovers the journaled voice amount after PostgreSQL settlement fails and the worker restarts', async () => {
+    const pool = await openPool();
+    const directory = mkdtempSync(join(tmpdir(), 'silo-voice-quota-'));
+    const guildId = `quota-voice-${randomUUID()}`;
+    const userId = 'voice-user';
+    const key = `speak-${randomUUID()}`;
+    const admin = new AdminAdapter(pool);
+    const application = 'voice-quota-test';
+    try {
+      const databaseId = await admin.getVoiceQuotaDatabaseId();
+      await installFixture(pool, guildId, generousLimits);
+      const held = await reserve(pool, {
+        key,
+        guildId,
+        userId,
+        resource: 'voice_minutes',
+        requested: 10,
+        minimum: 1
+      });
+      await lifecycle(pool, 'mark_quota_usage_attempted', key);
+      const unavailable = new VoiceQuotaJournal(
+        {
+          recoverVoiceQuotaStart: admin.recoverVoiceQuotaStart.bind(admin),
+          commitQuotaUsage: async () => {
+            throw new Error('database unavailable');
+          }
+        },
+        application,
+        databaseId,
+        directory
+      );
+      unavailable.record(key, 2);
+      await unavailable.flush();
+      await pool.query(
+        `UPDATE public.quota_usage_reservations
+         SET created_at = NOW() - INTERVAL '3 hours', expires_at = NOW() - INTERVAL '1 second'
+         WHERE idempotency_key = $1`,
+        [key]
+      );
+
+      // A fresh admission and the scheduled reconciler must both leave the measurement pending.
+      await reserve(pool, {
+        key: `${key}-next`,
+        guildId,
+        userId,
+        resource: 'voice_minutes',
+        requested: 1,
+        minimum: 1
+      });
+      await pool.query('SELECT * FROM public.reconcile_expired_quota_reservations(100)');
+      const inspect = async () =>
+        (
+          await pool.query(
+            `SELECT status, actual_amount, reported_actual_amount
+         FROM public.quota_usage_reservations WHERE idempotency_key = $1`,
+            [key]
+          )
+        ).rows[0];
+      expect(await inspect()).toEqual({
+        status: 'attempted',
+        actual_amount: null,
+        reported_actual_amount: null
+      });
+
+      const restored = new VoiceQuotaJournal(
+        admin,
+        application,
+        await admin.getVoiceQuotaDatabaseId(),
+        directory
+      );
+      await restored.flush(Date.now() + 61_000);
+      await restored.flush(Date.now() + 61_000);
+      expect(await inspect()).toEqual({
+        status: 'committed',
+        actual_amount: 2,
+        reported_actual_amount: 2
+      });
+      const counters = await pool.query(
+        `SELECT u.voice_minutes_used, u.voice_requests, g.total_voice_minutes
+         FROM public.usage_tracking u JOIN public.guild_daily_usage g USING (guild_id, usage_date)
+         WHERE u.guild_id = $1 AND u.user_id = $2 AND u.usage_date = $3`,
+        [guildId, userId, held.usage_date]
+      );
+      expect(counters.rows[0]).toEqual({
+        voice_minutes_used: 2,
+        voice_requests: 1,
+        total_voice_minutes: 2
+      });
+    } finally {
+      await cleanupFixtures(pool, [guildId]);
+      await pool.end();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('settles structured image model rejection once without user or guild usage', async () => {
+    const pool = await openPool();
+    const guildId = `quota-rejected-${randomUUID()}`;
+    const userId = `user-${randomUUID()}`;
+    const key = `draw-${randomUUID()}`;
+    const rejected = () =>
+      pool.query<LifecycleRow>(
+        `SELECT * FROM public.release_rejected_image_quota_usage($1, $2, $3, $4, $5, $6)`,
+        [key, guildId, userId, 400, 'model_not_found', 'req_synthetic_1']
+      );
+    try {
+      await installFixture(pool, guildId, generousLimits);
+      expect(
+        (
+          await reserve(pool, {
+            key,
+            guildId,
+            userId,
+            resource: 'images',
+            requested: 1,
+            minimum: 1
+          })
+        ).allowed
+      ).toBe(true);
+      await lifecycle(pool, 'mark_quota_usage_attempted', key);
+      await expect(
+        pool.query(
+          `SELECT * FROM public.release_rejected_image_quota_usage($1, $2, $3, 400, 'model_not_found', 'req_synthetic_1')`,
+          [key, guildId, 'other-user']
+        )
+      ).rejects.toThrow('not found for scope');
+      await expect(
+        pool.query(
+          `UPDATE public.quota_usage_reservations
+           SET status = 'released', reason = 'provider_model_not_found', finalized_at = NOW()
+           WHERE idempotency_key = $1`,
+          [key]
+        )
+      ).rejects.toThrow('quota_usage_reservations_attempt_shape');
+      await pool.query(
+        `UPDATE public.quota_usage_reservations
+         SET created_at = NOW() - interval '2 hours', expires_at = NOW() - interval '1 hour'
+         WHERE idempotency_key = $1`,
+        [key]
+      );
+      const expiry = await pool.query(
+        `SELECT * FROM public.settle_expired_quota_reservations_scope($1, quota_local_date(), 'images')`,
+        [guildId]
+      );
+      expect(expiry.rows[0]).toMatchObject({ processed: 0, committed: 0, released: 0 });
+      await pool.query('SELECT * FROM public.reconcile_expired_quota_reservations()');
+      const held = await pool.query(
+        'SELECT status FROM public.quota_usage_reservations WHERE idempotency_key=$1',
+        [key]
+      );
+      expect(held.rows[0]?.status).toBe('attempted');
+      const [first, second] = await Promise.all([rejected(), rejected()]);
+      expect([first.rows[0]?.idempotent, second.rows[0]?.idempotent].sort()).toEqual([false, true]);
+      expect(first.rows[0]?.status).toBe('released');
+      await expect(lifecycle(pool, 'commit_quota_usage', key, 1)).rejects.toThrow();
+      const legacy = `${key}:legacy`;
+      await reserve(pool, {
+        key: legacy,
+        guildId,
+        userId,
+        resource: 'images',
+        requested: 1,
+        minimum: 1
+      });
+      await pool.query('SELECT * FROM public.release_quota_usage($1, $2)', [
+        legacy,
+        'provider_model_not_found'
+      ]);
+      const imageMigration = readFileSync(
+        new URL(
+          '../../../../../supabase/migrations/20261125234019_settle_rejected_image_reservations.sql',
+          import.meta.url
+        ),
+        'utf8'
+      );
+      await pool.query(imageMigration);
+      const legacyRow = await pool.query(
+        'SELECT attempted_at, reason, rejection_request_id FROM public.quota_usage_reservations WHERE idempotency_key=$1',
+        [legacy]
+      );
+      expect(legacyRow.rows[0]).toEqual({
+        attempted_at: null,
+        reason: 'provider_model_not_found',
+        rejection_request_id: null
+      });
+      expect((await rejected()).rows[0]?.idempotent).toBe(true);
+      const rows = await pool.query<{
+        status: string;
+        reason: string;
+        images_used: number;
+        total_images: number;
+      }>(
+        `SELECT r.status, r.reason, ut.images_used, gdu.total_images
+          FROM public.quota_usage_reservations r
+          JOIN public.usage_tracking ut USING (guild_id, user_id, usage_date)
+          JOIN public.guild_daily_usage gdu USING (guild_id, usage_date)
+          WHERE r.idempotency_key = $1`,
+        [key]
+      );
+      expect(rows.rows[0]).toMatchObject({
+        status: 'released',
+        reason: 'provider_model_not_found',
+        images_used: 0,
+        total_images: 0
+      });
+    } finally {
+      await cleanupFixtures(pool, [guildId]);
+      await pool.end();
+    }
+  }, 30_000);
+
   test('replays pre-existing quota and managed-policy schema without losing data', async () => {
     const pool = await openPool();
     const guildId = '5'.repeat(18);
@@ -657,6 +977,33 @@ describe.skipIf(!RUN_DATABASE_TESTS)('atomic quota reservations on local Postgre
       );
       expect(reconciledReservation.rows[0]).toEqual({ status: 'committed', actual_amount: 9 });
 
+      const legacyImageKey = `${runId}:legacy-unattempted-image`;
+      await reserve(pool, {
+        key: legacyImageKey,
+        guildId: guildIds[3]!,
+        userId: 'legacy-image-user',
+        resource: 'images',
+        requested: 1,
+        minimum: 1
+      });
+      await pool.query(
+        `UPDATE public.quota_usage_reservations
+         SET settlement_version = NULL,
+             created_at = TIMESTAMPTZ '1900-01-01 00:00:00+00',
+             expires_at = TIMESTAMPTZ '1901-01-01 00:00:00+00'
+         WHERE idempotency_key = $1`,
+        [legacyImageKey]
+      );
+      const legacyReconciled = await pool.query(
+        'SELECT * FROM public.reconcile_expired_quota_reservations(1)'
+      );
+      expect(legacyReconciled.rows[0]).toMatchObject({ committed: 0, released: 1, failed: 0 });
+      const legacyImage = await pool.query(
+        `SELECT status, reason FROM public.quota_usage_reservations WHERE idempotency_key = $1`,
+        [legacyImageKey]
+      );
+      expect(legacyImage.rows[0]).toEqual({ status: 'released', reason: 'expired_before_attempt' });
+
       const lazyKey = `${runId}:lazy-expired`;
       await reserve(pool, {
         key: lazyKey,
@@ -825,6 +1172,124 @@ test.skipIf(!RUN_DATABASE_TESTS)(
     } finally {
       await cleanupFixtures(pool, [guildId]);
       await pool.end();
+    }
+  },
+  30_000
+);
+
+test.skipIf(!RUN_DATABASE_TESTS).each([
+  ['generated image', 'success', 'committed', 1, 1],
+  ['unknown provider outcome', 'disconnect', 'attempted', 1, 0],
+  ['provider rate limited', 'rate-limit', 'attempted', 1, 0],
+  ['prompt denied', 'denied', undefined, 0, 0],
+  ['member outside the guild', 'wrong-guild', undefined, 0, 0]
+] as const)(
+  'draw regression with real SDK and PostgreSQL: %s',
+  async (_label, outcome, expectedStatus, expectedRequests, expectedUsage) => {
+    const { GuildMember } = await import('discord.js');
+    const { createMockInteraction } = await import('@silo/core/test-setup');
+    const { DrawCommand } = await import('../../commands/draw');
+    const { PermissionManager } = await import('../../permissions/manager');
+    const { QuotaMiddleware } = await import('../../middleware/quota');
+    const { ProviderRegistry } = await import('../../providers/registry');
+    const pool = await openPool();
+    const guildId = `draw-fixture-${randomUUID()}`;
+    const interactionId = randomUUID();
+    const prompt = 'A blue square on a white background';
+    const baseURL = 'https://provider.invalid/v1';
+    const endpoint = `${baseURL}/images/generations`;
+    const png =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nX0AAAAASUVORK5CYII=';
+    const outbound: Array<{ method: string; url: string; body: unknown }> = [];
+    const { fetch: originalFetch, Request } = globalThis;
+    const originalBaseURL = process.env.OPENAI_BASE_URL;
+    try {
+      await installFixture(pool, guildId, generousLimits);
+      // Capture the installed SDK's HTTP request without opening a network connection.
+      process.env.OPENAI_BASE_URL = baseURL;
+      globalThis.fetch = (async (input, init) => {
+        const request =
+          input instanceof Request ? new Request(input, init) : new Request(String(input), init);
+        const captured = { method: request.method, url: request.url, body: undefined as unknown };
+        outbound.push(captured);
+        if (request.method !== 'POST' || request.url !== endpoint) {
+          throw new Error('Unexpected SDK request in draw fixture');
+        }
+        captured.body = await request.json();
+        if (outcome === 'disconnect') throw new TypeError('Synthetic connection closed');
+        if (outcome === 'rate-limit') {
+          return Response.json({ error: { message: 'Synthetic rate limit' } }, { status: 429 });
+        }
+        return Response.json({ created: 1, data: [{ b64_json: png }] });
+      }) as typeof fetch;
+      const registry = new ProviderRegistry({
+        providers: { openai: { apiKey: 'fixture-only' } },
+        features: { enableRAG: false }
+      } as ConstructorParameters<typeof ProviderRegistry>[0]);
+      const admin = new AdminAdapter(pool);
+      const quota = new QuotaMiddleware(admin, new PermissionManager(admin));
+      const command = new DrawCommand(registry, quota, undefined, async () => ({
+        allowed: outcome !== 'denied',
+        processedPrompt: prompt,
+        userMessage: outcome === 'denied' ? 'Synthetic prompt denial' : undefined
+      }));
+      type DrawInteraction = Parameters<typeof command.execute>[0];
+
+      const createInteraction = () => {
+        const packet = createMockInteraction({ guildId, userId: 'requester', options: { prompt } });
+        const member = Object.create(GuildMember.prototype);
+        Object.defineProperties(member, {
+          user: { value: packet.user },
+          guild: { value: { id: outcome === 'wrong-guild' ? 'another-guild' : guildId } },
+          permissions: { value: { has: () => false } }
+        });
+        return Object.assign(packet, { id: interactionId, member });
+      };
+      const first = createInteraction();
+      const duplicate = createInteraction();
+      await command.execute(first as unknown as DrawInteraction);
+      await command.execute(duplicate as unknown as DrawInteraction);
+
+      expect(outbound).toHaveLength(expectedRequests);
+      if (expectedRequests) {
+        expect(outbound[0]).toMatchObject({
+          url: endpoint,
+          method: 'POST',
+          body: { model: 'gpt-image-2.5-flare', prompt, size: '1024x1024', quality: 'auto', n: 1 }
+        });
+      }
+      if (outcome === 'success') {
+        expect(first._getReplies()).toEqual([
+          expect.objectContaining({
+            files: [expect.objectContaining({ attachment: Buffer.from(png, 'base64') })]
+          })
+        ]);
+      } else {
+        expect(first._getReplies()).toHaveLength(1);
+        expect(first._getReplies()[0]).not.toHaveProperty('files');
+      }
+      expect(duplicate._getReplies()).toHaveLength(1);
+      expect(duplicate._getReplies()[0]).not.toHaveProperty('files');
+      const reservations = await pool.query(
+        'SELECT status FROM public.quota_usage_reservations WHERE guild_id = $1',
+        [guildId]
+      );
+      expect(reservations.rows).toEqual(expectedStatus ? [{ status: expectedStatus }] : []);
+      const usage = await pool.query(
+        'SELECT images_used, image_requests FROM public.usage_tracking WHERE guild_id = $1',
+        [guildId]
+      );
+      expect(usage.rows[0]?.images_used ?? 0).toBe(expectedUsage);
+      expect(usage.rows[0]?.image_requests ?? 0).toBe(expectedUsage);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalBaseURL === undefined) delete process.env.OPENAI_BASE_URL;
+      else process.env.OPENAI_BASE_URL = originalBaseURL;
+      try {
+        await cleanupFixtures(pool, [guildId]);
+      } finally {
+        await pool.end();
+      }
     }
   },
   30_000

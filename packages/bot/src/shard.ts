@@ -2,11 +2,13 @@ import { ShardingManager } from 'discord.js';
 import { ConfigLoader, logger } from '@silo/core';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { assertReleaseBunRuntime } from './runtime/bun-version';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 async function main() {
+  logger.info('Bun runtime verified', { version: assertReleaseBunRuntime() });
   logger.info('Starting Silo Discord Bot with Sharding...');
 
   const config = ConfigLoader.load();

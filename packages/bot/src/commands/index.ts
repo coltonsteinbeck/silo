@@ -24,6 +24,7 @@ import { ProviderRegistry } from '../providers/registry';
 import { AdminAdapter } from '../database/admin-adapter';
 import { PermissionManager } from '../permissions/manager';
 import { QuotaMiddleware } from '../middleware/quota';
+import type { VoiceQuotaJournal } from '../voice/quota-journal';
 
 export function createCommands(
   db: DatabaseAdapter,
@@ -33,7 +34,8 @@ export function createCommands(
   permissions: PermissionManager,
   quotaMiddleware?: QuotaMiddleware,
   shutdownSignal?: AbortSignal,
-  resolvePromptHash?: (guildId: string) => Promise<string>
+  resolvePromptHash?: (guildId: string) => Promise<string>,
+  voiceQuotaJournal?: VoiceQuotaJournal
 ): Collection<string, Command> {
   const commands = new Collection<string, Command>();
 
@@ -87,9 +89,9 @@ export function createCommands(
   commands.set(analytics.data.name, analytics);
 
   // Voice commands
-  const speak = new SpeakCommand(adminDb, quotaMiddleware);
+  const speak = new SpeakCommand(adminDb, quotaMiddleware, voiceQuotaJournal);
   commands.set(speak.data.name, speak);
-  const stopSpeaking = new StopSpeakingCommand(quotaMiddleware);
+  const stopSpeaking = new StopSpeakingCommand();
   commands.set(stopSpeaking.data.name, stopSpeaking);
   const radio = new RadioCommand();
   commands.set(radio.data.name, radio);

@@ -4,9 +4,29 @@ Self-hosted Discord bot framework with customizable AI providers, advanced memor
 
 ## Quick Start
 
+For a contributor setup with no Discord token, provider keys, or hosted database:
+
+```bash
+bash scripts/install-locked.sh
+bun --no-env-file test
+bun run type-check
+bun run build
+```
+
+Use the pinned Bun version in `.bun-version`. For schema work, start the
+loopback-only database and apply the migrations:
+
+```bash
+docker compose up -d --wait postgres
+bun run migrate:local --db-url 'postgresql://silo:silo_dev@127.0.0.1:5432/silo'
+```
+
+The connection string above is for the disposable development database. See
+[Contributing](CONTRIBUTING.md) for development and review checks.
+
 ### Prerequisites
 
-- Bun 1.0+
+- Bun 1.4.5 (the validated release runtime)
 - PostgreSQL database (local Docker, Supabase, or any Postgres provider)
 - Redis (for rate limiting)
 - Discord Bot Token
@@ -65,11 +85,14 @@ bun run setup  # Installs deps, starts Docker, runs migrations
 The bot holds one PostgreSQL session advisory lock per Discord application before migrations or login. Use a direct connection or session-mode pooler; transaction-mode pooling cannot preserve the runtime lease. Every instance of the same application must use the same database. The lease uses one dedicated connection in addition to the application pool, checks ownership every five seconds, and terminates the process on connection loss, a failed ownership check, or an expired ten-second heartbeat window. `/health` includes `leader.held` and requires it for healthy status. Stop the previous instance before starting its replacement.
 
 Build with `bun run build` before using the PM2 example, which runs `packages/bot/dist/index.js`.
+This release requires the exact Bun version in `.bun-version` for local, container, and PM2 startup. The bot checks the runtime before connecting to Discord or the database; verify which `bun` the supervisor resolves before restarting it. The application pool retains idle connections for two minutes to reuse the 60-second health heartbeat, and retires them after at most one hour. The runtime leader lease keeps its separate database session.
+
+On macOS, `node scripts/tls-memory-repro.mjs /absolute/path/to/bun` runs a synthetic, loopback-only 3,000-connection TLS RSS check. It requires the pinned Bun version, OpenSSL, and `ps`; it does not connect to Discord or a database. This local regression does not replace the post-deployment memory observation.
 
 ```bash
 git clone <your-repo>
 cd silo
-bun install
+bash scripts/install-locked.sh
 
 # Get your Postgres connection string from Supabase
 export DATABASE_URL='postgresql://postgres:[password]@db.[project].supabase.co:5432/postgres'
@@ -183,6 +206,9 @@ For rollout and trace details, see [docs/AGENT_GRAPH.md](docs/AGENT_GRAPH.md).
 
 ### Docker Deployment
 
+For the standalone Docker command below, set `SILO_VOICE_QUOTA_DIRECTORY` in
+`.env` to `/var/lib/voice-quota/journal` so the journal uses the mounted volume.
+
 ```bash
 # Build a release image from a clean, committed checkout
 bash scripts/build-release-image.sh silo-bot:latest
@@ -191,6 +217,7 @@ bash scripts/build-release-image.sh silo-bot:latest
 docker run -d \
   --name silo \
   --env-file .env \
+  --mount type=volume,source=silo_voice_quota,target=/var/lib/voice-quota \
   --restart unless-stopped \
   silo-bot:latest
 
@@ -292,7 +319,7 @@ Migration safety rules:
 - **Mention Safety**: Bot-generated text neutralizes `@everyone` and `@here`, and generated Discord replies disable mention parsing
 - **Realtime Voice**: Talk to Silo in voice channels with multiple voice options (alloy, ash, ballad, coral, echo, sage, shimmer, verse)
 - **Advanced Memory**: User and server memory systems with search
-- **Image Generation**: gpt-image-1 with low/medium/high quality options
+- **Image Generation**: gpt-image-2.5-flare with low/medium/high quality options
 - **Database Flexibility**: Works with any PostgreSQL (Supabase, Railway, local, etc.)
 - **Sharding**: Built-in Discord.js ShardingManager for multi-guild scaling
 - **Role-Based Permissions**: Admin, moderator, trusted, member, restricted tiers
@@ -319,7 +346,7 @@ Memory scope rules:
 
 #### Media Generation
 
-- `/draw <prompt>` - Generate images with gpt-image-1
+- `/draw <prompt>` - Generate images with gpt-image-2.5-flare
 
 #### Voice
 
@@ -372,7 +399,7 @@ Usage limits reset at midnight UTC:
 ### AI Models
 
 - **Text**: gpt-5-mini ($0.25/1M input, $2.00/1M output)
-- **Images**: gpt-image-1 (low/medium/high quality)
+- **Images**: gpt-image-2.5-flare (low/medium/high quality)
 - **Voice**: gpt-4o-mini-realtime-preview (~$0.34/5min session)
 
 ### Planned Features
@@ -409,6 +436,26 @@ All configuration in `.env`:
 - Feature flags
 - Rate limits
 
+Voice sessions save measured minutes in a private, local settlement journal before
+writing to PostgreSQL. Keep its directory on persistent storage across process
+and container restarts. The default is `.local/state/silo/voice-quota` inside
+the bot account's home directory.
+To override it, set `SILO_VOICE_QUOTA_DIRECTORY` to an absolute path outside the
+checkout. The bot account creates the directory or uses an existing directory it
+owns with mode `0700`. Use separate directories for separate deployments.
+The journal follows the same PostgreSQL database across connection endpoint or
+credential changes. Preserve its database UUID when moving that database and
+use fresh journal storage for independent clones.
+
+On startup and during operation, the bot retries pending measurements and removes
+them after PostgreSQL confirms the exact charge. The journal stores reservation
+keys and minutes. Keep its SQLite files together and out of public artifacts.
+If journal storage temporarily fails, the running bot retries the measurement
+and can save it directly to PostgreSQL. If the bot stops before either store
+accepts the measurement, the reservation holds capacity for its original quota
+day and remains available for operator review. PostgreSQL waits for a
+measurement before charging voice usage.
+
 ## Commands
 
 - `bun run dev` - Start in development mode
@@ -427,4 +474,6 @@ All configuration in `.env`:
 
 ## License
 
-MIT
+Silo's source is available under the [MIT License](LICENSE). Dependencies and
+external media tools have their own licenses. Keep their notices with any
+redistributed build or container.

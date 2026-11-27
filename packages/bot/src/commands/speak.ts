@@ -2,7 +2,8 @@ import {
   SlashCommandBuilder,
   ChatInputCommandInteraction,
   GuildMember,
-  ChannelType
+  ChannelType,
+  PermissionFlagsBits
 } from 'discord.js';
 import type { Command } from './types';
 import { logger } from '@silo/core';
@@ -12,9 +13,15 @@ import { AdminAdapter } from '../database/admin-adapter';
 import {
   systemPromptManager,
   resolveManagedGuildPersonaPolicy,
-  composeSystemPromptWithSafety
+  composeSystemPromptWithSafety,
+  deploymentDetector,
+  resolvePromptPolicy
 } from '../security';
 import { QuotaMiddleware } from '../middleware/quota';
+import type { QuotaReservationRow } from '../database/admin-adapter';
+import type { VoiceQuotaJournal } from '../voice/quota-journal';
+
+const MAX_VOICE_SESSION_MINUTES = 10;
 
 export class SpeakCommand implements Command {
   public readonly data = new SlashCommandBuilder()
@@ -46,11 +53,19 @@ export class SpeakCommand implements Command {
 
   constructor(
     private adminDb: AdminAdapter,
-    private quotaMiddleware?: QuotaMiddleware
+    private quotaMiddleware?: QuotaMiddleware,
+    private voiceQuotaJournal?: VoiceQuotaJournal
   ) {}
 
   async execute(interaction: ChatInputCommandInteraction) {
     const member = interaction.member as GuildMember;
+    if (!interaction.guildId || !member?.voice) {
+      await interaction.reply({
+        content: 'This command requires a server voice channel.',
+        ephemeral: true
+      });
+      return;
+    }
     const selectedChannel = interaction.options.getChannel('channel');
 
     // Determine which voice channel to use
@@ -92,6 +107,23 @@ export class SpeakCommand implements Command {
       return;
     }
 
+    const hasChannelAccess = () =>
+      member.voice.channelId === voiceChannel.id &&
+      voiceChannel
+        .permissionsFor(interaction.user)
+        ?.has([
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.Connect,
+          PermissionFlagsBits.Speak
+        ]);
+    if (!hasChannelAccess()) {
+      await interaction.reply({
+        content: 'Join the voice channel with View Channel, Connect, and Speak permissions first.',
+        ephemeral: true
+      });
+      return;
+    }
+
     const guildId = interaction.guildId!;
     const userId = interaction.user.id;
 
@@ -104,28 +136,27 @@ export class SpeakCommand implements Command {
       return;
     }
 
-    // Check voice quota before starting
-    if (this.quotaMiddleware) {
-      const quotaCheck = await this.quotaMiddleware.checkQuota(
-        guildId,
-        userId,
-        member,
-        'voice_minutes',
-        1
-      );
+    const quota = this.quotaMiddleware;
+    const journal = this.voiceQuotaJournal;
+    if (!quota || !journal) {
+      await interaction.reply({ content: 'Voice quota is unavailable.', ephemeral: true });
+      return;
+    }
 
-      if (!quotaCheck.allowed) {
-        await interaction.reply({
-          content: `⚠️ ${quotaCheck.reason}`,
-          ephemeral: true
-        });
-        return;
-      }
+    try {
+      journal.assertReady();
+    } catch {
+      logger.error('Voice quota journal is unavailable');
+      await interaction.reply({ content: 'Voice quota is unavailable.', ephemeral: true });
+      return;
     }
 
     await interaction.deferReply();
 
     const hadExistingGuildSession = voiceSessionManager.hasSession(guildId);
+    let reservation: QuotaReservationRow | undefined;
+    let journaledStart = false;
+    let providerStarted = false;
 
     try {
       // Get OpenAI API key from environment
@@ -145,14 +176,39 @@ export class SpeakCommand implements Command {
       const promptConfig = systemPromptManager.getEffectivePrompt(dbPrompt, promptEnabled, true);
       const managedPersona = resolveManagedGuildPersonaPolicy(guildId);
       const safeguardsEnabled = await areGuildSafeguardsEnabled(guildId);
-      const instructions = composeSystemPromptWithSafety(
-        (safeguardsEnabled
-          ? managedPersona?.prompt
-          : managedPersona?.promptWithoutContentSafeguards || managedPersona?.prompt) ||
-          promptConfig.prompt ||
+      const managedPrompt = safeguardsEnabled
+        ? managedPersona?.prompt
+        : managedPersona?.promptWithoutContentSafeguards || managedPersona?.prompt;
+      const promptPolicy = resolvePromptPolicy({
+        customPrompt:
+          managedPrompt || managedPersona?.customPromptsDisabled ? null : promptConfig.prompt,
+        defaultPrompt:
+          managedPrompt ||
           'You are a helpful AI assistant in a Discord voice channel. Keep responses concise and conversational.',
+        allowedPromptHashesRaw: process.env.SAFETY_ALLOWED_PROMPT_HASHES,
+        requireCustomPromptAllowlist: deploymentDetector.getConfig().isProduction
+      });
+      const instructions = composeSystemPromptWithSafety(
+        promptPolicy.effectivePrompt,
         safeguardsEnabled
       );
+
+      const admission = await quota.reserveQuota({
+        operationKey: `discord:${interaction.id}:speak`,
+        guildId,
+        userId,
+        member,
+        usageType: 'voice_minutes',
+        requestedAmount: MAX_VOICE_SESSION_MINUTES,
+        minimumAmount: 1
+      });
+      if (!admission.allowed) {
+        await interaction.editReply({ content: admission.reason });
+        return;
+      }
+      reservation = admission.reservation;
+      const reserved = reservation;
+      if (!hasChannelAccess()) throw new Error('The requester lost access to the voice channel.');
 
       // Join the voice channel if not already connected
       const connection = await voiceSessionManager.joinChannel(voiceChannel);
@@ -161,8 +217,34 @@ export class SpeakCommand implements Command {
       const voice = interaction.options.getString('voice') || 'alloy';
       const session = await voiceSessionManager.startSpeaking(guildId, userId, apiKey, {
         voice,
-        assistantSafetyPolicy: resolveManagedGuildPersonaPolicy(guildId)?.assistantSafetyPolicy,
-        instructions
+        assistantSafetyPolicy: managedPersona?.assistantSafetyPolicy,
+        instructions,
+        maxDurationMs: reserved.reservedAmount * 60_000,
+        beforeConnect: async () => {
+          if (!hasChannelAccess()) {
+            throw new Error('The requester lost access to the voice channel.');
+          }
+          journal.begin(reserved.idempotencyKey);
+          journaledStart = true;
+          await quota.markQuotaAttempted(reserved);
+        },
+        authorizeConnection: () => {
+          if (!hasChannelAccess()) {
+            throw new Error(
+              'The requester lost access to the voice channel before speech started.'
+            );
+          }
+          journal.authorize(reserved.idempotencyKey, reserved.reservedAmount);
+          providerStarted = true;
+        },
+        onEnd: durationMs => {
+          const minutes = Math.max(
+            1,
+            Math.min(reserved.reservedAmount, Math.ceil(durationMs / 60_000))
+          );
+          journal.record(reserved.idempotencyKey, minutes);
+          void journal.flush();
+        }
       });
 
       // Configure voice preference and send greeting
@@ -189,6 +271,17 @@ export class SpeakCommand implements Command {
     } catch (error) {
       logger.error('[SpeakCommand] Error:', error);
 
+      if (reservation && !providerStarted) {
+        if (journaledStart) {
+          journal.cancel(reservation.idempotencyKey);
+          void journal.flush();
+        } else {
+          await quota.releaseUnattemptedQuota(reservation, 'voice_start_cancelled').catch(() => {
+            logger.warn('Unattempted voice reservation release is pending');
+          });
+        }
+      }
+
       if (
         !hadExistingGuildSession &&
         voiceSessionManager.hasSession(guildId) &&
@@ -202,9 +295,8 @@ export class SpeakCommand implements Command {
         });
       }
 
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       await interaction.editReply({
-        content: `Failed to start voice session: ${errorMessage}`
+        content: 'Could not start a voice session in this channel. Check access and try again.'
       });
     }
   }

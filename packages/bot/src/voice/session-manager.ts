@@ -6,16 +6,21 @@ import {
   DiscordGatewayAdapterCreator
 } from '@discordjs/voice';
 import type { VoiceBasedChannel } from 'discord.js';
+import { performance } from 'node:perf_hooks';
 import { logger } from '@silo/core';
 import { RealtimeSession } from './realtime-session';
 import { guildVoiceCoordinator, type GuildVoiceLeaseToken } from './guild-voice-coordinator';
 
+interface ActiveSpeaker {
+  session: RealtimeSession;
+  stop: () => Promise<void>;
+}
+
 interface SessionInfo {
   connection: VoiceConnection;
-  activeSpeakers: Map<string, RealtimeSession>; // userId -> session (simultaneous multi-speaker)
+  activeSpeakers: Map<string, ActiveSpeaker>;
   guildId: string;
   channelId: string;
-  createdAt: Date;
   leaseToken: GuildVoiceLeaseToken;
 }
 
@@ -26,6 +31,9 @@ export interface VoiceSessionRuntimeDependencies {
     status: VoiceConnectionStatus,
     timeoutMs: number
   ) => Promise<VoiceConnection>;
+  createRealtimeSession?: (
+    ...args: ConstructorParameters<typeof RealtimeSession>
+  ) => RealtimeSession;
 }
 
 const defaultRuntime: VoiceSessionRuntimeDependencies = {
@@ -39,6 +47,7 @@ const defaultRuntime: VoiceSessionRuntimeDependencies = {
  */
 export class VoiceSessionManager {
   private sessions: Map<string, SessionInfo> = new Map(); // guildId -> SessionInfo
+  private shuttingDown = false;
 
   constructor(private readonly runtime: VoiceSessionRuntimeDependencies = defaultRuntime) {}
 
@@ -69,6 +78,7 @@ export class VoiceSessionManager {
    * Join a voice channel and prepare for realtime sessions
    */
   async joinChannel(channel: VoiceBasedChannel): Promise<VoiceConnection> {
+    if (this.shuttingDown) throw new Error('Voice is shutting down.');
     const guildId = channel.guild.id;
 
     // Check if already in this channel
@@ -77,9 +87,8 @@ export class VoiceSessionManager {
       return existing.connection;
     }
 
-    // Leave existing channel if in a different one
     if (existing) {
-      await this.leaveGuild(guildId);
+      throw new Error('A voice conversation is already active in another channel.');
     }
 
     const reservation = guildVoiceCoordinator.reserveExclusive(guildId, 'speech', channel.id);
@@ -141,6 +150,12 @@ export class VoiceSessionManager {
       );
     }
 
+    if (this.shuttingDown) {
+      guildVoiceCoordinator.release(guildId, reservation.token);
+      connection.destroy();
+      throw new Error('Voice is shutting down.');
+    }
+
     // Handle disconnection
     connection.on(VoiceConnectionStatus.Disconnected, async () => {
       try {
@@ -151,12 +166,12 @@ export class VoiceSessionManager {
         // Connection is reconnecting
       } catch {
         // Connection is truly disconnected
-        this.cleanup(guildId);
+        this.cleanup(guildId, connection);
       }
     });
 
     connection.on(VoiceConnectionStatus.Destroyed, () => {
-      this.cleanup(guildId);
+      this.cleanup(guildId, connection);
     });
 
     const sessionInfo: SessionInfo = {
@@ -164,7 +179,6 @@ export class VoiceSessionManager {
       activeSpeakers: new Map(),
       guildId,
       channelId: channel.id,
-      createdAt: new Date(),
       leaseToken: reservation.token
     };
     if (!guildVoiceCoordinator.commit(guildId, reservation.token, sessionInfo)) {
@@ -189,8 +203,13 @@ export class VoiceSessionManager {
       instructions?: string;
       assistantSafetyPolicy?: 'standard' | 'contextual_banter';
       onAudioResponse?: (audio: Buffer) => void;
+      maxDurationMs?: number;
+      beforeConnect?: () => Promise<void>;
+      authorizeConnection?: () => void;
+      onEnd?: (durationMs: number) => void;
     }
   ): Promise<RealtimeSession> {
+    if (this.shuttingDown) throw new Error('Voice is shutting down.');
     const sessionInfo = this.sessions.get(guildId);
     if (!sessionInfo) {
       throw new Error('No voice connection in this guild. Join a voice channel first.');
@@ -201,8 +220,33 @@ export class VoiceSessionManager {
       throw new Error('You already have an active speaking session.');
     }
 
-    // Create realtime session for this user
-    const realtimeSession = new RealtimeSession(apiKey, userId, {
+    let startedAt: number | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let endRecorded = false;
+    const recordEnd = () => {
+      if (startedAt === undefined || endRecorded) return;
+      endRecorded = true;
+      try {
+        options?.onEnd?.(performance.now() - startedAt);
+      } catch (error) {
+        logger.error('Could not persist measured voice quota', {
+          errorType: error instanceof Error ? error.name : 'unknown'
+        });
+      }
+    };
+    const finish = () => {
+      if (timer) clearTimeout(timer);
+      recordEnd();
+      if (sessionInfo.activeSpeakers.get(userId) === speaker) {
+        sessionInfo.activeSpeakers.delete(userId);
+        if (sessionInfo.activeSpeakers.size === 0 && this.sessions.get(guildId) === sessionInfo) {
+          void this.leaveGuild(guildId).catch(() => {});
+        }
+      }
+    };
+    const createRealtimeSession =
+      this.runtime.createRealtimeSession ?? ((...args) => new RealtimeSession(...args));
+    const realtimeSession = createRealtimeSession(apiKey, userId, {
       guildId,
       voice: options?.voice || 'alloy',
       instructions: options?.instructions,
@@ -215,17 +259,49 @@ export class VoiceSessionManager {
         }),
       onError: (error: Error) => {
         logger.error(`[Voice] Realtime session error for user ${userId}:`, error);
-        this.stopSpeaking(guildId, userId);
+        void speaker.stop().catch(() => {});
       },
       onClose: () => {
-        sessionInfo.activeSpeakers.delete(userId);
+        finish();
       }
     });
-
-    await realtimeSession.connect();
-    sessionInfo.activeSpeakers.set(userId, realtimeSession);
-
-    return realtimeSession;
+    let stopping: Promise<void> | undefined;
+    const speaker = {
+      session: realtimeSession,
+      stop: () => {
+        recordEnd();
+        return (stopping ??= Promise.resolve()
+          .then(() => realtimeSession.disconnect())
+          .then(() => undefined)
+          .finally(finish));
+      }
+    };
+    sessionInfo.activeSpeakers.set(userId, speaker);
+    try {
+      await options?.beforeConnect?.();
+      if (stopping || this.sessions.get(guildId) !== sessionInfo) {
+        throw new Error('Voice connection changed before speech started.');
+      }
+      options?.authorizeConnection?.();
+      startedAt = performance.now();
+      if (options?.maxDurationMs) {
+        timer = setTimeout(() => void speaker.stop().catch(() => {}), options.maxDurationMs);
+        timer.unref();
+      }
+      await realtimeSession.connect();
+      if (
+        stopping ||
+        this.sessions.get(guildId) !== sessionInfo ||
+        sessionInfo.activeSpeakers.get(userId) !== speaker
+      ) {
+        throw new Error('Voice connection stopped before speech started.');
+      }
+      return realtimeSession;
+    } catch (error) {
+      await speaker.stop().catch(() => {});
+      finish();
+      throw error;
+    }
   }
 
   /**
@@ -235,12 +311,19 @@ export class VoiceSessionManager {
     const sessionInfo = this.sessions.get(guildId);
     if (!sessionInfo) return false;
 
-    const realtimeSession = sessionInfo.activeSpeakers.get(userId);
-    if (!realtimeSession) return false;
-
-    await realtimeSession.disconnect();
-    sessionInfo.activeSpeakers.delete(userId);
+    const speaker = sessionInfo.activeSpeakers.get(userId);
+    if (!speaker) return false;
+    await speaker.stop();
     return true;
+  }
+
+  shutdown(): void {
+    this.shuttingDown = true;
+    for (const { activeSpeakers } of this.sessions.values()) {
+      for (const speaker of activeSpeakers.values()) {
+        void speaker.stop().catch(() => {});
+      }
+    }
   }
 
   /**
@@ -248,8 +331,7 @@ export class VoiceSessionManager {
    */
   sendAudio(guildId: string, userId: string, audio: Buffer): void {
     const sessionInfo = this.sessions.get(guildId);
-    const realtimeSession = sessionInfo?.activeSpeakers.get(userId);
-    realtimeSession?.sendAudio(audio);
+    sessionInfo?.activeSpeakers.get(userId)?.session.sendAudio(audio);
   }
 
   /**
@@ -267,10 +349,11 @@ export class VoiceSessionManager {
     const sessionInfo = this.sessions.get(guildId);
     if (!sessionInfo) return;
 
-    // Stop all active speakers
-    for (const [userId, realtimeSession] of sessionInfo.activeSpeakers) {
+    this.sessions.delete(guildId);
+    // Stop all active speakers while the guild voice lease still protects the connection.
+    for (const [userId, speaker] of sessionInfo.activeSpeakers) {
       try {
-        await realtimeSession.disconnect();
+        await speaker.stop();
       } catch (error) {
         logger.error(`[Voice] Error stopping session for user ${userId}:`, error);
       }
@@ -278,7 +361,6 @@ export class VoiceSessionManager {
 
     // Remove ownership before destroying because Destroyed can emit
     // synchronously and re-enter cleanup.
-    this.sessions.delete(guildId);
     if (!guildVoiceCoordinator.release(guildId, sessionInfo.leaseToken)) {
       guildVoiceCoordinator.stop(guildId, 'speech', sessionInfo);
     }
@@ -288,26 +370,19 @@ export class VoiceSessionManager {
   /**
    * Cleanup a guild's session (internal)
    */
-  private cleanup(guildId: string): void {
+  private cleanup(guildId: string, connection: VoiceConnection): void {
     const sessionInfo = this.sessions.get(guildId);
-    if (!sessionInfo) return;
+    if (!sessionInfo || sessionInfo.connection !== connection) return;
 
     // Stop all active speakers
-    for (const realtimeSession of sessionInfo.activeSpeakers.values()) {
-      realtimeSession.disconnect().catch(() => {});
+    for (const speaker of sessionInfo.activeSpeakers.values()) {
+      void speaker.stop().catch(() => {});
     }
 
     this.sessions.delete(guildId);
     if (!guildVoiceCoordinator.release(guildId, sessionInfo.leaseToken)) {
       guildVoiceCoordinator.stop(guildId, 'speech', sessionInfo);
     }
-  }
-
-  /**
-   * Get session info for a guild
-   */
-  getSession(guildId: string): SessionInfo | undefined {
-    return this.sessions.get(guildId);
   }
 
   /**

@@ -4,8 +4,8 @@ import {
   GatewayIntentBits,
   Events,
   REST,
-  Routes,
   MessageFlags,
+  PermissionFlagsBits,
   InteractionReplyOptions,
   ButtonInteraction,
   ModalSubmitInteraction,
@@ -14,6 +14,12 @@ import {
 import dns from 'node:dns';
 import { randomUUID } from 'node:crypto';
 import { ConfigLoader, logger, RateLimiter } from '@silo/core';
+import {
+  acceptsScopedGuildEvent,
+  assertScopedCommandTarget,
+  resolveCommandSyncMode,
+  syncApplicationCommands
+} from './runtime/command-registration';
 import { ProviderRegistry, classifyTextWorkload } from './providers/registry';
 import { createAgentGraphRuntimeConfig } from './agent/config';
 import { runBoundedAgentGraph } from './agent/bounded-graph';
@@ -29,6 +35,7 @@ import { DrawCommand } from './commands/draw';
 import { RadioCommand } from './commands/radio';
 import { FeedbackCommand } from './commands/feedback';
 import { HealthServer } from './health/server';
+import { assertReleaseBunRuntime } from './runtime/bun-version';
 import {
   guildManager,
   contentSanitizer,
@@ -62,14 +69,27 @@ import { deliverAssistantReply } from './services/assistant-delivery';
 import { hashPrompt } from './security/prompt-policy';
 import { sanitizeAssistantOutput, sanitizeDiscordMassMentions } from './security/output-sanitizer';
 import { QuotaMiddleware } from './middleware/quota';
+import { QuotaReservationReconciler } from './middleware/quota-reconciler';
+import { settleVoiceQuotaOnLeaseLoss, VoiceQuotaJournal } from './voice/quota-journal';
+import { voiceSessionManager } from './voice';
 import { CostAggregator } from './services/cost-aggregator';
 import { selectMemoryContext } from './services/memory-selector';
+import {
+  createCurrentStatusSearch,
+  isCurrentStatusFollowup,
+  ownPriorUserTexts
+} from './services/current-status-search';
 import {
   assembleConversationContext,
   buildEffectiveUserPrompt,
   buildConversationHistoryInstruction,
   buildImageSummaryBlock,
   buildWebAccessInstruction,
+  buildCurrentTimeInstruction,
+  currentStatusNeedsSource,
+  formatCurrentDate,
+  isCurrentDateQuestion,
+  isCurrentStatusQuestion,
   shouldIncludeConversationHistoryForPrompt
 } from './services/conversation-context';
 import { sanitizeConversationHistoryForPrompt } from './services/conversation-history-sanitizer';
@@ -106,6 +126,7 @@ import {
   type IntegerRangeResponse
 } from './services/integer-range';
 import { resolveReplyContext } from './services/reply-context';
+import { readableName, renderReadableUserMentions } from './services/readable-mentions';
 import { shouldHandleAssistantMessage } from './services/message-trigger';
 import { fetchUrlContextBlock, hasUrlContextCandidate } from './services/url-context';
 import {
@@ -131,6 +152,7 @@ import {
 import { installProcessErrorHandlers } from './runtime/process-errors';
 import { acquireProcessLock } from './runtime/process-lock';
 import { combineAbortSignals } from './runtime/abort-signals';
+import { ImageRejectionJournal } from './middleware/image-rejection-journal';
 import { shutdownApplication } from './runtime/shutdown';
 import { Client as PostgresClient } from 'pg';
 import { RuntimeLeaderLease } from './runtime/leader-lease';
@@ -373,12 +395,15 @@ export async function handleModalSubmit(
     }
 
     // System prompt modal
-    if (interaction.customId.startsWith('system_prompt_modal_')) {
-      const forVoice = interaction.customId.endsWith('_voice');
-      const prompt = interaction.fields.getTextInputValue('prompt_input').trim();
+    if (
+      interaction.customId === 'system_prompt_modal_text' ||
+      interaction.customId === 'system_prompt_modal_voice'
+    ) {
+      const forVoice = interaction.customId === 'system_prompt_modal_voice';
       const typeLabel = forVoice ? 'Voice' : 'Text';
 
-      if (!interaction.guildId) {
+      const guild = interaction.guild;
+      if (!guild) {
         await interaction.reply({
           content: 'This can only be used in a server.',
           flags: MessageFlags.Ephemeral
@@ -386,6 +411,26 @@ export async function handleModalSubmit(
         return;
       }
 
+      const permissions = new PermissionManager(adminDb);
+      const canEditPrompt = async () => {
+        const member = await guild.members.fetch({ user: interaction.user.id, force: true });
+        return (
+          member.permissions.has(PermissionFlagsBits.Administrator) &&
+          (await permissions.isAdmin(guild.id, interaction.user.id, member))
+        );
+      };
+      const denyEdit = () =>
+        interaction.reply({
+          content:
+            'You need current server admin permissions, including Discord Administrator, to save this prompt.',
+          flags: MessageFlags.Ephemeral
+        });
+      if (!(await canEditPrompt())) {
+        await denyEdit();
+        return;
+      }
+
+      const prompt = interaction.fields.getTextInputValue('prompt_input').trim();
       const validation = systemPromptManager.validatePrompt(prompt);
       if (!validation.valid) {
         logger.warn('System prompt rejected by validation', {
@@ -436,8 +481,11 @@ export async function handleModalSubmit(
         return;
       }
 
-      // Save the prompt (empty string = null)
-      await adminDb.setSystemPrompt(interaction.guildId, sanitizedPrompt || null, {
+      if (!(await canEditPrompt())) {
+        await denyEdit();
+        return;
+      }
+      await adminDb.setSystemPrompt(guild.id, sanitizedPrompt || null, {
         forVoice,
         enabled: true,
         actorUserId: interaction.user.id
@@ -474,6 +522,7 @@ export async function handleModalSubmit(
 }
 
 export async function startBot(): Promise<void> {
+  assertReleaseBunRuntime();
   installProcessErrorHandlers({
     log: logger,
     shutdownTracing: shutdownLangfuseTracing
@@ -497,6 +546,13 @@ export async function startBot(): Promise<void> {
   }
 
   const config = ConfigLoader.load();
+  // Resolve before connecting to the database or Discord. Scoped modes are development only.
+  const commandSyncMode = resolveCommandSyncMode(
+    process.env.DISCORD_COMMAND_SYNC_MODE,
+    config.app.environment,
+    process.env.NODE_ENV,
+    config.discord.guildId
+  );
   configureLangfuseMetadataDefaults({
     appName: config.app.name,
     appEnv: config.app.environment,
@@ -507,14 +563,6 @@ export async function startBot(): Promise<void> {
   });
   initializeLangfuseTracing(config);
   logger.info('Configuration loaded successfully');
-  try {
-    const dbUrl = new URL(config.database.url);
-    logger.info(
-      `Database target resolved: ${dbUrl.hostname}${dbUrl.port ? `:${dbUrl.port}` : ''}/${dbUrl.pathname.replace(/^\//, '') || 'postgres'}`
-    );
-  } catch {
-    logger.warn('Database target could not be parsed from configuration URL');
-  }
 
   // Initialize database
   const databaseTarget = new URL(config.database.url);
@@ -530,6 +578,11 @@ export async function startBot(): Promise<void> {
     maxConnections: config.database.maxConnections
   });
   const commandShutdown = new AbortController();
+  let voiceQuotaJournal: VoiceQuotaJournal | undefined;
+  // Stop callbacks synchronously write terminal voice measurements.
+  commandShutdown.signal.addEventListener('abort', () => voiceSessionManager.shutdown(), {
+    once: true
+  });
   const runtimeLease = await RuntimeLeaderLease.acquire(
     new PostgresClient({
       ...db.pool.options,
@@ -540,8 +593,16 @@ export async function startBot(): Promise<void> {
     () => {
       commandShutdown.abort();
       logger.error('Runtime leader lease lost; terminating to prevent duplicate bot activity');
-      // Exit immediately: pending handlers must not deliver after session ownership is lost.
-      process.exit(1);
+      try {
+        voiceQuotaJournal?.finishOnLeaseLoss(measurements =>
+          settleVoiceQuotaOnLeaseLoss(
+            { connectionString: db.pool.options.connectionString, ssl: db.pool.options.ssl },
+            measurements
+          )
+        );
+      } finally {
+        process.exit(1);
+      }
     }
   );
   logger.info('Runtime leader lease acquired');
@@ -561,13 +622,33 @@ export async function startBot(): Promise<void> {
   // Initialize admin database
   const adminDb = new AdminAdapter(db.pool);
   const permissions = new PermissionManager(adminDb);
-  const quotaMiddleware = new QuotaMiddleware(adminDb, permissions);
+  const imageRejections =
+    commandSyncMode === 'none'
+      ? undefined
+      : new ImageRejectionJournal(adminDb, config.discord.clientId, () =>
+          adminDb.getVoiceQuotaDatabaseId()
+        );
+  const quotaMiddleware = new QuotaMiddleware(adminDb, permissions, imageRejections);
+  const quotaReconciler = new QuotaReservationReconciler(adminDb);
+  voiceQuotaJournal =
+    commandSyncMode === 'none'
+      ? undefined
+      : new VoiceQuotaJournal(adminDb, config.discord.clientId, () =>
+          adminDb.getVoiceQuotaDatabaseId()
+        );
   const costAggregator = new CostAggregator(adminDb);
 
   const providers = new ProviderRegistry(config);
   const available = providers.getAvailableProviders();
   logger.info('Available providers:', available);
   const agentGraphConfig = createAgentGraphRuntimeConfig();
+  const lookupCurrentStatus = createCurrentStatusSearch({
+    registry: providers,
+    quota: quotaMiddleware,
+    permissions,
+    enabled: agentGraphConfig.searchEnabled,
+    shutdownSignal: commandShutdown.signal
+  });
   logger.info('Agent graph runtime:', {
     enabled: agentGraphConfig.enabled,
     mode: agentGraphConfig.mode,
@@ -591,7 +672,8 @@ export async function startBot(): Promise<void> {
       const runtimeConfig = await adminDb.getServerRuntimeConfig(guildId);
       return (await resolveRuntimePrompt(guildId, runtimeConfig.systemPrompt)).promptPolicy
         .promptHash;
-    }
+    },
+    voiceQuotaJournal
   );
   const drawCommand = commands.get('draw');
   const radioCommand = commands.get('radio');
@@ -656,8 +738,15 @@ export async function startBot(): Promise<void> {
     logger.warn('Safety monitor alert', { guildId, detail: messageContent });
   };
 
-  // Start periodic cost aggregation
-  costAggregator.start();
+  // A no-registration dev session is a passive readiness check. It must not
+  // process guild activity or start jobs that can send Discord messages.
+  if (commandSyncMode !== 'none') costAggregator.start();
+
+  let scopedReady = commandSyncMode === 'legacy';
+  const admitsEvent = (guildId: string | null | undefined): boolean =>
+    commandSyncMode !== 'none' &&
+    scopedReady &&
+    acceptsScopedGuildEvent(commandSyncMode, guildId, config.discord.guildId);
 
   client.once(Events.ClientReady, async readyClient => {
     if (commandShutdown.signal.aborted || !(await runtimeLease.verify())) return;
@@ -665,114 +754,103 @@ export async function startBot(): Promise<void> {
       logger.error('Discord application identity does not match the runtime lease');
       process.exit(1);
     }
+    const joinedGuildIds = readyClient.guilds.cache.map(guild => guild.id);
+    try {
+      assertScopedCommandTarget(
+        commandSyncMode,
+        config.discord.clientId,
+        readyClient.user.id,
+        joinedGuildIds,
+        config.discord.guildId
+      );
+    } catch (error) {
+      logger.error('Discord startup scope validation failed', error);
+      process.exit(1);
+      return;
+    }
     logger.info(`Bot ready! Logged in as ${readyClient.user.tag}`);
     logger.info(`Serving ${readyClient.guilds.cache.size} guilds`);
-    const joinedGuildIds = readyClient.guilds.cache.map(guild => guild.id);
 
-    // Set client reference for security modules
-    guildManager.setClient(client);
+    if (commandSyncMode !== 'none') {
+      // Set client reference for security modules
+      guildManager.setClient(client);
 
-    // Ensure all guilds the bot is in are registered in guild_registry.
-    // This prevents the inactivity scheduler from evicting guilds that were
-    // never registered (e.g. after a database reset or migration issue).
-    try {
-      const syncResult = await guildManager.ensureGuildsRegistered();
-      if (syncResult.synced > 0) {
-        logger.info(
-          `Guild sync: registered ${syncResult.synced} missing guild(s), ${syncResult.skipped} already registered`
-        );
-      } else {
-        logger.info(`Guild sync: all ${syncResult.skipped} guild(s) already registered`);
+      // Ensure all guilds the bot is in are registered in guild_registry.
+      // This prevents the inactivity scheduler from evicting guilds that were
+      // never registered (e.g. after a database reset or migration issue).
+      try {
+        const syncResult = await guildManager.ensureGuildsRegistered();
+        if (syncResult.synced > 0) {
+          logger.info(
+            `Guild sync: registered ${syncResult.synced} missing guild(s), ${syncResult.skipped} already registered`
+          );
+        } else {
+          logger.info(`Guild sync: all ${syncResult.skipped} guild(s) already registered`);
+        }
+      } catch (error) {
+        logger.error('Guild sync failed:', error);
       }
-    } catch (error) {
-      logger.error('Guild sync failed:', error);
     }
 
-    // Start inactivity scheduler (only in hosted mode)
-    inactivityScheduler.init(db.pool, client);
-    inactivityScheduler.start();
+    if (commandSyncMode === 'legacy') {
+      // These selectors operate across the database, outside guild event admission.
+      inactivityScheduler.init(db.pool, client);
+      inactivityScheduler.start();
+    }
 
     // Register slash commands
-    const rest = new REST().setToken(config.discord.token);
     const commandData = Array.from(commands.values()).map(cmd => cmd.data.toJSON());
 
     try {
-      const registerGuildOnly =
-        Boolean(config.discord.guildId) && process.env.DISCORD_USE_GUILD_COMMANDS === 'true';
-
-      if (registerGuildOnly && config.discord.guildId) {
-        logger.info(
-          `Registering ${commandData.length} guild slash commands for guild ${config.discord.guildId}...`
-        );
-        await rest.put(
-          Routes.applicationGuildCommands(readyClient.user.id, config.discord.guildId),
-          { body: commandData }
-        );
-        logger.info('Guild slash commands registered successfully');
-
-        logger.info('Clearing global slash commands to avoid duplicate guild/global entries...');
-        await rest.put(Routes.applicationCommands(readyClient.user.id), { body: [] });
-        logger.info('Global slash commands cleared');
-
-        const staleGuildIds = joinedGuildIds.filter(guildId => guildId !== config.discord.guildId);
-        if (staleGuildIds.length > 0) {
-          logger.info(
-            `Clearing guild slash command overrides for ${staleGuildIds.length} non-target guild(s)...`
-          );
-          await Promise.all(
-            staleGuildIds.map(guildId =>
-              rest.put(Routes.applicationGuildCommands(readyClient.user.id, guildId), {
-                body: []
-              })
-            )
-          );
-          logger.info('Non-target guild slash command overrides cleared');
-        }
-      } else {
-        logger.info(`Registering ${commandData.length} global slash commands...`);
-        await rest.put(Routes.applicationCommands(readyClient.user.id), { body: commandData });
-        logger.info('Global slash commands registered successfully');
-
-        // Clear guild-scoped overrides to avoid duplicate command entries in the guild picker.
-        if (joinedGuildIds.length > 0) {
-          logger.info(
-            `Clearing guild slash command overrides for ${joinedGuildIds.length} guild(s) to avoid duplicates...`
-          );
-          await Promise.all(
-            joinedGuildIds.map(guildId =>
-              rest.put(Routes.applicationGuildCommands(readyClient.user.id, guildId), {
-                body: []
-              })
-            )
-          );
-          logger.info('Guild slash command overrides cleared');
-        }
-      }
+      await syncApplicationCommands({
+        mode: commandSyncMode,
+        applicationId: readyClient.user.id,
+        expectedGuildId: config.discord.guildId,
+        joinedGuildIds,
+        legacyGuildOnly: process.env.DISCORD_USE_GUILD_COMMANDS === 'true',
+        commandData,
+        rest: commandSyncMode === 'none' ? undefined : new REST().setToken(config.discord.token)
+      });
+      scopedReady = true;
+      logger.info('Discord slash command startup mode completed', { mode: commandSyncMode });
     } catch (error) {
       logger.error('Failed to register slash commands:', error);
+      if (commandSyncMode === 'guild-only') {
+        commandShutdown.abort();
+        process.exit(1);
+      }
     }
 
-    void (async () => {
-      const prewarmStart = Date.now();
+    if (commandSyncMode !== 'none') {
+      quotaReconciler.start(commandShutdown.signal);
+      imageRejections?.start(commandShutdown.signal);
+      voiceQuotaJournal?.start(commandShutdown.signal);
+    }
 
-      try {
-        const customPrompts = await collectStartupCustomPrompts(joinedGuildIds, adminDb);
-        await Promise.allSettled([
-          contentSanitizer.prewarmRuntime(),
-          prewarmGuardrailsRuntime({ customPrompts })
-        ]);
+    if (commandSyncMode !== 'none')
+      void (async () => {
+        const prewarmStart = Date.now();
 
-        logger.info(
-          `Safety runtime warmed in ${Date.now() - prewarmStart}ms (${customPrompts.length} custom prompt(s) cached)`
-        );
-      } catch (error) {
-        logger.debug('Safety runtime prewarm failed', error);
-      }
-    })();
+        try {
+          const customPrompts = await collectStartupCustomPrompts(joinedGuildIds, adminDb);
+          await Promise.allSettled([
+            contentSanitizer.prewarmRuntime(),
+            prewarmGuardrailsRuntime({ customPrompts })
+          ]);
+
+          logger.info(
+            `Safety runtime warmed in ${Date.now() - prewarmStart}ms (${customPrompts.length} custom prompt(s) cached)`
+          );
+        } catch (error) {
+          logger.debug('Safety runtime prewarm failed', error);
+        }
+      })();
   });
 
   // Handle slash command interactions
   client.on(Events.InteractionCreate, async interaction => {
+    // Application commands can reach the app without bot membership in the caller's guild.
+    if (!admitsEvent(interaction.guildId)) return;
     if (commandShutdown.signal.aborted || !(await runtimeLease.verify())) return;
     const withInteractionRootTrace = async <T>(
       options: {
@@ -960,6 +1038,7 @@ export async function startBot(): Promise<void> {
   client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
     if (!(radioCommand instanceof RadioCommand)) return;
     const guildId = newState.guild.id || oldState.guild.id;
+    if (!admitsEvent(guildId)) return;
     const metadataInput = {
       guildId,
       channelId: newState.channelId || oldState.channelId,
@@ -988,6 +1067,12 @@ export async function startBot(): Promise<void> {
 
   // Handle guild join
   client.on(Events.GuildCreate, async guild => {
+    if (!acceptsScopedGuildEvent(commandSyncMode, guild.id, config.discord.guildId)) {
+      commandShutdown.abort();
+      logger.error('Scoped Discord runtime joined an unexpected guild');
+      process.exit(1);
+    }
+    if (!admitsEvent(guild.id)) return;
     if (commandShutdown.signal.aborted || !(await runtimeLease.verify())) return;
     const metadataInput = {
       guildId: guild.id,
@@ -1038,6 +1123,14 @@ export async function startBot(): Promise<void> {
 
   // Handle guild leave/kick
   client.on(Events.GuildDelete, async guild => {
+    if (commandSyncMode !== 'legacy') {
+      if (acceptsScopedGuildEvent(commandSyncMode, guild.id, config.discord.guildId)) {
+        commandShutdown.abort();
+        logger.error('Scoped Discord runtime left its expected guild');
+        process.exit(1);
+      }
+      return;
+    }
     if (commandShutdown.signal.aborted || !(await runtimeLease.verify())) return;
     const metadataInput = {
       guildId: guild.id,
@@ -1088,6 +1181,7 @@ export async function startBot(): Promise<void> {
   client.on(Events.MessageCreate, async message => {
     if (message.author.bot) return;
     if (!message.guildId) return;
+    if (!admitsEvent(message.guildId)) return;
     if (commandShutdown.signal.aborted || !(await runtimeLease.verify())) return;
     const botUserId = client.user?.id;
     if (!botUserId) return;
@@ -1159,7 +1253,10 @@ export async function startBot(): Promise<void> {
           });
 
           const botMentionPattern = new RegExp(`<@!?${botUserId}>`, 'g');
-          const userContent = message.content.replace(botMentionPattern, '').trim();
+          const userContent = renderReadableUserMentions(
+            message.content.replace(botMentionPattern, '').trim(),
+            message
+          );
           const imageAttachments = message.attachments.filter(
             att => att.contentType?.startsWith('image/') && att.size <= 20 * 1024 * 1024
           );
@@ -1255,6 +1352,10 @@ export async function startBot(): Promise<void> {
 
           const { processedContent, moderation } = moderationResult;
           const inputSafetyDecision = moderation.safetyDecision;
+          const deterministicDateRequest =
+            currentImageUrls.length === 0 &&
+            inputSafetyDecision?.action === 'allow' &&
+            isCurrentDateQuestion(processedContent);
           const inputNsfwRisk = hasSemanticNsfwInputRisk(processedContent);
 
           messageTrace?.update({
@@ -1353,9 +1454,12 @@ export async function startBot(): Promise<void> {
             );
           }
 
-          const promptSentiment = deterministicRangeRequest
-            ? classifyPromptDeterministic(processedContent)
-            : await sentimentClassifier.classifyPrompt(processedContent);
+          const promptSentiment =
+            deterministicRangeRequest ||
+            deterministicDateRequest ||
+            isCurrentStatusQuestion(processedContent)
+              ? classifyPromptDeterministic(processedContent)
+              : await sentimentClassifier.classifyPrompt(processedContent);
           const sentimentApplied = shouldApplySentiment(promptSentiment);
           logger.info('Sentiment classification for prompt', {
             guildId,
@@ -1454,7 +1558,7 @@ export async function startBot(): Promise<void> {
             }
 
             visionUserLimit = visionQuotaCheck.max;
-          } else if (!deterministicRangeRequest) {
+          } else if (!deterministicRangeRequest && !deterministicDateRequest) {
             const quotaStatus = await quotaMiddleware.checkQuota(
               guildId,
               message.author.id,
@@ -1627,7 +1731,11 @@ export async function startBot(): Promise<void> {
             lowContextHistoryDisabled;
 
           // Build memory retrieval as a parallel task
-          const memoryPromise = contextReuseDisabledForTurn
+          const skipMemoryForCurrentInformation =
+            contextReuseDisabledForTurn ||
+            deterministicDateRequest ||
+            isCurrentStatusQuestion(processedContent);
+          const memoryPromise = skipMemoryForCurrentInformation
             ? Promise.resolve({
                 context: '',
                 selected: [],
@@ -1780,7 +1888,7 @@ export async function startBot(): Promise<void> {
             agentGraphConfig.searchEnabled,
             urlContext.items.length > 0
           );
-          const systemPrompt = `${baseSystemPrompt}${personaTurnInstruction}${webAccessInstruction}${buildVisionResponseInstruction(useVision)}`;
+          const systemPrompt = `${baseSystemPrompt}${personaTurnInstruction}${webAccessInstruction}${buildCurrentTimeInstruction(new Date(), process.env.TZ)}${buildVisionResponseInstruction(useVision)}`;
           const outputInputNsfwRisk =
             assistantSafetyPolicy === 'contextual_banter' && personaState === 'alternate'
               ? hasSemanticNsfwInputRisk(
@@ -1863,6 +1971,33 @@ export async function startBot(): Promise<void> {
             prunedHistoryForPrompt.length > 0 &&
             !lowContextHistoryDisabled;
           const historyForPrompt = includeConversationHistory ? prunedHistoryForPrompt : [];
+          const priorOwnUserTexts = ownPriorUserTexts(historyForPrompt, message.author.id);
+          const previousUserTask = selectLatestTaskDefiningUserText(
+            priorOwnUserTexts.filter(text => !isCurrentStatusFollowup(text))
+          );
+          const currentStatusQuestion = isCurrentStatusQuestion(processedContent, previousUserTask);
+          const currentStatusSearchResult =
+            currentImageUrls.length === 0 &&
+            inputSafetyDecision?.action === 'allow' &&
+            !deterministicDateRequest &&
+            currentStatusQuestion
+              ? await lookupCurrentStatus({
+                  currentText: processedContent,
+                  priorUserTexts: priorOwnUserTexts,
+                  guildId,
+                  userId: message.author.id,
+                  messageId: message.id,
+                  member
+                })
+              : null;
+          const deterministicCurrentResponse =
+            currentImageUrls.length === 0 && inputSafetyDecision?.action === 'allow'
+              ? deterministicDateRequest
+                ? formatCurrentDate(new Date(), process.env.TZ)
+                : currentStatusQuestion
+                  ? currentStatusSearchResult?.content || currentStatusNeedsSource(false)
+                  : null
+              : null;
           const conversationHistoryInstruction = buildConversationHistoryInstruction(
             includeConversationHistory
           );
@@ -1873,13 +2008,21 @@ export async function startBot(): Promise<void> {
             );
           }
 
-          const messages = historyForPrompt.map(msg => ({
-            role: msg.role,
-            content:
-              msg.role === 'user'
-                ? `[User: ${msg.userId}] ${msg.content}`
-                : sanitizeDiscordMassMentions(msg.content)
-          }));
+          const messages = historyForPrompt.map(msg => {
+            if (msg.role !== 'user') {
+              return { role: msg.role, content: sanitizeDiscordMassMentions(msg.content) };
+            }
+            const historicalMember =
+              msg.userId === message.author.id
+                ? member
+                : message.guild?.members.cache.get(msg.userId);
+            const historicalUser = message.client.users.cache.get(msg.userId);
+            const name = readableName(historicalMember?.displayName || historicalUser?.username);
+            return {
+              role: msg.role,
+              content: `[User: ${name}] ${sanitizeDiscordMassMentions(renderReadableUserMentions(msg.content))}`
+            };
+          });
           const recentAssistantMessages = prunedHistoryForPrompt
             .filter(message => message.role === 'assistant')
             .map(message => message.content);
@@ -1944,12 +2087,22 @@ export async function startBot(): Promise<void> {
             adapter: textProvider.name,
             routerDecision,
             routerReason,
-            generationSource: deterministicRangeResponse ? 'deterministic_range' : 'provider',
+            generationSource: deterministicRangeResponse
+              ? 'deterministic_range'
+              : deterministicCurrentResponse
+                ? currentStatusSearchResult?.searched
+                  ? 'current_status_search'
+                  : 'deterministic_current_information'
+                : 'provider',
             configuredMaxOutputTokens: configuredTextResponseTokens,
-            effectiveMaxOutputTokens: deterministicRangeResponse ? 0 : maxTextResponseTokens,
+            effectiveMaxOutputTokens:
+              deterministicRangeResponse || deterministicCurrentResponse
+                ? 0
+                : maxTextResponseTokens,
             hasConversationHistory: messages.length > 0,
             conversationMessageCount: messages.length,
-            usesTools: false,
+            usesTools: Boolean(currentStatusSearchResult?.searched),
+            searchProvider: currentStatusSearchResult?.providerName || null,
             supportsImages: Boolean(visionProvider?.analyzeImage),
             supportsVideo: Boolean(textProvider.capabilities?.videoGeneration),
             supportsAudio: false,
@@ -2037,7 +2190,14 @@ export async function startBot(): Promise<void> {
           let recoveryReason: 'safety' | 'quality' | null = null;
           let recoveryContextRetained = false;
           let recoveryStrategy: AssistantRecoveryStrategy | null = null;
-          const generationSource = deterministicRangeResponse ? 'deterministic_range' : 'provider';
+          const generationSource = deterministicRangeResponse
+            ? 'deterministic_range'
+            : deterministicCurrentResponse
+              ? currentStatusSearchResult?.searched
+                ? 'current_status_search'
+                : 'deterministic_current_information'
+              : 'provider';
+          const isDeterministicGeneration = generationSource !== 'provider';
           const traceableRangeBounds = Boolean(
             deterministicRangeResponse &&
             Math.abs(deterministicRangeResponse.start) <= MAX_TRACEABLE_RANGE_BOUND &&
@@ -2063,11 +2223,38 @@ export async function startBot(): Promise<void> {
                 hasPromptFallbackNotice: Boolean(promptFallbackNotice),
                 generationSource,
                 configuredMaxOutputTokens: configuredTextResponseTokens,
-                effectiveMaxOutputTokens: deterministicRangeResponse ? 0 : maxTextResponseTokens,
+                effectiveMaxOutputTokens:
+                  deterministicRangeResponse || deterministicCurrentResponse
+                    ? 0
+                    : maxTextResponseTokens,
                 temperature: 0.6
               }
             },
             async generation => {
+              if (deterministicCurrentResponse) {
+                const deterministicResponse = {
+                  content: deterministicCurrentResponse,
+                  model: 'deterministic-current-information',
+                  finishReason: 'stop' as const,
+                  providerFinishReason: 'deterministic_complete',
+                  usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 }
+                };
+                generation?.update({
+                  output: {
+                    outputCharacters: deterministicCurrentResponse.length,
+                    hasContent: true,
+                    generationSource
+                  },
+                  metadata: {
+                    ...buildLangfuseTraceMetadata(generationMetadataInput),
+                    generationSource,
+                    finishReason: deterministicResponse.finishReason,
+                    providerFinishReason: deterministicResponse.providerFinishReason,
+                    completionTokens: 0
+                  }
+                });
+                return deterministicResponse;
+              }
               if (deterministicRangeResponse) {
                 const deterministicResponse = {
                   content: deterministicRangeResponse.content,
@@ -3062,7 +3249,7 @@ export async function startBot(): Promise<void> {
             }
           }
 
-          if (!userRequestedRichFormatting) {
+          if (!userRequestedRichFormatting && generationSource !== 'current_status_search') {
             responseContent = responseContent
               .replace(/(\*\*|__|\*|_|~~|`)/g, '')
               .replace(/^#{1,6}\s+/gm, '')
@@ -3197,10 +3384,9 @@ export async function startBot(): Promise<void> {
             }
           }
 
-          const actualTokens =
-            generationSource === 'deterministic_range'
-              ? 0
-              : quotaMiddleware.getChargeableTextTokens(response.usage, responseContent);
+          const actualTokens = isDeterministicGeneration
+            ? 0
+            : quotaMiddleware.getChargeableTextTokens(response.usage, responseContent);
           if (usedVision) {
             const safeVisionUserLimit = Number.isFinite(visionUserLimit)
               ? visionUserLimit
@@ -3295,8 +3481,7 @@ export async function startBot(): Promise<void> {
                 model: response.model || requestedTextModel || undefined,
                 generationSource,
                 configuredMaxOutputTokens: configuredTextResponseTokens,
-                effectiveMaxOutputTokens:
-                  generationSource === 'deterministic_range' ? 0 : maxTextResponseTokens,
+                effectiveMaxOutputTokens: isDeterministicGeneration ? 0 : maxTextResponseTokens,
                 completionTokens: response.usage?.completionTokens,
                 finishReason: response.finishReason,
                 providerFinishReason: response.providerFinishReason,
@@ -3385,8 +3570,7 @@ export async function startBot(): Promise<void> {
               recoveryStrategy,
               generationSource,
               configuredMaxOutputTokens: configuredTextResponseTokens,
-              effectiveMaxOutputTokens:
-                generationSource === 'deterministic_range' ? 0 : maxTextResponseTokens,
+              effectiveMaxOutputTokens: isDeterministicGeneration ? 0 : maxTextResponseTokens,
               completionTokens: response.usage?.completionTokens ?? null,
               finishReason: response.finishReason || null,
               providerFinishReason: response.providerFinishReason || null,
@@ -3488,7 +3672,7 @@ export async function startBot(): Promise<void> {
             }
           });
 
-          if (usedVision || generationSource === 'deterministic_range') {
+          if (usedVision || isDeterministicGeneration) {
             Promise.all([conversationWrite, sentimentEvent]).catch(err => {
               logger.error('Failed to complete post-response writes:', err);
             });
@@ -3530,6 +3714,7 @@ export async function startBot(): Promise<void> {
 
   // Handle message reactions for feedback
   client.on(Events.MessageReactionAdd, async (reaction, user) => {
+    if (!admitsEvent(reaction.message.guildId)) return;
     await handleReactionFeedback({ reaction, user, client, adminDb, permissions, log: logger });
   });
 

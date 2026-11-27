@@ -15,6 +15,7 @@ function setup(kind: 'draw' | 'video') {
     model: 'media-model'
   }));
   const registry = {
+    getAvailableProviders: () => ({ image: ['openai'] }),
     getImageProvider: () => ({ name: 'openai', generateImage: generate }),
     getConfiguredImageModel: () => 'gpt-image-1',
     getVideoProvider: () => ({ name: 'xai', generateVideo: generate }),

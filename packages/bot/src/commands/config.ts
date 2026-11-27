@@ -3,6 +3,7 @@ import {
   SlashCommandBuilder,
   GuildMember,
   ChannelType,
+  PermissionFlagsBits,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
@@ -238,6 +239,17 @@ export class ConfigCommand implements Command {
           const promptType = interaction.options.getString('type') || 'text';
           const forVoice = promptType === 'voice';
           const typeLabel = forVoice ? 'voice' : 'text';
+
+          if (
+            (action === 'edit' || action === 'clear') &&
+            !member.permissions.has(PermissionFlagsBits.Administrator)
+          ) {
+            await interaction.reply({
+              content: `You need Discord Administrator permission to ${action} the system prompt.`,
+              ephemeral: true
+            });
+            return;
+          }
 
           switch (action) {
             case 'view': {

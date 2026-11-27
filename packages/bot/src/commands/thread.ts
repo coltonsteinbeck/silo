@@ -4,6 +4,7 @@ import {
   GuildMember,
   SlashCommandBuilder,
   ChannelType,
+  PermissionFlagsBits,
   ThreadAutoArchiveDuration
 } from 'discord.js';
 import { summarizeTextForTrace, withLangfuseGeneration } from '../telemetry/langfuse-client';
@@ -48,6 +49,11 @@ export class ThreadCommand implements Command {
       interaction.channel.type !== ChannelType.GuildText
     ) {
       await interaction.editReply('This command can only be used in text channels.');
+      return;
+    }
+
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.CreatePublicThreads)) {
+      await interaction.editReply('You need permission to create public threads in this channel.');
       return;
     }
 

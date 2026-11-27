@@ -28,11 +28,15 @@ By participating in this project, you agree to maintain a respectful and inclusi
 
 ### Prerequisites
 
-- [Bun](https://bun.sh) >= 1.0.0
-- PostgreSQL >= 14
-- Redis >= 7.0
-- Discord Bot Application
-- OpenAI API Key (or Anthropic/xAI)
+- [Bun](https://bun.sh) at the version in `.bun-version`
+- Docker and the PostgreSQL client for local schema work
+- A test Discord application and your own provider keys only for connected bot testing
+
+Install with `bash scripts/install-locked.sh`. Start with `bun --no-env-file test`
+to run the offline suite without loading credentials. The [README](README.md)
+shows how to replay the schema against the loopback-only development database.
+Use synthetic data for local tests and keep your connection configuration
+and credentials outside Git.
 
 ### Development Setup
 
@@ -46,7 +50,7 @@ By participating in this project, you agree to maintain a respectful and inclusi
 2. **Install dependencies:**
 
    ```bash
-   bun install
+   bash scripts/install-locked.sh
    ```
 
 3. **Set up Git hooks:**

@@ -212,7 +212,7 @@ export class ConfigLoader {
           ? {
               apiKey: process.env.OPENAI_API_KEY,
               model: process.env.OPENAI_MODEL || 'gpt-6-luna',
-              imageModel: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-1'
+              imageModel: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2.5-flare'
             }
           : undefined,
         xai: process.env.XAI_API_KEY

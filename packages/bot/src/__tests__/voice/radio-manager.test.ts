@@ -114,6 +114,7 @@ function createHarness({
     id: 'voice',
     name: 'Music',
     guild: { id: 'guild', voiceAdapterCreator: {} },
+    permissionsFor: mock(() => ({ has: (): boolean => true })),
     members: {
       some: (predicate: (member: { user: { bot: boolean } }) => boolean) =>
         humans && predicate({ user: { bot: false } })
@@ -139,6 +140,7 @@ function createHarness({
   const makeButton = (customId: string, messageId = message.id) => ({
     customId,
     guildId: 'guild',
+    user: { id: 'listener' },
     message: { ...message, id: messageId },
     reply: mock(async () => undefined),
     deferUpdate: mock(async () => undefined),
@@ -166,6 +168,47 @@ function createHarness({
 }
 
 describe('RadioManager', () => {
+  test('rejects a command in another room and controls from an unauthorized listener', async () => {
+    const harness = createHarness();
+    await harness.manager.play(
+      harness.makeInteraction() as never,
+      'first',
+      harness.channel as never
+    );
+    const otherRoom = { ...harness.channel, id: 'other-room' };
+    const append = harness.makeInteraction('other-command');
+    await harness.manager.play(append as never, 'first', otherRoom as never);
+    expect(harness.manager.getQueue('guild')?.songs).toHaveLength(1);
+
+    harness.channel.permissionsFor.mockReturnValue({ has: () => false });
+    const stop = harness.makeButton('radio:stop');
+    await harness.manager.handleButtonInteraction(stop as never);
+    expect(stop.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ content: expect.stringContaining('active voice channel') })
+    );
+    expect(harness.manager.getQueue('guild')).toBeDefined();
+    await harness.manager.stopAll();
+  });
+
+  test('a listener who loses access during defer cannot stop the queue', async () => {
+    const harness = createHarness();
+    await harness.manager.play(
+      harness.makeInteraction() as never,
+      'first',
+      harness.channel as never
+    );
+    const button = harness.makeButton('radio:stop');
+    button.deferUpdate.mockImplementation(async () => {
+      harness.channel.permissionsFor.mockReturnValue({ has: () => false });
+    });
+    await harness.manager.handleButtonInteraction(button as never);
+    expect(button.followUp).toHaveBeenCalledWith(
+      expect.objectContaining({ content: expect.stringContaining('active voice channel') })
+    );
+    expect(harness.manager.getQueue('guild')?.stopRequested).toBeFalse();
+    await harness.manager.stopAll();
+  });
+
   test('skip advances even when repeat-one is selected', async () => {
     const harness = createHarness({
       sourceResults: new Map([['playlist', resolution(track('first'), track('second'))]])

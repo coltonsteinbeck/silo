@@ -14,6 +14,7 @@ import {
 import { hashPrompt } from '../security/prompt-policy';
 
 const QUOTA_LOCAL_DATE_SQL = `quota_local_date()`;
+const QUOTA_QUERY_TIMEOUT_MS = 5_000;
 
 export interface PatchNotesWebhook {
   guildId: string;
@@ -1337,9 +1338,9 @@ export class AdminAdapter {
     requestedAmount: number;
     minimumAmount: number;
   }): Promise<QuotaReservationRow> {
-    const result = await this.pool.query(
-      `SELECT * FROM reserve_quota_usage($1, $2, $3, $4, $5, $6, $7)`,
-      [
+    const query = {
+      text: 'SELECT * FROM reserve_quota_usage($1, $2, $3, $4, $5, $6, $7)',
+      values: [
         params.idempotencyKey,
         params.guildId,
         params.userId,
@@ -1347,8 +1348,10 @@ export class AdminAdapter {
         params.resource,
         params.requestedAmount,
         params.minimumAmount
-      ]
-    );
+      ],
+      query_timeout: QUOTA_QUERY_TIMEOUT_MS
+    };
+    const result = await this.pool.query(query);
 
     if (!result.rows[0]) {
       throw new Error('Quota reservation returned no result');
@@ -1357,9 +1360,12 @@ export class AdminAdapter {
   }
 
   async markQuotaUsageAttempted(idempotencyKey: string): Promise<QuotaReservationLifecycleRow> {
-    const result = await this.pool.query(`SELECT * FROM mark_quota_usage_attempted($1)`, [
-      idempotencyKey
-    ]);
+    const query = {
+      text: 'SELECT * FROM mark_quota_usage_attempted($1)',
+      values: [idempotencyKey],
+      query_timeout: QUOTA_QUERY_TIMEOUT_MS
+    };
+    const result = await this.pool.query(query);
     if (!result.rows[0]) {
       throw new Error('Quota attempt transition returned no result');
     }
@@ -1368,23 +1374,48 @@ export class AdminAdapter {
 
   async commitQuotaUsage(
     idempotencyKey: string,
-    actualAmount: number
+    actualAmount: number,
+    queryTimeoutMs = QUOTA_QUERY_TIMEOUT_MS
   ): Promise<QuotaReservationLifecycleRow> {
-    const result = await this.pool.query(`SELECT * FROM commit_quota_usage($1, $2)`, [
-      idempotencyKey,
-      actualAmount
-    ]);
+    const text = 'SELECT * FROM commit_quota_usage($1, $2)';
+    const values = [idempotencyKey, actualAmount];
+    // On read timeout pg-pool removes the checked-out connection.
+    const query = { text, values, query_timeout: queryTimeoutMs };
+    const result = await this.pool.query(query);
     if (!result.rows[0]) {
       throw new Error('Quota commit returned no result');
     }
     return mapQuotaLifecycleRow(result.rows[0]);
   }
 
+  async getVoiceQuotaDatabaseId(): Promise<string> {
+    const query = {
+      text: 'SELECT database_id FROM public.voice_quota_database_identity WHERE singleton',
+      query_timeout: 5_000
+    };
+    const result = await this.pool.query<{ database_id: string }>(query);
+    const id = result.rows[0]?.database_id;
+    if (!id) throw new Error('Voice quota database identity is missing');
+    return id;
+  }
+
+  async recoverVoiceQuotaStart(key: string, fallback: number): Promise<boolean> {
+    const query = {
+      text: 'SELECT public.recover_voice_quota_start($1, $2) AS settled',
+      values: [key, fallback],
+      query_timeout: 5_000
+    };
+    const result = await this.pool.query<{ settled: boolean }>(query);
+    return result.rows[0]?.settled === true;
+  }
+
   async recordQuotaUsageActual(idempotencyKey: string, actualAmount: number): Promise<void> {
-    const result = await this.pool.query(
-      `SELECT record_quota_usage_actual($1, $2) AS actual_amount`,
-      [idempotencyKey, actualAmount]
-    );
+    const query = {
+      text: 'SELECT record_quota_usage_actual($1, $2) AS actual_amount',
+      values: [idempotencyKey, actualAmount],
+      query_timeout: QUOTA_QUERY_TIMEOUT_MS
+    };
+    const result = await this.pool.query(query);
     if (asFiniteQuotaNumber(result.rows[0]?.actual_amount, -1) !== actualAmount) {
       throw new Error('Quota actual-usage transition returned an unexpected amount');
     }
@@ -1394,13 +1425,31 @@ export class AdminAdapter {
     idempotencyKey: string,
     reason: string
   ): Promise<QuotaReservationLifecycleRow> {
-    const result = await this.pool.query(`SELECT * FROM release_quota_usage($1, $2)`, [
-      idempotencyKey,
-      reason
-    ]);
+    const query = {
+      text: 'SELECT * FROM release_quota_usage($1, $2)',
+      values: [idempotencyKey, reason],
+      query_timeout: QUOTA_QUERY_TIMEOUT_MS
+    };
+    const result = await this.pool.query(query);
     if (!result.rows[0]) {
       throw new Error('Quota release returned no result');
     }
+    return mapQuotaLifecycleRow(result.rows[0]);
+  }
+
+  async releaseRejectedImageQuotaUsage(
+    idempotencyKey: string,
+    guildId: string,
+    userId: string,
+    evidence: { status: 400 | 404; code: 'model_not_found'; requestId: string }
+  ): Promise<QuotaReservationLifecycleRow> {
+    const query = {
+      text: 'SELECT * FROM release_rejected_image_quota_usage($1, $2, $3, $4, $5, $6)',
+      values: [idempotencyKey, guildId, userId, evidence.status, evidence.code, evidence.requestId],
+      query_timeout: QUOTA_QUERY_TIMEOUT_MS
+    };
+    const result = await this.pool.query(query);
+    if (!result.rows[0]) throw new Error('Rejected image quota release returned no result');
     return mapQuotaLifecycleRow(result.rows[0]);
   }
 
@@ -1410,15 +1459,47 @@ export class AdminAdapter {
     processed: number;
     failed: number;
   }> {
-    const result = await this.pool.query(`SELECT * FROM reconcile_expired_quota_reservations($1)`, [
-      limit
-    ]);
+    const query = {
+      text: 'SELECT * FROM reconcile_expired_quota_reservations($1)',
+      values: [limit],
+      query_timeout: 15_000
+    };
+    const result = await this.pool.query(query);
     const row = result.rows[0] ?? {};
     return {
       released: asFiniteQuotaNumber(row.released),
       committed: asFiniteQuotaNumber(row.committed),
       processed: asFiniteQuotaNumber(row.processed),
       failed: asFiniteQuotaNumber(row.failed)
+    };
+  }
+
+  async getQuotaReservationBacklog(): Promise<{
+    reserved: number;
+    attempted: number;
+    staleAttempted: number;
+    oldestAttemptedSeconds: number;
+  }> {
+    const query = {
+      text: `
+      SELECT
+        count(*) FILTER (WHERE status = 'reserved') AS reserved,
+        count(*) FILTER (WHERE status = 'attempted') AS attempted,
+        count(*) FILTER (WHERE status = 'attempted' AND expires_at <= NOW()) AS stale_attempted,
+        COALESCE(max(EXTRACT(EPOCH FROM NOW() - attempted_at))
+          FILTER (WHERE status = 'attempted'), 0) AS oldest_attempted_seconds
+      FROM public.quota_usage_reservations
+      WHERE status IN ('reserved', 'attempted')
+      `,
+      query_timeout: 5_000
+    };
+    const result = await this.pool.query(query);
+    const row = result.rows[0] ?? {};
+    return {
+      reserved: asFiniteQuotaNumber(row.reserved),
+      attempted: asFiniteQuotaNumber(row.attempted),
+      staleAttempted: asFiniteQuotaNumber(row.stale_attempted),
+      oldestAttemptedSeconds: asFiniteQuotaNumber(row.oldest_attempted_seconds)
     };
   }
 

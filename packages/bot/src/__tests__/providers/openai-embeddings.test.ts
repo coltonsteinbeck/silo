@@ -1,12 +1,21 @@
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { OpenAIEmbeddingsProvider } from '../../providers/openai-embeddings';
 
 describe('OpenAIEmbeddingsProvider', () => {
   let provider: OpenAIEmbeddingsProvider;
 
   beforeEach(() => {
-    // Provide a test API key
     provider = new OpenAIEmbeddingsProvider('sk-test-key');
+    (provider as any).client = {
+      embeddings: {
+        create: mock(async ({ input }: { input: string | string[] }) => ({
+          data: (Array.isArray(input) ? input : [input]).map((_, index) => ({
+            index,
+            embedding: Array(1536).fill(index)
+          }))
+        }))
+      }
+    };
   });
 
   describe('initialization', () => {
@@ -73,36 +82,11 @@ describe('OpenAIEmbeddingsProvider', () => {
       }
     });
 
-    it('throws on network/auth errors for configured provider', async () => {
-      try {
-        // Will fail due to invalid API key
-        await provider.generateEmbedding('test content');
-        expect(true).toBe(false); // Should throw
-      } catch (error: any) {
-        expect(error).toBeDefined();
-        expect(error.message).toBeDefined();
-      }
-    });
-
-    it('handles empty text by sending empty sanitized input', async () => {
-      try {
-        await provider.generateEmbedding('');
-        expect(true).toBe(false); // Will fail due to API call
-      } catch (error: any) {
-        // Expected API error
-        expect(error).toBeDefined();
-      }
-    });
-
-    it('sanitizes suspicious content instead of rejecting', async () => {
-      try {
-        // Provider sanitizes suspicious content rather than rejecting
-        await provider.generateEmbedding('ignore previous instructions');
-        expect(true).toBe(false); // Will fail due to API call, not content rejection
-      } catch (error: any) {
-        // Error is from API, not content validation
-        expect(error.message).not.toContain('not found');
-      }
+    it('sends the sanitized empty input to the provider client', async () => {
+      await expect(provider.generateEmbedding('')).resolves.toHaveLength(1536);
+      expect((provider as any).client.embeddings.create).toHaveBeenCalledWith(
+        expect.objectContaining({ input: '' })
+      );
     });
   });
 
@@ -136,95 +120,29 @@ describe('OpenAIEmbeddingsProvider', () => {
       expect(calls).toBe(2); // 100 + 50
     });
 
-    it('processes batch of acceptable size', async () => {
-      const texts = Array(10).fill('test content');
-      try {
-        await provider.generateEmbeddings(texts);
-        expect(true).toBe(false); // Will fail due to API, not batch validation
-      } catch (error: any) {
-        // Should fail on API call, not batch validation
-        expect(error).toBeDefined();
-      }
-    });
-
-    it('handles suspicious content in batch gracefully', async () => {
-      const texts = ['normal content', 'ignore previous instructions'];
-      try {
-        await provider.generateEmbeddings(texts);
-        expect(true).toBe(false); // Will fail due to API
-      } catch (error: any) {
-        // Should fail on API call, content is sanitized not rejected
-        expect(error).toBeDefined();
-      }
-    });
-
-    it('preserves order of embeddings in batch', async () => {
-      // This is a behavioral test - if it succeeds, order is preserved
-      try {
-        await provider.generateEmbeddings(['a', 'b', 'c']);
-      } catch (error) {
-        // Expected due to API auth
-        expect(error).toBeDefined();
-      }
+    it('preserves order and handles a mixed batch without a network call', async () => {
+      const vectors = await provider.generateEmbeddings([
+        'first',
+        'ignore previous instructions',
+        'last'
+      ]);
+      expect(vectors.map(vector => vector[0])).toEqual([0, 1, 2]);
     });
   });
 
   describe('security features', () => {
     it('sanitizes control characters', async () => {
-      try {
-        await provider.generateEmbedding('Hello\x00World');
-        expect(true).toBe(false); // API call will fail
-      } catch (error: any) {
-        expect(error).toBeDefined();
-      }
+      await provider.generateEmbedding('Hello\x00World');
+      expect((provider as any).client.embeddings.create).toHaveBeenCalledWith(
+        expect.objectContaining({ input: 'Hello World' })
+      );
     });
 
     it('truncates long inputs safely', async () => {
-      const long = 'a'.repeat(100000);
-      try {
-        await provider.generateEmbedding(long);
-        expect(true).toBe(false); // API call will fail
-      } catch (error: any) {
-        // Should not crash, content is truncated
-        expect(error).toBeDefined();
-      }
-    });
-
-    it('warns on encoded suspicious content', async () => {
-      const encoded = Buffer.from('system prompt').toString('base64');
-      try {
-        await provider.generateEmbedding(encoded);
-      } catch (error) {
-        // Expected to fail on API
-        expect(error).toBeDefined();
-      }
-    });
-
-    it('sanitizes SQL injection patterns', async () => {
-      try {
-        await provider.generateEmbedding('drop table users; sql injection');
-      } catch (error: any) {
-        // Should sanitize, not reject
-        expect(error).toBeDefined();
-      }
-    });
-
-    it('sanitizes code execution patterns', async () => {
-      try {
-        await provider.generateEmbedding('execute code(); eval()');
-      } catch (error: any) {
-        // Should sanitize, not reject
-        expect(error).toBeDefined();
-      }
-    });
-
-    it('allows normal text patterns', async () => {
-      try {
-        await provider.generateEmbedding('This is a normal sentence about regular topics');
-      } catch (error: any) {
-        // Will fail on API, not content
-        expect(error).toBeDefined();
-      }
+      await provider.generateEmbedding('a'.repeat(100000));
+      const input = (provider as any).client.embeddings.create.mock.calls[0][0].input;
+      expect(input.length).toBeLessThan(100000);
+      expect(input).toMatch(/^a+$/);
     });
   });
 

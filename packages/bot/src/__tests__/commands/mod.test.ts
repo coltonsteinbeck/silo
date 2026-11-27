@@ -5,6 +5,7 @@
  */
 
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { GuildMember, TextChannel } from 'discord.js';
 import {
   createMockInteraction,
   createMockAdminAdapter,
@@ -63,6 +64,113 @@ describe('ModCommand', () => {
   });
 
   describe('execute', () => {
+    test.each([
+      ['requester', 'owner', 1],
+      ['owner', 'owner', 1],
+      ['target', 'owner', 0],
+      ['target', 'owner', -1]
+    ])(
+      'denies timeout for %s with owner %s and relative role rank %i',
+      async (id, ownerId, rank) => {
+        mockPermissions.canModerate = mock(async () => true);
+        mockAdminDb.logModAction = mock();
+        mockAdminDb.logAction = mock();
+        const timeout = mock();
+        const member = Object.create(GuildMember.prototype, {
+          id: { value: 'requester' },
+          permissions: { value: { has: () => true } },
+          roles: { value: { highest: { comparePositionTo: () => rank } } }
+        });
+        const interaction = Object.assign(
+          createMockInteraction({ member, options: { subcommand: 'timeout', user: { id } } }),
+          {
+            guild: {
+              ownerId,
+              members: { fetch: async () => ({ id, roles: { highest: {} }, timeout }) }
+            }
+          }
+        );
+        await command.execute(interaction as never);
+        expect(interaction._getReplies()[0]).toMatchObject({
+          content: 'Your Discord role cannot time out this member.',
+          ephemeral: true
+        });
+        expect(timeout).not.toHaveBeenCalled();
+        expect(mockAdminDb.logModAction).not.toHaveBeenCalled();
+        expect(mockAdminDb.logAction).not.toHaveBeenCalled();
+      }
+    );
+
+    test.each(['requester denied', 'bot missing', 'bot denied', 'allowed'])(
+      'checks both Discord permissions before purging: %s',
+      async outcome => {
+        mockPermissions.canModerate = mock(async () => true);
+        mockAdminDb.logModAction = mock();
+        mockAdminDb.logAction = mock();
+        const member = Object.create(GuildMember.prototype);
+        const messages = [{ id: 'message-1' }, { id: 'message-2' }];
+        const fetch = mock(async () => messages);
+        const bulkDelete = mock(async () => ({ size: 2 }));
+        const channel = Object.create(TextChannel.prototype, {
+          id: { value: 'channel' },
+          permissionsFor: {
+            value: (subject: unknown) => ({
+              has: () =>
+                subject === member ? outcome !== 'requester denied' : outcome === 'allowed'
+            })
+          },
+          messages: { value: { fetch } },
+          bulkDelete: { value: bulkDelete }
+        });
+        const interaction = Object.assign(
+          createMockInteraction({ member, options: { subcommand: 'purge', count: 2 } }),
+          { channel, guild: { members: { me: outcome === 'bot missing' ? null : {} } } }
+        );
+        await command.execute(interaction as never);
+        if (outcome === 'allowed') {
+          expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+          expect(fetch).toHaveBeenCalledWith({ limit: 2 });
+          expect(bulkDelete).toHaveBeenCalledWith(messages, true);
+          expect(mockAdminDb.logModAction).toHaveBeenCalledWith(
+            expect.objectContaining({ actionType: 'purge', messageCount: 2 })
+          );
+          return;
+        }
+        expect(interaction._getReplies()[0]).toMatchObject({
+          content:
+            outcome === 'requester denied'
+              ? 'You need permission to manage messages in this channel.'
+              : 'I do not have permission to manage messages in this channel.',
+          ephemeral: true
+        });
+        expect(interaction.deferReply).not.toHaveBeenCalled();
+        expect(fetch).not.toHaveBeenCalled();
+        expect(bulkDelete).not.toHaveBeenCalled();
+        expect(mockAdminDb.logModAction).not.toHaveBeenCalled();
+        expect(mockAdminDb.logAction).not.toHaveBeenCalled();
+      }
+    );
+
+    test('a Silo moderator still needs Discord permission to time out a member', async () => {
+      mockPermissions.canModerate = mock(async () => true);
+      mockAdminDb.logModAction = mock(async () => {});
+      const member = Object.create(GuildMember.prototype, {
+        permissions: { value: { has: () => false } }
+      });
+      const interaction = Object.assign(
+        createMockInteraction({ member, options: { subcommand: 'timeout' } }),
+        { guild: { id: 'guild' } }
+      );
+
+      await command.execute(interaction as any);
+
+      expect(interaction.options.getUser).not.toHaveBeenCalled();
+      expect(mockAdminDb.logModAction).not.toHaveBeenCalled();
+      expect(interaction._getReplies()[0]).toMatchObject({
+        content: 'You need the Discord Timeout Members permission.'
+      });
+    });
+
     test('rejects non-guild usage', async () => {
       const interaction = createMockInteraction({
         guildId: undefined
