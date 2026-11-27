@@ -248,12 +248,19 @@ export class VoiceQuotaJournal {
         )
         .all(now, JSON.stringify([...this.active, ...this.unjournaled.keys()]), REPLAY_BATCH_SIZE);
       for (const { reservation_key: key, fallback_minutes: minutes } of abandoned) {
+        let recovered = false;
         try {
-          if (await this.store.recoverVoiceQuotaStart(key, minutes)) {
-            db.run('DELETE FROM voice_starts WHERE reservation_key = ?', [key]);
-          }
+          recovered = await this.store.recoverVoiceQuotaStart(key, minutes);
         } catch {
           logger.warn('Abandoned voice quota recovery will retry');
+        }
+        if (recovered) {
+          db.run('DELETE FROM voice_starts WHERE reservation_key = ?', [key]);
+        } else {
+          db.run('UPDATE voice_starts SET recover_at = ? WHERE reservation_key = ?', [
+            Date.now() + RETRY_INTERVAL_MS,
+            key
+          ]);
         }
       }
     } catch (error) {

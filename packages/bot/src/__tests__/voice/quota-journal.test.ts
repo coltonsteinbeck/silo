@@ -63,6 +63,30 @@ test('retries ambiguous acknowledgements for the same amount, then removes the j
   ]);
 });
 
+test('failed abandoned starts back off so later reservations are recovered', async () => {
+  const blocked = Array.from({ length: 25 }, (_, index) => `blocked-${index}`);
+  const recover = mock(async (key: string, _minutes: number) => {
+    if (key === blocked[0]) throw new Error('temporary database failure');
+    return key === 'recoverable';
+  });
+  const store = { commitQuotaUsage: mock(), recoverVoiceQuotaStart: recover };
+  const original = new VoiceQuotaJournal(store, 'app', database, directory);
+  for (const key of [...blocked, 'recoverable']) original.begin(key);
+
+  const restarted = new VoiceQuotaJournal(store, 'app', database, directory);
+  const now = Date.now();
+  await restarted.flush(now);
+  expect(recover.mock.calls.map(([key]) => key)).toEqual(blocked);
+
+  recover.mockClear();
+  await restarted.flush(now);
+  expect(recover.mock.calls).toEqual([['recoverable', 0]]);
+
+  recover.mockClear();
+  await restarted.flush(now + 65_000);
+  expect(recover.mock.calls.map(([key]) => key)).toEqual(blocked);
+});
+
 test('rejects a journal directory that is open to other accounts', () => {
   chmodSync(directory, 0o755);
   const journal = new VoiceQuotaJournal(
