@@ -85,22 +85,25 @@ describe('ThreadCommand', () => {
   });
 
   describe('execute', () => {
-    test('denies thread creation before reading context when Discord denies the member', async () => {
-      mockDb.getPromptContext = mock(async () => ({ messages: [] }));
-      const startThread = mock(async () => {});
-      const interaction = Object.assign(createMockInteraction(), {
-        channel: { type: 0, threads: { create: startThread } },
-        memberPermissions: { has: () => false }
-      });
+    test.each([{ has: () => false }, null])(
+      'denies thread creation before reading context with %p permissions',
+      async memberPermissions => {
+        mockDb.getPromptContext = mock(async () => ({ messages: [] }));
+        const startThread = mock(async () => {});
+        const interaction = Object.assign(createMockInteraction(), {
+          channel: { type: 0, threads: { create: startThread } },
+          memberPermissions
+        });
 
-      await command.execute(interaction as any);
+        await command.execute(interaction as any);
 
-      expect(interaction.editReply).toHaveBeenCalledWith(
-        'You need permission to create public threads in this channel.'
-      );
-      expect(mockDb.getPromptContext).not.toHaveBeenCalled();
-      expect(startThread).not.toHaveBeenCalled();
-    });
+        expect(interaction.editReply).toHaveBeenCalledWith(
+          'You need permission to create public threads in this channel.'
+        );
+        expect(mockDb.getPromptContext).not.toHaveBeenCalled();
+        expect(startThread).not.toHaveBeenCalled();
+      }
+    );
 
     test('handles missing channel', async () => {
       const interaction = createMockInteraction({

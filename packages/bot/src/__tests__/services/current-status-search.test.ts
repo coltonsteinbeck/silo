@@ -100,6 +100,9 @@ describe('bounded current-status search', () => {
       `Prior topic: ${topic}\nFollow-up: Is it available yet?`
     );
     expect(currentStatusSearchQuery('Is it available yet?', [])).toBeNull();
+    expect(currentStatusSearchQuery('Is this available now?', [])).toBeNull();
+    const explicit = 'Is this new Firefox release available now?';
+    expect(currentStatusSearchQuery(explicit, [])).toBe(explicit);
     const canadaQuestion = 'Is it available now in Canada?';
     const betaQuestion = 'Is it available yet for beta users?';
     expect(
@@ -132,6 +135,21 @@ describe('bounded current-status search', () => {
         'user'
       )
     ).toEqual([topic]);
+  });
+
+  test('returns the fallback when quota admission or settlement outlives shutdown', async () => {
+    const shutdown = new AbortController();
+    const f = fixture({ shutdownSignal: shutdown.signal });
+    const { promise: reachedQuota, resolve } = Promise.withResolvers<void>();
+    f.executeReserved.mockImplementation(async () => {
+      resolve();
+      return new Promise(() => {});
+    });
+    const result = f.lookup(f.input);
+    await reachedQuota;
+    shutdown.abort();
+    expect((await result).searched).toBeFalse();
+    expect(f.searchWeb).not.toHaveBeenCalled();
   });
 
   test('returns a cited answer only after a bounded provider call, quota and final safety', async () => {

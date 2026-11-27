@@ -1,35 +1,39 @@
 -- Only a structured provider model-not-found response may release an attempted
--- image reservation. Unknown outcomes retain the conservative expiry policy.
+-- image reservation. Unmeasured attempts remain held for evidence-based review.
+-- Application rollback retains these forward-compatible columns and routines.
+-- The previous attempt constraint cannot represent evidence-backed releases.
+-- Preserve these rows and their evidence before any separate schema downgrade.
 ALTER TABLE public.quota_usage_reservations
-  ADD COLUMN rejection_provider TEXT,
-  ADD COLUMN rejection_status INTEGER,
-  ADD COLUMN rejection_code TEXT,
-  ADD COLUMN rejection_request_id TEXT,
-  ADD COLUMN settlement_version INTEGER;
+  ADD COLUMN IF NOT EXISTS rejection_provider TEXT,
+  ADD COLUMN IF NOT EXISTS rejection_status INTEGER,
+  ADD COLUMN IF NOT EXISTS rejection_code TEXT,
+  ADD COLUMN IF NOT EXISTS rejection_request_id TEXT,
+  ADD COLUMN IF NOT EXISTS settlement_version INTEGER;
 
 -- Existing attempted image work needs individual evidence review before a new
 -- background reconciler processes it. New reservations opt into this lifecycle.
 ALTER TABLE public.quota_usage_reservations
+  DROP CONSTRAINT IF EXISTS quota_usage_reservations_settlement_version,
   ALTER COLUMN settlement_version SET DEFAULT 1,
   ADD CONSTRAINT quota_usage_reservations_settlement_version
     CHECK (settlement_version IS NULL OR settlement_version = 1);
 
 ALTER TABLE public.quota_usage_reservations
-  DROP CONSTRAINT quota_usage_reservations_attempt_shape,
+  DROP CONSTRAINT IF EXISTS quota_usage_reservations_attempt_shape,
   ADD CONSTRAINT quota_usage_reservations_attempt_shape CHECK (
     (status IN ('attempted', 'committed') AND attempted_at IS NOT NULL)
     OR (status = 'reserved' AND attempted_at IS NULL)
     OR (status = 'released' AND (
-      (reason IS NOT DISTINCT FROM 'provider_model_not_found' AND attempted_at IS NOT NULL)
-      OR (reason IS DISTINCT FROM 'provider_model_not_found' AND attempted_at IS NULL)
+      (rejection_request_id IS NOT NULL AND attempted_at IS NOT NULL)
+      OR (rejection_request_id IS NULL AND attempted_at IS NULL)
     ))
   );
 
 ALTER TABLE public.quota_usage_reservations
+  DROP CONSTRAINT IF EXISTS quota_usage_reservations_rejection_evidence,
   ADD CONSTRAINT quota_usage_reservations_rejection_evidence CHECK (
     (rejection_provider IS NULL AND rejection_status IS NULL
-      AND rejection_code IS NULL AND rejection_request_id IS NULL
-      AND reason IS DISTINCT FROM 'provider_model_not_found')
+      AND rejection_code IS NULL AND rejection_request_id IS NULL)
     OR
     (rejection_provider IS NOT NULL AND rejection_status IS NOT NULL
       AND rejection_code IS NOT NULL AND rejection_request_id IS NOT NULL
@@ -42,7 +46,7 @@ ALTER TABLE public.quota_usage_reservations
       AND rejection_request_id ~ '^[A-Za-z0-9_-]{1,128}$')
   );
 
-CREATE FUNCTION public.release_rejected_image_quota_usage(
+CREATE OR REPLACE FUNCTION public.release_rejected_image_quota_usage(
   p_idempotency_key TEXT,
   p_guild_id TEXT,
   p_user_id TEXT,
@@ -199,7 +203,10 @@ BEGIN
       AND r.resource = p_resource
       AND r.status IN ('reserved', 'attempted')
       AND r.expires_at <= NOW()
-      AND (r.status = 'reserved' OR r.resource <> 'images' OR r.settlement_version = 1)
+      AND (r.status = 'reserved' OR r.resource <> 'images'
+           OR (r.settlement_version = 1 AND r.reported_actual_amount IS NOT NULL))
+      AND (r.status = 'reserved' OR r.resource <> 'voice_minutes'
+           OR r.reported_actual_amount IS NOT NULL)
     ORDER BY r.user_id, r.idempotency_key
     LIMIT p_limit
   LOOP
@@ -270,7 +277,10 @@ BEGIN
     FROM public.quota_usage_reservations r
     WHERE r.status IN ('reserved', 'attempted')
       AND r.expires_at <= NOW()
-      AND (r.status = 'reserved' OR r.resource <> 'images' OR r.settlement_version = 1)
+      AND (r.status = 'reserved' OR r.resource <> 'images'
+           OR (r.settlement_version = 1 AND r.reported_actual_amount IS NOT NULL))
+      AND (r.status = 'reserved' OR r.resource <> 'voice_minutes'
+           OR r.reported_actual_amount IS NOT NULL)
     ORDER BY r.expires_at, r.idempotency_key
     LIMIT p_limit
   LOOP

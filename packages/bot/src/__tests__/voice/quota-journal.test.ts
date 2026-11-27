@@ -187,6 +187,25 @@ test('lease loss hands off only the measurement from this runtime’s admitted s
   expect(settle.mock.calls).toEqual([[[['owned', 2]]]]);
 });
 
+test('lease loss includes measured sessions beyond the normal replay batch', () => {
+  const journal = new VoiceQuotaJournal(
+    { commitQuotaUsage: mock(), recoverVoiceQuotaStart },
+    'app',
+    database,
+    directory
+  );
+  const measurements = Array.from({ length: 26 }, (_, index): [string, number] => [
+    `owned-${index}`,
+    2
+  ]);
+  for (const [key] of measurements) journal.begin(key);
+  chmodSync(directory, 0o755);
+  for (const [key, amount] of measurements) journal.record(key, amount);
+  const settle = mock();
+  journal.finishOnLeaseLoss(settle);
+  expect(settle.mock.calls).toEqual([[measurements]]);
+});
+
 test('an unwritable journal cannot override its first measurement with an unverified amount', async () => {
   const commitQuotaUsage = mock(async (key: string, amount: number) => ({
     idempotencyKey: key,

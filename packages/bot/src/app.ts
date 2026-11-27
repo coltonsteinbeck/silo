@@ -152,6 +152,7 @@ import {
 import { installProcessErrorHandlers } from './runtime/process-errors';
 import { acquireProcessLock } from './runtime/process-lock';
 import { combineAbortSignals } from './runtime/abort-signals';
+import { ImageRejectionJournal } from './middleware/image-rejection-journal';
 import { shutdownApplication } from './runtime/shutdown';
 import { Client as PostgresClient } from 'pg';
 import { RuntimeLeaderLease } from './runtime/leader-lease';
@@ -621,7 +622,13 @@ export async function startBot(): Promise<void> {
   // Initialize admin database
   const adminDb = new AdminAdapter(db.pool);
   const permissions = new PermissionManager(adminDb);
-  const quotaMiddleware = new QuotaMiddleware(adminDb, permissions);
+  const imageRejections =
+    commandSyncMode === 'none'
+      ? undefined
+      : new ImageRejectionJournal(adminDb, config.discord.clientId, () =>
+          adminDb.getVoiceQuotaDatabaseId()
+        );
+  const quotaMiddleware = new QuotaMiddleware(adminDb, permissions, imageRejections);
   const quotaReconciler = new QuotaReservationReconciler(adminDb);
   voiceQuotaJournal =
     commandSyncMode === 'none'
@@ -816,6 +823,7 @@ export async function startBot(): Promise<void> {
 
     if (commandSyncMode !== 'none') {
       quotaReconciler.start(commandShutdown.signal);
+      imageRejections?.start(commandShutdown.signal);
       voiceQuotaJournal?.start(commandShutdown.signal);
     }
 

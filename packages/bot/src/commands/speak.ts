@@ -107,16 +107,16 @@ export class SpeakCommand implements Command {
       return;
     }
 
-    if (
-      member.voice.channelId !== voiceChannel.id ||
-      !voiceChannel
+    const hasChannelAccess = () =>
+      member.voice.channelId === voiceChannel.id &&
+      voiceChannel
         .permissionsFor(interaction.user)
         ?.has([
           PermissionFlagsBits.ViewChannel,
           PermissionFlagsBits.Connect,
           PermissionFlagsBits.Speak
-        ])
-    ) {
+        ]);
+    if (!hasChannelAccess()) {
       await interaction.reply({
         content: 'Join the voice channel with View Channel, Connect, and Speak permissions first.',
         ephemeral: true
@@ -208,6 +208,7 @@ export class SpeakCommand implements Command {
       }
       reservation = admission.reservation;
       const reserved = reservation;
+      if (!hasChannelAccess()) throw new Error('The requester lost access to the voice channel.');
 
       // Join the voice channel if not already connected
       const connection = await voiceSessionManager.joinChannel(voiceChannel);
@@ -220,24 +221,15 @@ export class SpeakCommand implements Command {
         instructions,
         maxDurationMs: reserved.reservedAmount * 60_000,
         beforeConnect: async () => {
-          if (member.voice.channelId !== voiceChannel.id) {
-            throw new Error('The requester left the voice channel.');
+          if (!hasChannelAccess()) {
+            throw new Error('The requester lost access to the voice channel.');
           }
           journal.begin(reserved.idempotencyKey);
           journaledStart = true;
           await quota.markQuotaAttempted(reserved);
         },
         authorizeConnection: () => {
-          if (
-            member.voice.channelId !== voiceChannel.id ||
-            !voiceChannel
-              .permissionsFor(interaction.user)
-              ?.has([
-                PermissionFlagsBits.ViewChannel,
-                PermissionFlagsBits.Connect,
-                PermissionFlagsBits.Speak
-              ])
-          ) {
+          if (!hasChannelAccess()) {
             throw new Error(
               'The requester lost access to the voice channel before speech started.'
             );

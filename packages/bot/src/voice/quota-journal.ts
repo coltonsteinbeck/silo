@@ -1,12 +1,13 @@
-import { Database } from 'bun:sqlite';
+import type { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, lstatSync, mkdirSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join } from 'node:path';
+import { join } from 'node:path';
 import { logger } from '@silo/core';
 import type { ClientConfig } from 'pg';
 import type { AdminAdapter } from '../database/admin-adapter';
+import { openLocalQuotaJournal } from '../database/local-quota-journal';
 
 const RETRY_INTERVAL_MS = 60_000;
 const COMMIT_TIMEOUT_MS = 5_000;
@@ -41,29 +42,8 @@ export class VoiceQuotaJournal {
   private open(): Database {
     const path = this.path;
     if (!path) throw new Error('Voice quota database identity is unavailable');
-    const directory = dirname(path);
-    if (!isAbsolute(directory)) throw new Error('Voice quota directory must be absolute');
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
-    const metadata = lstatSync(directory);
-    if (
-      !metadata.isDirectory() ||
-      metadata.uid !== process.getuid?.() ||
-      (metadata.mode & 0o077) !== 0
-    ) {
-      throw new Error('Voice quota directory must be private to the bot account');
-    }
-    const file = lstatSync(path, { throwIfNoEntry: false });
-    if (file && (!file.isFile() || file.uid !== metadata.uid)) {
-      throw new Error('Voice quota journal must be a regular file owned by the bot account');
-    }
-    const db = new Database(path, { strict: true });
+    const db = openLocalQuotaJournal(path);
     try {
-      chmodSync(path, 0o600);
-      db.exec('PRAGMA busy_timeout = 1000');
-      const mode = db.query<{ journal_mode: string }, []>('PRAGMA journal_mode = WAL').get();
-      if (mode?.journal_mode !== 'wal') throw new Error('Voice quota journal requires WAL support');
-      // A terminal measurement must survive process exit before the PostgreSQL write.
-      db.exec('PRAGMA synchronous = FULL');
       db.exec(`
         CREATE TABLE IF NOT EXISTS pending (
           reservation_key TEXT PRIMARY KEY NOT NULL,
@@ -281,9 +261,7 @@ export class VoiceQuotaJournal {
   }
 
   finishOnLeaseLoss(settle: (measurements: [string, number][]) => void): void {
-    const measurements = [...this.unjournaled]
-      .filter(([key]) => this.ownedMeasurements.has(key))
-      .slice(0, REPLAY_BATCH_SIZE);
+    const measurements = [...this.unjournaled].filter(([key]) => this.ownedMeasurements.has(key));
     if (measurements.length) settle(measurements);
   }
 }
@@ -297,13 +275,16 @@ export function settleVoiceQuotaOnLeaseLoss(
   const worker = `
     import pg from ${JSON.stringify(driver)};
     const { config, measurements } = await Bun.stdin.json();
-    const client = new pg.Client({ ...config, connectionTimeoutMillis: 3000, query_timeout: 3000 });
-    await client.connect();
+    const pool = new pg.Pool({ ...config, max: 4, connectionTimeoutMillis: 3000, query_timeout: 3000 });
+    pool.on('error', () => {});
     try {
-      for (const [key, minutes] of measurements) {
-        await client.query('SELECT public.commit_quota_usage($1, $2)', [key, minutes]);
-      }
-    } finally { await client.end(); }
+      const results = await Promise.allSettled(measurements.map(async ([key, minutes]) => {
+        const result = await pool.query('SELECT * FROM public.commit_quota_usage($1, $2)', [key, minutes]);
+        if (result.rows[0]?.status !== 'committed' || result.rows[0]?.actual_amount !== minutes)
+          throw new Error('Voice quota settlement did not match the measurement');
+      }));
+      if (results.some(result => result.status === 'rejected')) process.exitCode = 1;
+    } finally { await pool.end(); }
   `;
   const result = Bun.spawnSync([process.execPath, '--no-env-file', '-e', worker], {
     stdin: Buffer.from(JSON.stringify({ config, measurements })),

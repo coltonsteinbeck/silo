@@ -6,6 +6,7 @@ import type { UserRole } from '@silo/core';
 import { logger } from '@silo/core';
 import type { QuotaReservationLifecycleRow, QuotaReservationRow } from '../database/admin-adapter';
 import { ImageModelRejectedBeforeGenerationError } from '../providers/image-rejection';
+import type { ImageRejectionJournal } from './image-rejection-journal';
 
 export type UsageType =
   'text_tokens' | 'images' | 'voice_minutes' | 'vision_tokens' | 'video_tokens';
@@ -89,7 +90,11 @@ export class QuotaMiddleware {
   // Cache for estimate multiplier (recalculated from 7-day data)
   private estimateMultiplierCache: { value: number; timestamp: number } | null = null;
 
-  constructor(adminDb: AdminAdapter, permissions: PermissionManager) {
+  constructor(
+    adminDb: AdminAdapter,
+    permissions: PermissionManager,
+    private imageRejections?: Pick<ImageRejectionJournal, 'record'>
+  ) {
     this.adminDb = adminDb;
     this.permissions = permissions;
   }
@@ -368,6 +373,9 @@ export class QuotaMiddleware {
         params.usageType === 'images' &&
         error instanceof ImageModelRejectedBeforeGenerationError
       ) {
+        await this.imageRejections
+          ?.record(reservation.idempotencyKey, params.guildId, params.userId, error.evidence)
+          .catch(() => logger.warn('Rejected image quota could not be journaled'));
         try {
           const transition = await this.retryQuotaTransition('release_rejected_image', () =>
             this.adminDb.releaseRejectedImageQuotaUsage(

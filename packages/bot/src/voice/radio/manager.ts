@@ -1042,20 +1042,21 @@ export class RadioManager {
       return true;
     }
 
-    if (
-      !queue.voiceChannel
+    const hasControlAccess = () =>
+      queue.voiceChannel
         .permissionsFor(interaction.user)
         ?.has([
           PermissionFlagsBits.ViewChannel,
           PermissionFlagsBits.Connect,
           PermissionFlagsBits.Speak
-        ])
-    ) {
-      await interaction.reply({
-        content: 'You need access to the active voice channel to use its radio controls.',
-        flags: MessageFlags.Ephemeral,
-        allowedMentions: noMentions
-      });
+        ]);
+    const accessDenied = {
+      content: 'You need access to the active voice channel to use its radio controls.',
+      flags: MessageFlags.Ephemeral,
+      allowedMentions: noMentions
+    } as const;
+    if (!hasControlAccess()) {
+      await interaction.reply(accessDenied);
       return true;
     }
 
@@ -1100,6 +1101,10 @@ export class RadioManager {
 
         await interaction.deferUpdate();
         if (queue.advanceCompletion) await queue.advanceCompletion;
+        if (!hasControlAccess()) {
+          await interaction.followUp(accessDenied);
+          return true;
+        }
         if (action === 'stop') {
           const stopped = await this.stopQueue(guildId, 'button', queue);
           await interaction.editReply(
@@ -1113,6 +1118,7 @@ export class RadioManager {
           if (this.queues.get(guildId) !== queue || queue.stopRequested || queue.isFinished) {
             return null;
           }
+          if (!hasControlAccess()) return 'access-denied' as const;
           switch (action) {
             case 'pause': {
               queue.mutationGeneration += 1;
@@ -1150,6 +1156,10 @@ export class RadioManager {
           }
         });
 
+        if (payload === 'access-denied') {
+          await interaction.followUp(accessDenied);
+          return true;
+        }
         if (payload === 'no-next') {
           await interaction.followUp({
             content: 'No more songs in the queue!',

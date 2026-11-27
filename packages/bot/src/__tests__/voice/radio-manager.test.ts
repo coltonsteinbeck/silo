@@ -190,6 +190,25 @@ describe('RadioManager', () => {
     await harness.manager.stopAll();
   });
 
+  test('a listener who loses access during defer cannot stop the queue', async () => {
+    const harness = createHarness();
+    await harness.manager.play(
+      harness.makeInteraction() as never,
+      'first',
+      harness.channel as never
+    );
+    const button = harness.makeButton('radio:stop');
+    button.deferUpdate.mockImplementation(async () => {
+      harness.channel.permissionsFor.mockReturnValue({ has: () => false });
+    });
+    await harness.manager.handleButtonInteraction(button as never);
+    expect(button.followUp).toHaveBeenCalledWith(
+      expect.objectContaining({ content: expect.stringContaining('active voice channel') })
+    );
+    expect(harness.manager.getQueue('guild')?.stopRequested).toBeFalse();
+    await harness.manager.stopAll();
+  });
+
   test('skip advances even when repeat-one is selected', async () => {
     const harness = createHarness({
       sourceResults: new Map([['playlist', resolution(track('first'), track('second'))]])

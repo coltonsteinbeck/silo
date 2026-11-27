@@ -14,8 +14,20 @@ import { selectLatestTaskDefiningUserText } from './response-quality';
 const RECHECK =
   /^(?:(?:can|could|would)\s+you\s+)?(?:please\s+)?(?:check|look|verify|search)(?:\s+(?:that|it|this))?\s+again\s*[?.!]*$/i;
 const DEPENDENT_TOPIC =
-  /^(?:is|are|was|were|has|have|did|does|will|can)\s+(?:it|they|that|this|those|these)\b/i;
+  /^(?:is|are|was|were|has|have|did|does|will|can)\s+(?:(?:it|they)\b|(?:that|this|those|these)(?=\s+(?:still|now|already|currently|available|released|out|live|launched|delayed|coming|supported)\b|\s*[?.!]*$))/i;
 const UNVERIFIED = 'I can’t verify that current status from fresh sources right now.';
+
+async function beforeDeadline<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  const { promise: deadline, reject } = Promise.withResolvers<never>();
+  const onAbort = () => reject(signal.reason);
+  signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    if (signal.aborted) onAbort();
+    return await Promise.race([work, deadline]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
 
 export function ownPriorUserTexts(
   history: readonly { role: string; userId?: string; content: string }[],
@@ -103,21 +115,10 @@ export function createCurrentStatusSearch(options: {
     let searchAttempted = false;
     try {
       signal.throwIfAborted();
-      const getLimits = options.permissions.getRateLimits(
-        input.guildId,
-        input.userId,
-        input.member
+      const limits = await beforeDeadline(
+        options.permissions.getRateLimits(input.guildId, input.userId, input.member),
+        signal
       );
-      const { promise: deadline, reject } = Promise.withResolvers<never>();
-      const onAbort = () => reject(signal.reason);
-      signal.addEventListener('abort', onAbort, { once: true });
-      let limits;
-      try {
-        if (signal.aborted) onAbort();
-        limits = await Promise.race([getLimits, deadline]);
-      } finally {
-        signal.removeEventListener('abort', onAbort);
-      }
       signal.throwIfAborted();
       if (!limiter.check(`${input.guildId}:${input.userId}`, limits.search).allowed) {
         return { content: UNVERIFIED, searched: false };
@@ -125,7 +126,7 @@ export function createCurrentStatusSearch(options: {
 
       let moderatedQuery = query;
       let completionTokens: number | null = null;
-      const result = await options.quota.executeReserved({
+      const execution = options.quota.executeReserved({
         operationKey: `discord:${input.messageId}:current-status-search`,
         guildId: input.guildId,
         userId: input.userId,
@@ -184,6 +185,9 @@ export function createCurrentStatusSearch(options: {
         getActualAmount: () =>
           completionTokens !== null && completionTokens > 0 ? completionTokens : Number.NaN
       });
+      // Quota settlement can finish after the deadline. The callbacks check the
+      // signal before starting any late provider work.
+      const result = await beforeDeadline(execution, signal);
       signal.throwIfAborted();
       if (!result.allowed || !result.value)
         return {
@@ -191,14 +195,17 @@ export function createCurrentStatusSearch(options: {
           searched: searchAttempted,
           providerName: searchAttempted ? provider.name : undefined
         };
-      const safety = await evaluate(result.value, {
-        stage: 'assistant_output',
-        source: 'current_status_search',
-        guildId: input.guildId,
-        userId: input.userId,
-        failurePolicy: 'fail_closed',
+      const safety = await beforeDeadline(
+        evaluate(result.value, {
+          stage: 'assistant_output',
+          source: 'current_status_search',
+          guildId: input.guildId,
+          userId: input.userId,
+          failurePolicy: 'fail_closed',
+          signal
+        }),
         signal
-      });
+      );
       if (safety.failed || safety.action !== 'allow') {
         return { content: UNVERIFIED, searched: searchAttempted, providerName: provider.name };
       }

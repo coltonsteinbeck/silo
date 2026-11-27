@@ -179,7 +179,7 @@ describe('atomic quota reservation migration contract', () => {
 describe('rejected image reservation migration contract', () => {
   test('retains the applied reservation migration and restricts the new transition', () => {
     expect(rejectedImageMigration).toContain(
-      'CREATE FUNCTION public.release_rejected_image_quota_usage'
+      'CREATE OR REPLACE FUNCTION public.release_rejected_image_quota_usage'
     );
     expect(rejectedImageMigration).toContain("v_reservation.status <> 'attempted'");
     expect(rejectedImageMigration).toContain("v_reservation.resource <> 'images'");
@@ -188,7 +188,7 @@ describe('rejected image reservation migration contract', () => {
     expect(rejectedImageMigration).toContain('FROM PUBLIC, anon, authenticated');
     expect(rejectedImageMigration).toContain('TO service_role');
     expect(rejectedImageMigration).toContain(
-      'DROP CONSTRAINT quota_usage_reservations_attempt_shape'
+      'DROP CONSTRAINT IF EXISTS quota_usage_reservations_attempt_shape'
     );
     expect(rejectedImageMigration.match(/r\.settlement_version = 1/g)).toHaveLength(2);
     expect(rejectedImageMigration).toContain('pg_catalog.pg_try_advisory_xact_lock');

@@ -4,8 +4,9 @@
 -- Expiry still leaves unmeasured voice attempts to the journal, which replays
 -- measured usage first and settles abandoned starts from their durable state.
 -- To revert, first stop voice admission and drain both journal tables before
--- dropping the new function. Do not discard unsettled journal files.
-CREATE OR REPLACE FUNCTION public.recover_voice_quota_start(p_key TEXT, p_fallback INTEGER)
+-- dropping the new function, and only if this migration committed. Do not
+-- discard unsettled journal files. CREATE refuses an existing signature.
+CREATE FUNCTION public.recover_voice_quota_start(p_key TEXT, p_fallback INTEGER)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY INVOKER

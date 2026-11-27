@@ -102,6 +102,31 @@ describe('DrawCommand', () => {
   });
 
   describe('execute', () => {
+    test('uses xAI defaults and credits when OpenAI is unavailable', async () => {
+      mockRegistry.getAvailableProviders = mock(() => ({ image: ['xai'] }));
+      const generateImage = mock(async (_prompt: string, _options: Record<string, unknown>) => ({
+        url: 'data:image/png;base64,AQID'
+      }));
+      mockRegistry.getImageProvider = mock(() => ({ name: 'xai', generateImage }));
+      const executeReserved = mock(async (request: any) => ({
+        allowed: true,
+        value: await request.execute()
+      }));
+      command = new DrawCommand(mockRegistry, { executeReserved } as never);
+      await command.execute(createMockInteraction({ options: { prompt: 'A sunset' } }) as never);
+      expect(executeReserved.mock.calls[0]?.[0].requestedAmount).toBe(2);
+      expect(generateImage.mock.calls[0]?.[1]).toMatchObject({ model: 'grok-imagine-image' });
+      const explicit = createMockInteraction({
+        options: { prompt: 'A sunset', model: 'gpt-image-2.5-flare' }
+      });
+      await command.execute(explicit as never);
+      expect(explicit._getReplies()[0]).toMatchObject({
+        content: expect.stringContaining('selected image provider is unavailable'),
+        ephemeral: true
+      });
+      expect(executeReserved).toHaveBeenCalledTimes(1);
+    });
+
     test.each([null, 'gpt-image-2.5-flare', 'gpt-image-1', 'gpt-image-1.5'])(
       'routes requested model %s to Flare at the basic OpenAI cost',
       async selectedModel => {

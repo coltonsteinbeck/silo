@@ -88,7 +88,8 @@ BEGIN
       AND r.resource = p_resource
       AND r.status IN ('reserved', 'attempted')
       AND r.expires_at <= NOW()
-      AND (r.status = 'reserved' OR r.resource <> 'images' OR r.settlement_version = 1)
+      AND (r.status = 'reserved' OR r.resource <> 'images'
+           OR (r.settlement_version = 1 AND r.reported_actual_amount IS NOT NULL))
       AND (r.status = 'reserved' OR r.resource <> 'voice_minutes'
            OR r.reported_actual_amount IS NOT NULL)
     ORDER BY r.user_id, r.idempotency_key
@@ -161,7 +162,8 @@ BEGIN
     FROM public.quota_usage_reservations r
     WHERE r.status IN ('reserved', 'attempted')
       AND r.expires_at <= NOW()
-      AND (r.status = 'reserved' OR r.resource <> 'images' OR r.settlement_version = 1)
+      AND (r.status = 'reserved' OR r.resource <> 'images'
+           OR (r.settlement_version = 1 AND r.reported_actual_amount IS NOT NULL))
       AND (r.status = 'reserved' OR r.resource <> 'voice_minutes'
            OR r.reported_actual_amount IS NOT NULL)
     ORDER BY r.expires_at, r.idempotency_key

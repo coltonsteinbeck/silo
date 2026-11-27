@@ -410,8 +410,8 @@ export class DrawCommand implements Command {
     if (!model) throw new Error('Unsupported image model in draw session');
     const modelConfig = DRAW_MODEL_CONFIG[model];
     const provider = this.registry.getImageProvider(modelConfig.provider);
-    if (!provider) {
-      throw new Error('No image generation provider configured. Check your environment settings.');
+    if (!provider || provider.name !== modelConfig.provider) {
+      throw new Error('The selected image provider is unavailable.');
     }
 
     const requestedModel = this.resolveEffectiveModel(model);
@@ -445,7 +445,7 @@ export class DrawCommand implements Command {
       supportsImages: true,
       supportsVideo: false,
       supportsAudio: false,
-      isLocalModel: provider.name === 'local'
+      isLocalModel: false
     };
 
     const result = await withLangfuseGeneration(
@@ -525,7 +525,12 @@ export class DrawCommand implements Command {
     this.cleanupSessions();
 
     const prompt = interaction.options.getString('prompt', true);
-    const model = this.resolveModel(interaction.options.getString('model'));
+    const availableProviders = this.registry.getAvailableProviders().image;
+    const defaultModel =
+      availableProviders.includes('xai') && !availableProviders.includes('openai')
+        ? 'grok-imagine-image'
+        : 'gpt-image-2.5-flare';
+    const model = this.resolveModel(interaction.options.getString('model') ?? defaultModel);
     if (!model) {
       await interaction.reply({
         content: 'This image model is no longer available. Choose a current model from /draw.',
@@ -534,6 +539,14 @@ export class DrawCommand implements Command {
       return;
     }
     const modelConfig = DRAW_MODEL_CONFIG[model];
+    if (!availableProviders.includes(modelConfig.provider)) {
+      await interaction.reply({
+        content:
+          'The selected image provider is unavailable. Choose a configured model from /draw.',
+        ephemeral: true
+      });
+      return;
+    }
     const unsupportedOption =
       modelConfig.provider === 'openai'
         ? interaction.options.getString('aspect-ratio') != null ||

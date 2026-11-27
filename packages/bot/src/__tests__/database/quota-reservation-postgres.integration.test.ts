@@ -311,10 +311,10 @@ describe.skipIf(!RUN_DATABASE_TESTS)('atomic quota reservations on local Postgre
       chmodSync(directory, 0o755);
       journal.record(key('measured'), 2);
       journal.finishOnLeaseLoss(measurements =>
-        settleVoiceQuotaOnLeaseLoss(
-          { connectionString: localConnectionString(), ssl: false },
-          measurements
-        )
+        settleVoiceQuotaOnLeaseLoss({ connectionString: localConnectionString(), ssl: false }, [
+          [key('missing'), 1],
+          ...measurements
+        ])
       );
       expect((await read())[2]).toMatchObject({ status: 'committed', actual_amount: 2 });
       chmodSync(directory, 0o700);
@@ -466,11 +466,59 @@ describe.skipIf(!RUN_DATABASE_TESTS)('atomic quota reservations on local Postgre
            WHERE idempotency_key = $1`,
           [key]
         )
-      ).rejects.toThrow('quota_usage_reservations_rejection_evidence');
+      ).rejects.toThrow('quota_usage_reservations_attempt_shape');
+      await pool.query(
+        `UPDATE public.quota_usage_reservations
+         SET created_at = NOW() - interval '2 hours', expires_at = NOW() - interval '1 hour'
+         WHERE idempotency_key = $1`,
+        [key]
+      );
+      const expiry = await pool.query(
+        `SELECT * FROM public.settle_expired_quota_reservations_scope($1, quota_local_date(), 'images')`,
+        [guildId]
+      );
+      expect(expiry.rows[0]).toMatchObject({ processed: 0, committed: 0, released: 0 });
+      await pool.query('SELECT * FROM public.reconcile_expired_quota_reservations()');
+      const held = await pool.query(
+        'SELECT status FROM public.quota_usage_reservations WHERE idempotency_key=$1',
+        [key]
+      );
+      expect(held.rows[0]?.status).toBe('attempted');
       const [first, second] = await Promise.all([rejected(), rejected()]);
       expect([first.rows[0]?.idempotent, second.rows[0]?.idempotent].sort()).toEqual([false, true]);
       expect(first.rows[0]?.status).toBe('released');
       await expect(lifecycle(pool, 'commit_quota_usage', key, 1)).rejects.toThrow();
+      const legacy = `${key}:legacy`;
+      await reserve(pool, {
+        key: legacy,
+        guildId,
+        userId,
+        resource: 'images',
+        requested: 1,
+        minimum: 1
+      });
+      await pool.query('SELECT * FROM public.release_quota_usage($1, $2)', [
+        legacy,
+        'provider_model_not_found'
+      ]);
+      const imageMigration = readFileSync(
+        new URL(
+          '../../../../../supabase/migrations/20261125234019_settle_rejected_image_reservations.sql',
+          import.meta.url
+        ),
+        'utf8'
+      );
+      await pool.query(imageMigration);
+      const legacyRow = await pool.query(
+        'SELECT attempted_at, reason, rejection_request_id FROM public.quota_usage_reservations WHERE idempotency_key=$1',
+        [legacy]
+      );
+      expect(legacyRow.rows[0]).toEqual({
+        attempted_at: null,
+        reason: 'provider_model_not_found',
+        rejection_request_id: null
+      });
+      expect((await rejected()).rows[0]?.idempotent).toBe(true);
       const rows = await pool.query<{
         status: string;
         reason: string;
