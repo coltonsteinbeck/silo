@@ -15,7 +15,7 @@ const RECHECK =
   /^(?:(?:can|could|would)\s+you\s+)?(?:please\s+)?(?:check|look|verify|search)(?:\s+(?:that|it|this))?\s+again\s*[?.!]*$/i;
 const QUESTION_AUXILIARY = /^(?:is|are|was|were|has|have|did|does|will|can)\s+/i;
 const EMBEDDED_CLAUSE =
-  /^(?:(?:is|was) it (?:(?:really|actually) )?(?:true|correct|confirmed|the case)|has it been (?:confirmed|reported|announced))(?: that)?\s+(?=\S)/i;
+  /^(?:(?:is|was) it (?:(?:really|actually) )?(?:true|correct|confirmed|the case)|has it been (?:confirmed|reported|announced)) that\s+(?=\S)/i;
 const TOPIC_PRONOUN = /^(it|they|that|this|those|these)\b\s*/i;
 const STATUS_PREDICATE =
   /^(?:(?:is|are|was|were|has|have|will|can|be|been|being|not|no longer|still|already|currently|right now|now|apparently|actually|definitely|really|ever)\s+)*(?:available|released|out|live|launched|delayed|coming|supported)\b/i;

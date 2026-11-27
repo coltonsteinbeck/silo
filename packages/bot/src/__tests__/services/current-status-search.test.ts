@@ -108,7 +108,8 @@ describe('bounded current-status search', () => {
       'Is this actually still available now?',
       'Is it true that it is available now?',
       'Is it true that this is not available now?',
-      'Has it been confirmed that they are available now?'
+      'Has it been confirmed that they are available now?',
+      'Is it confirmed to be available now?'
     ]) {
       expect(currentStatusSearchQuery(followup, [topic])).toBe(
         `Prior topic: ${topic}\nFollow-up: ${followup}`
