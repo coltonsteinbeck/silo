@@ -74,6 +74,7 @@ describe('ModCommand', () => {
       async (id, ownerId, rank) => {
         mockPermissions.canModerate = mock(async () => true);
         mockAdminDb.logModAction = mock();
+        mockAdminDb.logAction = mock();
         const timeout = mock();
         const member = Object.create(GuildMember.prototype, {
           id: { value: 'requester' },
@@ -96,34 +97,57 @@ describe('ModCommand', () => {
         });
         expect(timeout).not.toHaveBeenCalled();
         expect(mockAdminDb.logModAction).not.toHaveBeenCalled();
+        expect(mockAdminDb.logAction).not.toHaveBeenCalled();
       }
     );
 
-    test.each([false, true])(
-      'denies purge when bot permissions are unavailable (member present: %s)',
-      async present => {
+    test.each(['requester denied', 'bot missing', 'bot denied', 'allowed'])(
+      'checks both Discord permissions before purging: %s',
+      async outcome => {
         mockPermissions.canModerate = mock(async () => true);
         mockAdminDb.logModAction = mock();
+        mockAdminDb.logAction = mock();
         const member = Object.create(GuildMember.prototype);
-        const fetch = mock();
-        const bulkDelete = mock();
+        const messages = [{ id: 'message-1' }, { id: 'message-2' }];
+        const fetch = mock(async () => messages);
+        const bulkDelete = mock(async () => ({ size: 2 }));
         const channel = Object.create(TextChannel.prototype, {
-          permissionsFor: { value: (subject: unknown) => ({ has: () => subject === member }) },
+          id: { value: 'channel' },
+          permissionsFor: {
+            value: (subject: unknown) => ({
+              has: () =>
+                subject === member ? outcome !== 'requester denied' : outcome === 'allowed'
+            })
+          },
           messages: { value: { fetch } },
           bulkDelete: { value: bulkDelete }
         });
         const interaction = Object.assign(
           createMockInteraction({ member, options: { subcommand: 'purge', count: 2 } }),
-          { channel, guild: { members: { me: present ? {} : null } } }
+          { channel, guild: { members: { me: outcome === 'bot missing' ? null : {} } } }
         );
         await command.execute(interaction as never);
+        if (outcome === 'allowed') {
+          expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+          expect(fetch).toHaveBeenCalledWith({ limit: 2 });
+          expect(bulkDelete).toHaveBeenCalledWith(messages, true);
+          expect(mockAdminDb.logModAction).toHaveBeenCalledWith(
+            expect.objectContaining({ actionType: 'purge', messageCount: 2 })
+          );
+          return;
+        }
         expect(interaction._getReplies()[0]).toMatchObject({
-          content: 'I do not have permission to manage messages in this channel.',
+          content:
+            outcome === 'requester denied'
+              ? 'You need permission to manage messages in this channel.'
+              : 'I do not have permission to manage messages in this channel.',
           ephemeral: true
         });
+        expect(interaction.deferReply).not.toHaveBeenCalled();
         expect(fetch).not.toHaveBeenCalled();
         expect(bulkDelete).not.toHaveBeenCalled();
         expect(mockAdminDb.logModAction).not.toHaveBeenCalled();
+        expect(mockAdminDb.logAction).not.toHaveBeenCalled();
       }
     );
 
