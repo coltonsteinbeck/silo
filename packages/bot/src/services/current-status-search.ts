@@ -13,8 +13,10 @@ import { selectLatestTaskDefiningUserText } from './response-quality';
 
 const RECHECK =
   /^(?:(?:can|could|would)\s+you\s+)?(?:please\s+)?(?:check|look|verify|search)(?:\s+(?:that|it|this))?\s+again\s*[?.!]*$/i;
-const DEPENDENT_TOPIC =
-  /^(?:is|are|was|were|has|have|did|does|will|can)\s+(?:(?:it|they)\b|(?:that|this|those|these)(?=\s+(?:been|still|now|already|currently|available|released|out|live|launched|delayed|coming|supported)\b|\s*[?.!]*$))/i;
+const TOPIC_PRONOUN =
+  /^(?:is|are|was|were|has|have|did|does|will|can)\s+(it|they|that|this|those|these)\b\s*/i;
+const STATUS_PREDICATE =
+  /^(?:(?:be|been|being|not|no longer|still|already|currently|right now|now|apparently|actually|definitely|really|ever)\s+)*(?:available|released|out|live|launched|delayed|coming|supported)\b/i;
 const UNVERIFIED = 'I can’t verify that current status from fresh sources right now.';
 
 async function beforeDeadline<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -40,10 +42,13 @@ export function ownPriorUserTexts(
 
 export function isCurrentStatusFollowup(text: string): boolean {
   const normalized = text.replace(/\s+/g, ' ').trim();
-  return (
-    RECHECK.test(normalized) ||
-    (DEPENDENT_TOPIC.test(normalized) && isCurrentStatusQuestion(normalized))
-  );
+  if (RECHECK.test(normalized)) return true;
+  const subject = TOPIC_PRONOUN.exec(normalized);
+  if (!subject || !isCurrentStatusQuestion(normalized)) return false;
+  const pronoun = subject[1]?.toLowerCase();
+  if (pronoun === 'it' || pronoun === 'they') return true;
+  // A demonstrative can modify a named subject. Require a status predicate after it.
+  return STATUS_PREDICATE.test(normalized.slice(subject[0].length));
 }
 
 export function currentStatusSearchQuery(
