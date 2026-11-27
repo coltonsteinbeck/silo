@@ -14,7 +14,7 @@ import { selectLatestTaskDefiningUserText } from './response-quality';
 const RECHECK =
   /^(?:(?:can|could|would)\s+you\s+)?(?:please\s+)?(?:check|look|verify|search)(?:\s+(?:that|it|this))?\s+again\s*[?.!]*$/i;
 const DEPENDENT_TOPIC =
-  /^(?:is|are|was|were|has|have|did|does|will|can)\s+(?:(?:it|they)\b|(?:that|this|those|these)(?=\s+(?:still|now|already|currently|available|released|out|live|launched|delayed|coming|supported)\b|\s*[?.!]*$))/i;
+  /^(?:is|are|was|were|has|have|did|does|will|can)\s+(?:(?:it|they)\b|(?:that|this|those|these)(?=\s+(?:been|still|now|already|currently|available|released|out|live|launched|delayed|coming|supported)\b|\s*[?.!]*$))/i;
 const UNVERIFIED = 'I can’t verify that current status from fresh sources right now.';
 
 async function beforeDeadline<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {

@@ -101,6 +101,9 @@ describe('bounded current-status search', () => {
     );
     expect(currentStatusSearchQuery('Is it available yet?', [])).toBeNull();
     expect(currentStatusSearchQuery('Is this available now?', [])).toBeNull();
+    expect(currentStatusSearchQuery('Has this been released yet?', [topic])).toBe(
+      `Prior topic: ${topic}\nFollow-up: Has this been released yet?`
+    );
     const explicit = 'Is this new Firefox release available now?';
     expect(currentStatusSearchQuery(explicit, [])).toBe(explicit);
     const canadaQuestion = 'Is it available now in Canada?';

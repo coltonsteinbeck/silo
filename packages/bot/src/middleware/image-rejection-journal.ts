@@ -61,6 +61,16 @@ export class ImageRejectionJournal {
     }
   }
 
+  acknowledge(key: string): void {
+    if (!this.path || !existsSync(this.path)) return;
+    const db = openLocalQuotaJournal(this.path);
+    try {
+      db.run('DELETE FROM rejections WHERE key = ?', [key]);
+    } finally {
+      db.close();
+    }
+  }
+
   start(signal: AbortSignal): void {
     if (signal.aborted) return;
     void this.flush();

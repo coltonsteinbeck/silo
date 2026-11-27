@@ -93,7 +93,7 @@ export class QuotaMiddleware {
   constructor(
     adminDb: AdminAdapter,
     permissions: PermissionManager,
-    private imageRejections?: Pick<ImageRejectionJournal, 'record'>
+    private imageRejections?: Pick<ImageRejectionJournal, 'record' | 'acknowledge'>
   ) {
     this.adminDb = adminDb;
     this.permissions = permissions;
@@ -407,6 +407,11 @@ export class QuotaMiddleware {
             errorType: settlementError instanceof Error ? settlementError.name : 'unknown'
           });
           throw new ImageQuotaSettlementPendingError(error);
+        }
+        try {
+          this.imageRejections?.acknowledge(reservation.idempotencyKey);
+        } catch {
+          logger.warn('Released image quota journal record remains queued');
         }
         throw error;
       }

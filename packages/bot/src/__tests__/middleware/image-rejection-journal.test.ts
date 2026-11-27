@@ -34,6 +34,8 @@ test('replays a retained rejection after a database outage and restart', async (
       directory
     );
     await original.record('rejection', 'guild', 'member', evidence);
+    await original.record('settled', 'guild', 'member', evidence);
+    original.acknowledge('settled');
     await original.flush();
     const restarted = new ImageRejectionJournal(
       { releaseRejectedImageQuotaUsage: release },

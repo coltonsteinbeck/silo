@@ -488,7 +488,8 @@ describe('QuotaMiddleware', () => {
     });
 
     test('settles a correlated model rejection without committing image credits', async () => {
-      const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
+      const journal = { record: mock(async () => {}), acknowledge: mock((_key: string) => {}) };
+      const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions, journal);
       const rejection = new ImageModelRejectedBeforeGenerationError({
         provider: 'openai',
         status: 400,
@@ -517,13 +518,16 @@ describe('QuotaMiddleware', () => {
       );
       expect(mockAdminDb.commitQuotaUsage).not.toHaveBeenCalled();
       expect(mockAdminDb.releaseQuotaUsage).not.toHaveBeenCalled();
+      expect(journal.record).toHaveBeenCalledTimes(1);
+      expect(journal.acknowledge).toHaveBeenCalledWith('draw:synthetic:1');
     });
 
     test('surfaces model rejection for credit remediation when the release cannot be written', async () => {
       mockAdminDb.releaseRejectedImageQuotaUsage = mock(async () => {
         throw new Error('database unavailable');
       });
-      const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions);
+      const journal = { record: mock(async () => {}), acknowledge: mock((_key: string) => {}) };
+      const middleware = new QuotaMiddleware(mockAdminDb, mockPermissions, journal);
       const rejection = new ImageModelRejectedBeforeGenerationError({
         provider: 'openai',
         status: 404,
@@ -546,6 +550,8 @@ describe('QuotaMiddleware', () => {
       ).rejects.toThrow('Image credit settlement needs review');
       expect(mockAdminDb.commitQuotaUsage).not.toHaveBeenCalled();
       expect(mockAdminDb.releaseQuotaUsage).not.toHaveBeenCalled();
+      expect(journal.record).toHaveBeenCalledTimes(1);
+      expect(journal.acknowledge).not.toHaveBeenCalled();
     });
 
     test('keeps an attempted reservation pending when provider outcome is ambiguous', async () => {
