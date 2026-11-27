@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+if (( $# > 1 )) || [[ $# = 1 && "$1" != --pr ]]; then
+  echo 'Expected no arguments or --pr.' >&2
+  exit 1
+fi
 
 if [[ -n "${DATABASE_URL:-}" || -n "${SILO_REGRESSION_DATABASE_URL:-}" ]]; then
   echo 'Unset database connection overrides before starting the disposable regression database.' >&2
@@ -50,4 +54,4 @@ if [[ "$published" != "$host:"* || ! "${published##*:}" =~ ^[0-9]+$ ]]; then
 fi
 url="postgresql://postgres:$suffix@$published/$name"
 env -i PATH="$PATH" MIGRATE_ENV_FILE=/dev/null DATABASE_URL="$url"   bash scripts/migrate.sh --target local
-SILO_REGRESSION_DATABASE_URL="$url" bun --no-env-file scripts/test-regression-postgres.ts
+SILO_REGRESSION_DATABASE_URL="$url" bun --no-env-file scripts/test-regression-postgres.ts "$@"

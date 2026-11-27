@@ -1,5 +1,10 @@
 import { networkInterfaces } from 'node:os';
 
+const args = process.argv.slice(2);
+if (args.length > 1 || (args.length === 1 && args[0] !== '--pr')) {
+  throw new Error('Expected no arguments or --pr');
+}
+const release = args.length === 0;
 const input = process.env.SILO_REGRESSION_DATABASE_URL;
 const target = input && URL.canParse(input) ? new URL(input) : undefined;
 const name = target?.pathname.slice(1) ?? '';
@@ -25,7 +30,9 @@ const child = Bun.spawn(
     '--no-env-file',
     'test',
     'packages/bot/src/__tests__/database/quota-reservation-postgres.integration.test.ts',
-    'packages/bot/src/__tests__/database/pool-reuse-postgres.integration.test.ts'
+    ...(release
+      ? ['packages/bot/src/__tests__/database/pool-reuse-postgres.integration.test.ts']
+      : [])
   ],
   {
     env: {

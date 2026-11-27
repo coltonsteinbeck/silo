@@ -1064,6 +1064,119 @@ test.skipIf(!RUN_DATABASE_TESTS)(
   30_000
 );
 
+test.skipIf(!RUN_DATABASE_TESTS).each([
+  ['generated image', 'success', 'committed', 1, 1],
+  ['unknown provider outcome', 'disconnect', 'attempted', 1, 0],
+  ['provider rate limited', 'rate-limit', 'attempted', 1, 0],
+  ['prompt denied', 'denied', undefined, 0, 0],
+  ['member outside the guild', 'wrong-guild', undefined, 0, 0]
+] as const)(
+  'draw regression with real SDK and PostgreSQL: %s',
+  async (_label, outcome, expectedStatus, expectedRequests, expectedUsage) => {
+    const { GuildMember } = await import('discord.js');
+    const { createMockInteraction } = await import('@silo/core/test-setup');
+    const { DrawCommand } = await import('../../commands/draw');
+    const { PermissionManager } = await import('../../permissions/manager');
+    const { QuotaMiddleware } = await import('../../middleware/quota');
+    const { ProviderRegistry } = await import('../../providers/registry');
+    const pool = await openPool();
+    const guildId = `draw-fixture-${randomUUID()}`;
+    const interactionId = randomUUID();
+    const prompt = 'A blue square on a white background';
+    const png =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nX0AAAAASUVORK5CYII=';
+    const outbound: Array<{ method: string; url: string; body: unknown }> = [];
+    const originalFetch = globalThis.fetch;
+    try {
+      await installFixture(pool, guildId, generousLimits);
+      // Capture the installed SDK's HTTP request without opening a network connection.
+      globalThis.fetch = (async (input, init) => {
+        const request = new Request(input, init);
+        const captured = { method: request.method, url: request.url, body: undefined as unknown };
+        outbound.push(captured);
+        if (
+          request.method !== 'POST' ||
+          request.url !== 'https://api.openai.com/v1/images/generations'
+        ) {
+          throw new Error('Unexpected SDK request in draw fixture');
+        }
+        captured.body = await request.json();
+        if (outcome === 'disconnect') throw new TypeError('Synthetic connection closed');
+        if (outcome === 'rate-limit') {
+          return Response.json({ error: { message: 'Synthetic rate limit' } }, { status: 429 });
+        }
+        return Response.json({ created: 1, data: [{ b64_json: png }] });
+      }) as typeof fetch;
+      const registry = new ProviderRegistry({
+        providers: { openai: { apiKey: 'fixture-only' } },
+        features: { enableRAG: false }
+      } as ConstructorParameters<typeof ProviderRegistry>[0]);
+      const admin = new AdminAdapter(pool);
+      const quota = new QuotaMiddleware(admin, new PermissionManager(admin));
+      const command = new DrawCommand(registry, quota, undefined, async () => ({
+        allowed: outcome !== 'denied',
+        processedPrompt: prompt,
+        userMessage: outcome === 'denied' ? 'Synthetic prompt denial' : undefined
+      }));
+
+      const createInteraction = () => {
+        const packet = createMockInteraction({ guildId, userId: 'requester', options: { prompt } });
+        const member = Object.create(GuildMember.prototype);
+        Object.defineProperties(member, {
+          user: { value: packet.user },
+          guild: { value: { id: outcome === 'wrong-guild' ? 'another-guild' : guildId } },
+          permissions: { value: { has: () => false } }
+        });
+        return Object.assign(packet, { id: interactionId, member });
+      };
+      const first = createInteraction();
+      const duplicate = createInteraction();
+      await command.execute(first as unknown as Parameters<DrawCommand['execute']>[0]);
+      await command.execute(duplicate as unknown as Parameters<DrawCommand['execute']>[0]);
+
+      expect(outbound).toHaveLength(expectedRequests);
+      if (expectedRequests) {
+        expect(outbound[0]).toMatchObject({
+          url: 'https://api.openai.com/v1/images/generations',
+          method: 'POST',
+          body: { model: 'gpt-image-2.5-flare', prompt, size: '1024x1024', quality: 'auto', n: 1 }
+        });
+      }
+      if (outcome === 'success') {
+        expect(first._getReplies()).toEqual([
+          expect.objectContaining({
+            files: [expect.objectContaining({ attachment: Buffer.from(png, 'base64') })]
+          })
+        ]);
+      } else {
+        expect(first._getReplies()).toHaveLength(1);
+        expect(first._getReplies()[0]).not.toHaveProperty('files');
+      }
+      expect(duplicate._getReplies()).toHaveLength(1);
+      expect(duplicate._getReplies()[0]).not.toHaveProperty('files');
+      const reservations = await pool.query(
+        'SELECT status FROM public.quota_usage_reservations WHERE guild_id = $1',
+        [guildId]
+      );
+      expect(reservations.rows).toEqual(expectedStatus ? [{ status: expectedStatus }] : []);
+      const usage = await pool.query(
+        'SELECT images_used, image_requests FROM public.usage_tracking WHERE guild_id = $1',
+        [guildId]
+      );
+      expect(usage.rows[0]?.images_used ?? 0).toBe(expectedUsage);
+      expect(usage.rows[0]?.image_requests ?? 0).toBe(expectedUsage);
+    } finally {
+      globalThis.fetch = originalFetch;
+      try {
+        await cleanupFixtures(pool, [guildId]);
+      } finally {
+        await pool.end();
+      }
+    }
+  },
+  30_000
+);
+
 const RUN_INGRESS_DATABASE_TESTS = process.env.RUN_INGRESS_DB_TESTS === 'true';
 
 describe.skipIf(!RUN_INGRESS_DATABASE_TESTS)('PostgreSQL ingress concurrency and restart', () => {

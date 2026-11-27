@@ -10,7 +10,6 @@ on:
   push:
     branches: ['main', 'release/**']
   pull_request:
-    branches: ['main', 'release/**']
 
 jobs:
   security:
@@ -123,13 +122,19 @@ jobs:
       - name: Headless regression
         run: bun run test:regression
 
-      - name: Release database regression
-        if: >-
-          startsWith(github.base_ref || github.ref_name, 'release/') ||
-          (github.event_name == 'pull_request' &&
-           github.event.pull_request.head.repo.full_name == github.repository &&
-           startsWith(github.head_ref, 'release/'))
-        run: bash scripts/run-regression-postgres.sh
+      - name: Database and SDK regression
+        env:
+          RELEASE_REGRESSION: >-
+            ${{ startsWith(github.base_ref || github.ref_name, 'release/') ||
+                (github.event_name == 'pull_request' &&
+                 github.event.pull_request.head.repo.full_name == github.repository &&
+                 startsWith(github.head_ref, 'release/')) }}
+        run: |
+          if [[ "$RELEASE_REGRESSION" == true ]]; then
+            bash scripts/run-regression-postgres.sh
+          else
+            bash scripts/run-regression-postgres.sh --pr
+          fi
 
       - name: Validate radio encoder
         run: bun run radio:validate --offline
