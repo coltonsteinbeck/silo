@@ -18,7 +18,7 @@ suite('application pool heartbeat reuse on disposable PostgreSQL', () => {
       .map(address => address!.address);
     if (
       !localAddresses.includes(target.hostname) ||
-      target.port !== '5432' ||
+      target.port !== (process.env.POOL_REUSE_TEST_DATABASE_PORT ?? '5432') ||
       !/^[a-z][a-z0-9_]{8,62}$/.test(expectedDatabase) ||
       target.pathname !== `/${expectedDatabase}`
     ) {
