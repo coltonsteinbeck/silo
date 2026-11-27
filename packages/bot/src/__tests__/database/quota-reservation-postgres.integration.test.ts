@@ -1083,6 +1083,7 @@ test.skipIf(!RUN_DATABASE_TESTS).each([
     const guildId = `draw-fixture-${randomUUID()}`;
     const interactionId = randomUUID();
     const prompt = 'A blue square on a white background';
+    const endpoint = 'https://provider.invalid/v1/images/generations';
     const png =
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nX0AAAAASUVORK5CYII=';
     const outbound: Array<{ method: string; url: string; body: unknown }> = [];
@@ -1094,10 +1095,7 @@ test.skipIf(!RUN_DATABASE_TESTS).each([
         const request = new Request(input, init);
         const captured = { method: request.method, url: request.url, body: undefined as unknown };
         outbound.push(captured);
-        if (
-          request.method !== 'POST' ||
-          request.url !== 'https://api.openai.com/v1/images/generations'
-        ) {
+        if (request.method !== 'POST' || request.url !== endpoint) {
           throw new Error('Unexpected SDK request in draw fixture');
         }
         captured.body = await request.json();
@@ -1137,7 +1135,7 @@ test.skipIf(!RUN_DATABASE_TESTS).each([
       expect(outbound).toHaveLength(expectedRequests);
       if (expectedRequests) {
         expect(outbound[0]).toMatchObject({
-          url: 'https://api.openai.com/v1/images/generations',
+          url: endpoint,
           method: 'POST',
           body: { model: 'gpt-image-2.5-flare', prompt, size: '1024x1024', quality: 'auto', n: 1 }
         });
