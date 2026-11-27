@@ -13,12 +13,12 @@ import { selectLatestTaskDefiningUserText } from './response-quality';
 
 const RECHECK =
   /^(?:(?:can|could|would)\s+you\s+)?(?:please\s+)?(?:check|look|verify|search)(?:\s+(?:that|it|this))?\s+again\s*[?.!]*$/i;
-const TOPIC_PRONOUN =
-  /^(?:is|are|was|were|has|have|did|does|will|can)\s+(it|they|that|this|those|these)\b\s*/i;
+const QUESTION_AUXILIARY = /^(?:is|are|was|were|has|have|did|does|will|can)\s+/i;
 const EMBEDDED_CLAUSE =
-  /^(?:(?:is|was) it (?:(?:really|actually) )?(?:true|correct|confirmed|the case)|has it been (?:confirmed|reported|announced)) that\s+\S/i;
+  /^(?:(?:is|was) it (?:(?:really|actually) )?(?:true|correct|confirmed|the case)|has it been (?:confirmed|reported|announced))(?: that)?\s+(?=\S)/i;
+const TOPIC_PRONOUN = /^(it|they|that|this|those|these)\b\s*/i;
 const STATUS_PREDICATE =
-  /^(?:(?:be|been|being|not|no longer|still|already|currently|right now|now|apparently|actually|definitely|really|ever)\s+)*(?:available|released|out|live|launched|delayed|coming|supported)\b/i;
+  /^(?:(?:is|are|was|were|has|have|will|can|be|been|being|not|no longer|still|already|currently|right now|now|apparently|actually|definitely|really|ever)\s+)*(?:available|released|out|live|launched|delayed|coming|supported)\b/i;
 const UNVERIFIED = 'I can’t verify that current status from fresh sources right now.';
 
 async function beforeDeadline<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -45,13 +45,16 @@ export function ownPriorUserTexts(
 export function isCurrentStatusFollowup(text: string): boolean {
   const normalized = text.replace(/\s+/g, ' ').trim();
   if (RECHECK.test(normalized)) return true;
-  const subject = TOPIC_PRONOUN.exec(normalized);
-  if (!subject || !isCurrentStatusQuestion(normalized) || EMBEDDED_CLAUSE.test(normalized))
-    return false;
+  if (!isCurrentStatusQuestion(normalized)) return false;
+  const prefix = EMBEDDED_CLAUSE.exec(normalized) ?? QUESTION_AUXILIARY.exec(normalized);
+  if (!prefix) return false;
+  const clause = normalized.slice(prefix[0].length);
+  const subject = TOPIC_PRONOUN.exec(clause);
+  if (!subject) return false;
   const pronoun = subject[1]?.toLowerCase();
   if (pronoun === 'it' || pronoun === 'they') return true;
   // A demonstrative can modify a named subject. Require a status predicate after it.
-  return STATUS_PREDICATE.test(normalized.slice(subject[0].length));
+  return STATUS_PREDICATE.test(clause.slice(subject[0].length));
 }
 
 export function currentStatusSearchQuery(

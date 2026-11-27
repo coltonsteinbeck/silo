@@ -105,7 +105,10 @@ describe('bounded current-status search', () => {
       'Has this been released yet?',
       'Is this no longer available now?',
       'Has this not already been launched yet?',
-      'Is this actually still available now?'
+      'Is this actually still available now?',
+      'Is it true that it is available now?',
+      'Is it true that this is not available now?',
+      'Has it been confirmed that they are available now?'
     ]) {
       expect(currentStatusSearchQuery(followup, [topic])).toBe(
         `Prior topic: ${topic}\nFollow-up: ${followup}`
@@ -117,6 +120,9 @@ describe('bounded current-status search', () => {
     const embedded = 'Is it true that ExampleOS 5 is available now?';
     expect(currentStatusSearchQuery(embedded, [])).toBe(embedded);
     expect(currentStatusSearchQuery(embedded, [topic])).toBe(embedded);
+    const namedDemonstrative = 'Is it true that this new Firefox release is available now?';
+    expect(currentStatusSearchQuery(namedDemonstrative, [topic])).toBe(namedDemonstrative);
+    expect(currentStatusSearchQuery('Is it true that it is available now?', [])).toBeNull();
     const canadaQuestion = 'Is it available now in Canada?';
     const betaQuestion = 'Is it available yet for beta users?';
     expect(
