@@ -1087,12 +1087,13 @@ test.skipIf(!RUN_DATABASE_TESTS).each([
     const png =
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nX0AAAAASUVORK5CYII=';
     const outbound: Array<{ method: string; url: string; body: unknown }> = [];
-    const originalFetch = globalThis.fetch;
+    const { fetch: originalFetch, Request } = globalThis;
     try {
       await installFixture(pool, guildId, generousLimits);
       // Capture the installed SDK's HTTP request without opening a network connection.
       globalThis.fetch = (async (input, init) => {
-        const request = new Request(input, init);
+        const request =
+          input instanceof Request ? new Request(input, init) : new Request(String(input), init);
         const captured = { method: request.method, url: request.url, body: undefined as unknown };
         outbound.push(captured);
         if (request.method !== 'POST' || request.url !== endpoint) {
@@ -1116,6 +1117,7 @@ test.skipIf(!RUN_DATABASE_TESTS).each([
         processedPrompt: prompt,
         userMessage: outcome === 'denied' ? 'Synthetic prompt denial' : undefined
       }));
+      type DrawInteraction = Parameters<typeof command.execute>[0];
 
       const createInteraction = () => {
         const packet = createMockInteraction({ guildId, userId: 'requester', options: { prompt } });
@@ -1129,8 +1131,8 @@ test.skipIf(!RUN_DATABASE_TESTS).each([
       };
       const first = createInteraction();
       const duplicate = createInteraction();
-      await command.execute(first as unknown as Parameters<DrawCommand['execute']>[0]);
-      await command.execute(duplicate as unknown as Parameters<DrawCommand['execute']>[0]);
+      await command.execute(first as unknown as DrawInteraction);
+      await command.execute(duplicate as unknown as DrawInteraction);
 
       expect(outbound).toHaveLength(expectedRequests);
       if (expectedRequests) {
