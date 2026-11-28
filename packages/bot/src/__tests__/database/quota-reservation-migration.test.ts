@@ -7,6 +7,13 @@ const migrationPath = resolve(
   '../../../../../supabase/migrations/027_atomic_quota_reservations.sql'
 );
 const migration = readFileSync(migrationPath, 'utf8');
+const rejectedImageMigration = readFileSync(
+  resolve(
+    import.meta.dir,
+    '../../../../../supabase/migrations/20261125234019_settle_rejected_image_reservations.sql'
+  ),
+  'utf8'
+);
 const normalized = migration.replace(/\s+/g, ' ').trim();
 
 function functionBody(tag: string): string {
@@ -166,5 +173,33 @@ describe('atomic quota reservation migration contract', () => {
       expect(normalized).toContain(`REVOKE EXECUTE ON FUNCTION public.${functionName}`);
       expect(normalized).toContain(`GRANT EXECUTE ON FUNCTION public.${functionName}`);
     }
+  });
+});
+
+describe('rejected image reservation migration contract', () => {
+  test('retains the applied reservation migration and restricts the new transition', () => {
+    expect(rejectedImageMigration).toContain(
+      'CREATE FUNCTION public.release_rejected_image_quota_usage'
+    );
+    expect(rejectedImageMigration).toContain("v_reservation.status <> 'attempted'");
+    expect(rejectedImageMigration).toContain("v_reservation.resource <> 'images'");
+    expect(rejectedImageMigration).toContain('v_reservation.reported_actual_amount IS NOT NULL');
+    expect(rejectedImageMigration).toContain("p_provider_code IS DISTINCT FROM 'model_not_found'");
+    expect(rejectedImageMigration).toContain('FROM PUBLIC, anon, authenticated');
+    expect(rejectedImageMigration).toContain('TO service_role');
+    expect(rejectedImageMigration).toContain(
+      'DROP CONSTRAINT quota_usage_reservations_attempt_shape'
+    );
+    expect(rejectedImageMigration.match(/r\.settlement_version = 1/g)).toHaveLength(2);
+    expect(rejectedImageMigration).toContain('pg_catalog.pg_try_advisory_xact_lock');
+    const guildLock = rejectedImageMigration.indexOf('FROM public.guild_daily_usage gdu');
+    const userLock = rejectedImageMigration.indexOf('FROM public.usage_tracking ut', guildLock);
+    const reservationLock = rejectedImageMigration.indexOf(
+      'FROM public.quota_usage_reservations r',
+      userLock
+    );
+    expect(guildLock).toBeGreaterThanOrEqual(0);
+    expect(userLock).toBeGreaterThan(guildLock);
+    expect(reservationLock).toBeGreaterThan(userLock);
   });
 });

@@ -1,10 +1,12 @@
 import type { Message } from 'discord.js';
 import { sanitizeDiscordMassMentions } from '../security/output-sanitizer';
 import { sanitizeAssistantContextForPrompt } from './conversation-history-sanitizer';
+import { readableMessageAuthor, renderReadableUserMentions } from './readable-mentions';
 
 export interface ResolvedReplyMessage {
   messageId: string;
   userId: string;
+  userName: string;
   content: string;
   imageUrls: string[];
   isBot?: boolean;
@@ -18,8 +20,10 @@ export interface ResolvedReplyContext {
   textContext: string;
 }
 
-function normalizeContent(content: string): string {
-  return sanitizeDiscordMassMentions(content).replace(/\s+/g, ' ').trim();
+function normalizeContent(message: Message<boolean>): string {
+  return sanitizeDiscordMassMentions(renderReadableUserMentions(message.content || '', message))
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function getImageUrls(message: Message<boolean>): string[] {
@@ -52,7 +56,7 @@ export async function resolveReplyContext(
     }
 
     const isBot = Boolean(referenced.author?.bot);
-    const normalizedContent = normalizeContent(referenced.content || '');
+    const normalizedContent = normalizeContent(referenced);
     const contextSanitization = isBot
       ? sanitizeAssistantContextForPrompt(normalizedContent)
       : { content: normalizedContent, reason: null };
@@ -60,6 +64,7 @@ export async function resolveReplyContext(
     chain.push({
       messageId: referenced.id,
       userId: referenced.author?.id || 'unknown',
+      userName: readableMessageAuthor(referenced),
       content: contextSanitization.content,
       imageUrls: getImageUrls(referenced),
       isBot,
@@ -73,7 +78,7 @@ export async function resolveReplyContext(
   const textContext = chain
     .map((item, index) => {
       const level = index + 1;
-      const parts: string[] = [`[Reply level ${level} | user ${item.userId}]`];
+      const parts: string[] = [`[Reply level ${level} | user ${item.userName}]`];
       if (item.content) {
         parts.push(item.content);
       }

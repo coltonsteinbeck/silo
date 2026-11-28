@@ -68,6 +68,7 @@ function setup(kind: 'thread' | 'digest', withQuota = true) {
     channel,
     user,
     member,
+    memberPermissions: { has: () => true },
     options: { getString: () => null, getBoolean: () => false },
     deferReply: mock(async () => {}),
     editReply: mock(async (_value: any) => {})

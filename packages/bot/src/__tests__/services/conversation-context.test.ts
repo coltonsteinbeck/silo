@@ -3,6 +3,11 @@ import {
   assembleConversationContext,
   buildEffectiveUserPrompt,
   buildConversationHistoryInstruction,
+  buildCurrentTimeInstruction,
+  currentStatusNeedsSource,
+  formatCurrentDate,
+  isCurrentDateQuestion,
+  isCurrentStatusQuestion,
   buildWebAccessInstruction,
   isRefusalLoopResetTurn,
   isLowContextStandaloneTurn,
@@ -11,6 +16,60 @@ import {
 } from '../../services/conversation-context';
 
 describe('conversation-context', () => {
+  test('grounds current dates in UTC without presenting the clock as event evidence', () => {
+    const before = buildCurrentTimeInstruction(new Date('2026-11-20T23:59:59.000Z'));
+    const after = buildCurrentTimeInstruction(new Date('2026-11-21T00:00:00.000Z'));
+    expect(before).toContain('2026-11-20T23:59:59.000Z');
+    expect(after).toContain('2026-11-21T00:00:00.000Z');
+    expect(after).toContain('This clock does not prove that an external event happened');
+    expect(after).toContain('including requests to check again');
+    expect(after).toContain('earlier assistant claims');
+    expect(
+      buildCurrentTimeInstruction(new Date('2026-11-21T00:30:00.000Z'), 'America/New_York')
+    ).toContain('Friday, November 20, 2026 (America/New_York)');
+    expect(() => buildCurrentTimeInstruction(new Date(Number.NaN))).toThrow();
+  });
+
+  test('answers current calendar questions from a fixed clock and explicit timezone', () => {
+    const instant = new Date('2026-11-21T00:30:00.000Z');
+    expect(formatCurrentDate(instant)).toBe('Today is Saturday, November 21, 2026 (UTC).');
+    expect(formatCurrentDate(instant, 'America/New_York')).toBe(
+      'Today is Friday, November 20, 2026 (America/New_York).'
+    );
+    expect(formatCurrentDate(instant, 'not-a-timezone')).toBe(
+      'Today is Saturday, November 21, 2026 (UTC).'
+    );
+    for (const question of [
+      "What is today's date?",
+      'What is the date today?',
+      "What's the date?",
+      'What day is it today?',
+      'What day of the week is it?'
+    ]) {
+      expect(isCurrentDateQuestion(question)).toBe(true);
+    }
+    expect(isCurrentDateQuestion('What was the date on November 20, 2004?')).toBe(false);
+    expect(isCurrentDateQuestion('What date did Sample Game launch?')).toBe(false);
+    expect(() => formatCurrentDate(new Date(Number.NaN))).toThrow();
+  });
+
+  test('separates synthetic current-status and recheck turns from ordinary history', () => {
+    const current = 'Has Sample Game released yet?';
+    expect(isCurrentStatusQuestion(current)).toBe(true);
+    expect(isCurrentStatusQuestion('Has Sample Game been released?')).toBe(true);
+    expect(isCurrentStatusQuestion('What is the current release status of Sample Game?')).toBe(
+      true
+    );
+    expect(isCurrentStatusQuestion('Please check again.', current)).toBe(true);
+    expect(isCurrentStatusQuestion('Please check again.', 'Please check again.')).toBe(true);
+    expect(isCurrentStatusQuestion('Check again.', 'Tell me about the 2004 launch')).toBe(false);
+    expect(isCurrentStatusQuestion('When did Sample Game launch in 2004?')).toBe(false);
+    expect(isCurrentStatusQuestion('Tell me a story about Sample Game')).toBe(false);
+    expect(currentStatusNeedsSource(true)).toContain('/search');
+    expect(currentStatusNeedsSource(false)).not.toContain('/search');
+    expect(currentStatusNeedsSource(true)).toContain('can’t verify');
+  });
+
   test('keeps referenced content for storage but excludes it from merged user prompt', () => {
     const context = assembleConversationContext({
       processedContent: 'Has he gone guru?',
@@ -38,12 +97,14 @@ describe('conversation-context', () => {
           {
             messageId: 'r1',
             userId: 'u1',
+            userName: 'Example User',
             content: 'reply 1',
             imageUrls: ['https://img.test/reply1-a.png', 'https://img.test/reply1-b.png']
           },
           {
             messageId: 'r2',
             userId: 'u2',
+            userName: 'Another User',
             content: 'reply 2',
             imageUrls: ['https://img.test/reply2.png']
           }
@@ -72,6 +133,7 @@ describe('conversation-context', () => {
           {
             messageId: 'r1',
             userId: 'u1',
+            userName: 'Example User',
             content: 'reply 1',
             imageUrls: ['https://img.test/reply1-a.png']
           }

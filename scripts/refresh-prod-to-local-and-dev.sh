@@ -22,25 +22,11 @@ set -euo pipefail
 #   - DATABASE_LOCAL_URL (alias of LOCAL_DB_URL)
 #   - DATABASE_DEV_URL (alias of TARGET_BRANCH_DB_URL/BRANCH_DB_URL)
 #   - DATABASE_PROD_URL (alias of SOURCE_DB_URL/PROD_DB_URL)
-#   - AUTO_RUN_MIGRATIONS=true|false (default: true)
 #   - TRUNCATE_TARGET=true|false (default: true)
 #   - REFRESH_ENV_FILE (default: ../.env)
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
 ENV_FILE=${REFRESH_ENV_FILE:-"$SCRIPT_DIR/../.env"}
-
-bool_true() {
-  local lowered
-  lowered=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
-  case "$lowered" in
-    1|true|yes|y)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
 
 if [ -f "$ENV_FILE" ]; then
   set -a
@@ -53,7 +39,6 @@ CONFIRM_REMOTE_RESTORE=${CONFIRM_REMOTE_RESTORE:-false}
 DATABASE_LOCAL_URL=${DATABASE_LOCAL_URL:-}
 DATABASE_DEV_URL=${DATABASE_DEV_URL:-}
 DATABASE_PROD_URL=${DATABASE_PROD_URL:-}
-AUTO_RUN_MIGRATIONS=${AUTO_RUN_MIGRATIONS:-true}
 TRUNCATE_TARGET=${TRUNCATE_TARGET:-true}
 
 LOCAL_DB_URL=${LOCAL_DB_URL:-${DATABASE_LOCAL_URL:-postgresql://postgres:postgres@127.0.0.1:54322/postgres}}
@@ -75,28 +60,14 @@ if [ -z "$TARGET_BRANCH_DB_URL" ]; then
   exit 1
 fi
 
-if bool_true "$AUTO_RUN_MIGRATIONS"; then
-  echo "== Pre-step: Run migrations (local, then dev) =="
-  bash "$SCRIPT_DIR/migrate.sh" --target local --db-url "$LOCAL_DB_URL"
-  bash "$SCRIPT_DIR/migrate.sh" --target dev --db-url "$TARGET_BRANCH_DB_URL"
-  echo
-fi
-
-echo "== Lane 1/2: Refresh prod -> local DB =="
-echo "Local target: $LOCAL_DB_URL"
 ALLOW_LOCAL_TARGET=true \
 PROD_DB_URL="$SOURCE_DB_URL" \
 TRUNCATE_TARGET="$TRUNCATE_TARGET" \
 BRANCH_DB_URL="$LOCAL_DB_URL" \
 "$SCRIPT_DIR/refresh-prod-to-branch.sh"
 
-echo
-echo "== Lane 2/2: Refresh prod -> persistent dev branch =="
 ALLOW_LOCAL_TARGET=false \
 PROD_DB_URL="$SOURCE_DB_URL" \
 TRUNCATE_TARGET="$TRUNCATE_TARGET" \
 BRANCH_DB_URL="$TARGET_BRANCH_DB_URL" \
 "$SCRIPT_DIR/refresh-prod-to-branch.sh"
-
-echo
-echo "Both refresh lanes completed."

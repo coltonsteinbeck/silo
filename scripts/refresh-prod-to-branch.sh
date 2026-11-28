@@ -13,15 +13,14 @@ set -euo pipefail
 #   2) DEV_DB_IDENTIFIER=... and SUPABASE_DEV_PW=...
 #   3) DATABASE_DEV_URL=postgresql://... (alias of BRANCH_DB_URL)
 #
-# Safety requirement:
+# Required safety settings:
 #   CONFIRM_REMOTE_RESTORE=true
+#   BACKUP_DIR=/path/to/existing/private/storage
+#   INCLUDE_TABLES=public.approved_table
 #
 # Optional:
 #   PROD_SCHEMAS=public
-#   INCLUDE_TABLES=public.users,public.messages
 #   EXCLUDE_TABLES=public.audit_log,public.tokens
-#   BACKUP_DIR=backups
-#   BACKUP_TARGET_BEFORE_RESTORE=true
 #   DB_SSL=true|false
 #   PROD_DB_SSL=true|false
 #   DEV_DB_SSL=true|false
@@ -34,11 +33,6 @@ set -euo pipefail
 #   POST_RESTORE_SQL_FILE=path/to/post.sql
 #   ALLOW_LOCAL_TARGET=true|false
 #
-# Example:
-#   HOSTED_DB_IDENTIFIER='db.prod-project.supabase.co' SUPABASE_PW='***' \
-#   DEV_DB_IDENTIFIER='db.dev-project.supabase.co' SUPABASE_DEV_PW='***' \
-#   DB_SSL=true CONFIRM_REMOTE_RESTORE=true \
-#   ./scripts/refresh-prod-to-branch.sh
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
 ENV_FILE=${REFRESH_ENV_FILE:-"$SCRIPT_DIR/../.env"}
@@ -74,7 +68,7 @@ DEV_DB_SSL=${DEV_DB_SSL:-$DB_SSL}
 PROD_SCHEMAS=${PROD_SCHEMAS:-public}
 INCLUDE_TABLES=${INCLUDE_TABLES:-}
 EXCLUDE_TABLES=${EXCLUDE_TABLES:-public._migrations,public.schema_migrations,public.archived_migration_022_backup,public.migration_022_guild_quota_backup,public.migration_022_role_tier_quota_backup}
-BACKUP_DIR=${BACKUP_DIR:-backups}
+BACKUP_DIR=${BACKUP_DIR:-}
 BACKUP_TARGET_BEFORE_RESTORE=${BACKUP_TARGET_BEFORE_RESTORE:-true}
 TRUNCATE_TARGET=${TRUNCATE_TARGET:-false}
 POST_RESTORE_ANALYZE=${POST_RESTORE_ANALYZE:-true}
@@ -373,6 +367,71 @@ if ! bool_true "$CONFIRM_REMOTE_RESTORE"; then
   exit 1
 fi
 
+if [ "${GITHUB_ACTIONS:-}" = true ]; then
+  echo "Safety check failed: database refresh must run in a private operator environment." >&2
+  exit 1
+fi
+
+if [ -z "$BACKUP_DIR" ] || [ -z "$INCLUDE_TABLES" ] ||
+  ! bool_true "$BACKUP_TARGET_BEFORE_RESTORE"; then
+  echo "Safety check failed: a restricted BACKUP_DIR, explicit INCLUDE_TABLES, and target backup are required." >&2
+  exit 1
+fi
+if ! [[ "$INCLUDE_TABLES" =~ ^[a-zA-Z_][a-zA-Z_0-9]*\.[a-zA-Z_][a-zA-Z_0-9]*(,[a-zA-Z_][a-zA-Z_0-9]*\.[a-zA-Z_][a-zA-Z_0-9]*)*$ ]]; then
+  echo "Safety check failed: INCLUDE_TABLES must contain comma-separated schema-qualified table names." >&2
+  exit 1
+fi
+if [ -n "$EXCLUDE_TABLES" ] &&
+  ! [[ "$EXCLUDE_TABLES" =~ ^[a-zA-Z_][a-zA-Z_0-9]*\.[a-zA-Z_][a-zA-Z_0-9]*(,[a-zA-Z_][a-zA-Z_0-9]*\.[a-zA-Z_][a-zA-Z_0-9]*)*$ ]]; then
+  echo "Safety check failed: EXCLUDE_TABLES must contain schema-qualified table names." >&2
+  exit 1
+fi
+
+IFS=',' read -r -a refresh_tables <<< "$INCLUDE_TABLES"
+for table in "${refresh_tables[@]}"; do
+  case "$table" in
+    public._migrations|public.schema_migrations|public.guild_patch_notes_webhooks|public.archived_migration_022_backup)
+      echo "Safety check failed: an internal control table was selected." >&2
+      exit 1
+      ;;
+  esac
+  if [[ ",$EXCLUDE_TABLES," == *",$table,"* ]]; then
+    echo "Safety check failed: a table cannot be both included and excluded." >&2
+    exit 1
+  fi
+done
+
+if ! BACKUP_DIR=$(bun -e '
+  const { realpathSync, statSync } = require("node:fs");
+  const { resolve, relative, sep } = require("node:path");
+  const directory = realpathSync(process.argv[1]);
+  const repo = realpathSync(resolve(process.argv[2], ".."));
+  const location = relative(repo, directory);
+  const metadata = statSync(directory);
+  if (!location.startsWith(".." + sep) || !metadata.isDirectory() ||
+      metadata.uid !== process.getuid() || (metadata.mode & 0o077) !== 0) process.exit(1);
+  console.log(directory);
+' "$BACKUP_DIR" "$SCRIPT_DIR" 2>/dev/null); then
+  echo "Safety check failed: BACKUP_DIR must be an existing owner-only directory outside the repository." >&2
+  exit 1
+fi
+
+umask 077
+RUN_DIR=$(mktemp -d "$BACKUP_DIR/silo-refresh.XXXXXXXX")
+exec 3>&1
+exec > "$RUN_DIR/refresh.log" 2>&1
+refresh_receipt() {
+  local result=$?
+  if [ "$result" -eq 0 ]; then
+    printf '{"status":"passed"}\n' >&3
+  else
+    printf '{"status":"failed"}\n' >&3
+  fi
+}
+trap refresh_receipt EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 PROD_HOST=$(extract_host "$PROD_DB_URL")
 BRANCH_HOST=$(extract_host "$BRANCH_DB_URL")
 PROD_USER=$(extract_user "$PROD_DB_URL")
@@ -405,12 +464,8 @@ if ! is_local_host "$BRANCH_HOST"; then
   preflight_direct_supabase_ipv6 "$BRANCH_HOST" "target" "$BRANCH_DB_URL"
 fi
 
-mkdir -p "$BACKUP_DIR"
-STAMP=$(date +%Y%m%d_%H%M%S)
-FULL_DUMP="$BACKUP_DIR/prod_full_${STAMP}.dump"
-SCHEMA_TAG=$(echo "$PROD_SCHEMAS" | tr ',' '_')
-DATA_DUMP="$BACKUP_DIR/prod_data_${SCHEMA_TAG}_${STAMP}.sql"
-TARGET_DUMP="$BACKUP_DIR/branch_pre_refresh_${STAMP}.dump"
+DATA_DUMP="$RUN_DIR/selected-data.sql"
+TARGET_DUMP="$RUN_DIR/target-before-refresh.dump"
 
 echo "== Refresh Prod -> Persistent Branch =="
 echo "Source host: $PROD_HOST"
@@ -425,7 +480,17 @@ ensure_sql_file_if_set "$POST_RESTORE_SQL_FILE" "POST_RESTORE_SQL_FILE"
 
 # Ensure target branch is reachable before dumping/restoring.
 echo "[check] Verifying target branch connectivity"
-psql "$BRANCH_DB_URL" -v ON_ERROR_STOP=1 -c 'SELECT 1;' >/dev/null
+target_version=$(psql "$BRANCH_DB_URL" -XAt -v ON_ERROR_STOP=1 -c 'SHOW server_version_num;')
+dump_version=$(pg_dump --version)
+if ! [[ "$target_version" =~ ^[0-9]{6,}$ &&
+  "$dump_version" =~ PostgreSQL[[:space:]]*\)[[:space:]]*([0-9]+)\. ]]; then
+  echo "Could not verify PostgreSQL server and backup tool versions."
+  exit 1
+fi
+if [ "${BASH_REMATCH[1]}" -ne "$((target_version / 10000))" ]; then
+  echo "The PostgreSQL backup tools must match the target server major version."
+  exit 1
+fi
 
 SOURCE_MIGRATION=""
 TARGET_MIGRATION=""
@@ -498,27 +563,16 @@ if [ -n "$EXCLUDE_TABLES" ]; then
   done
 fi
 
-echo "[1/8] Creating full production backup -> $FULL_DUMP"
-pg_dump "$PROD_DB_URL" \
+echo "Creating pre-refresh backup of target branch"
+pg_dump "$BRANCH_DB_URL" \
   --format=custom \
   --compress=9 \
   --no-owner \
   --no-privileges \
-  --file "$FULL_DUMP"
+  --file "$TARGET_DUMP"
+test -s "$TARGET_DUMP"
 
-if bool_true "$BACKUP_TARGET_BEFORE_RESTORE"; then
-  echo "[2/8] Creating pre-refresh backup of target branch -> $TARGET_DUMP"
-  pg_dump "$BRANCH_DB_URL" \
-    --format=custom \
-    --compress=9 \
-    --no-owner \
-    --no-privileges \
-    --file "$TARGET_DUMP"
-else
-  echo "[2/8] Skipping target pre-refresh backup (BACKUP_TARGET_BEFORE_RESTORE=false)"
-fi
-
-echo "[3/8] Exporting production data-only snapshot -> $DATA_DUMP"
+echo "Exporting selected data"
 DATA_DUMP_ARGS=(
   --data-only
   --column-inserts
@@ -536,61 +590,37 @@ fi
 DATA_DUMP_ARGS+=(--file "$DATA_DUMP")
 
 pg_dump "$PROD_DB_URL" "${DATA_DUMP_ARGS[@]}"
+test -s "$DATA_DUMP"
 
+restore_args=(--single-transaction -v ON_ERROR_STOP=1 -q)
 if bool_true "$TRUNCATE_TARGET"; then
-  echo "[4/8] Truncating target schema tables before restore"
-  psql "$BRANCH_DB_URL" -v ON_ERROR_STOP=1 <<'SQL'
-DO $$
-DECLARE
-  stmt text;
-BEGIN
-  SELECT 'TRUNCATE TABLE ' || string_agg(format('%I.%I', schemaname, tablename), ', ') || ' CASCADE'
-    INTO stmt
-  FROM pg_tables
-  WHERE schemaname = 'public'
-    AND tablename <> 'schema_migrations';
-
-  IF stmt IS NOT NULL THEN
-    EXECUTE stmt;
-  END IF;
-END $$;
-SQL
-else
-  echo "[4/8] Skipping target truncate (TRUNCATE_TARGET=false)"
+  truncate_sql=()
+  for table in "${refresh_tables[@]}"; do
+    truncate_sql+=("ONLY \"${table%%.*}\".\"${table#*.}\"")
+  done
+  printf 'TRUNCATE TABLE %s;\n' "$(IFS=,; echo "${truncate_sql[*]}")" > "$RUN_DIR/truncate-selected.sql"
+  restore_args+=(-f "$RUN_DIR/truncate-selected.sql")
 fi
 
 if [ -n "$PRE_RESTORE_SQL_FILE" ]; then
-  echo "[5/8] Running pre-restore SQL hook: $PRE_RESTORE_SQL_FILE"
-  psql "$BRANCH_DB_URL" -v ON_ERROR_STOP=1 -f "$PRE_RESTORE_SQL_FILE"
-else
-  echo "[5/8] Skipping pre-restore SQL hook"
+  restore_args+=(-f "$PRE_RESTORE_SQL_FILE")
 fi
 
-echo "[6/8] Restoring data snapshot into persistent branch"
-psql "$BRANCH_DB_URL" -v ON_ERROR_STOP=1 -q -f "$DATA_DUMP" >/dev/null
+restore_args+=(-f "$DATA_DUMP")
+if [ -n "$POST_RESTORE_SQL_FILE" ]; then
+  restore_args+=(-f "$POST_RESTORE_SQL_FILE")
+elif [ -n "$SMOKE_SQL" ]; then
+  restore_args+=(-c "$SMOKE_SQL")
+fi
+echo "Restoring selected data in one transaction"
+psql "$BRANCH_DB_URL" "${restore_args[@]}"
 
 if bool_true "$POST_RESTORE_ANALYZE"; then
-  echo "[7/8] Running ANALYZE on target branch"
   psql "$BRANCH_DB_URL" -v ON_ERROR_STOP=1 -c 'ANALYZE;' >/dev/null
-else
-  echo "[7/8] Skipping ANALYZE (POST_RESTORE_ANALYZE=false)"
-fi
-
-if [ -n "$POST_RESTORE_SQL_FILE" ]; then
-  echo "[8/8] Running post-restore SQL hook: $POST_RESTORE_SQL_FILE"
-  psql "$BRANCH_DB_URL" -v ON_ERROR_STOP=1 -f "$POST_RESTORE_SQL_FILE"
-elif [ -n "$SMOKE_SQL" ]; then
-  echo "[8/8] Running smoke SQL"
-  psql "$BRANCH_DB_URL" -v ON_ERROR_STOP=1 -c "$SMOKE_SQL"
-else
-  echo "[8/8] Skipping post-restore checks (POST_RESTORE_SQL_FILE and SMOKE_SQL not provided)"
 fi
 
 echo "\nDone."
 echo "Source host: $PROD_HOST"
 echo "Target host: $BRANCH_HOST"
-echo "Full backup: $FULL_DUMP"
-if bool_true "$BACKUP_TARGET_BEFORE_RESTORE"; then
-  echo "Target backup: $TARGET_DUMP"
-fi
+echo "Target backup: $TARGET_DUMP"
 echo "Data dump:   $DATA_DUMP"

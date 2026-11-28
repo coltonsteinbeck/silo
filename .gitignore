@@ -1,15 +1,31 @@
 # Environment
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+.*-local/
 
 # Dependencies
 node_modules/
 .pnp
 .pnp.js
 
-#DB
+# Database data and local exports
 backups/
+exports/
+dumps/
+*.dump
+*.backup
+*.sql
+*.sql.gz
+*.csv
+*.tsv
+*.jsonl
+*.ndjson
+*.parquet
+!/supabase/migrations/*.sql
+!/docker/postgres-init/000_supabase_compat.sql
+!/packages/bot/src/__tests__/database/quota-role-contract.sql
+!/packages/bot/src/__tests__/fixtures/conversation-output-safety.csv
 
 # Build
 dist/
@@ -64,6 +80,8 @@ ENV/
 # Database
 *.db
 *.sqlite
+*.sqlite-wal
+*.sqlite-shm
 *.sqlite3
 
 # Models

@@ -186,6 +186,30 @@ describe('ConfigCommand', () => {
     });
 
     describe('system-prompt subcommand', () => {
+      test.each(['edit', 'clear'])(
+        'requires Discord Administrator to %s the prompt',
+        async action => {
+          mockAdminDb.getSystemPrompt = mock();
+          mockAdminDb.setSystemPrompt = mock();
+          const interaction = createMockInteraction({
+            options: { subcommand: 'system-prompt', action, type: 'voice' },
+            member: Object.create(GuildMember.prototype, {
+              permissions: { value: { has: () => false } }
+            })
+          });
+          await command.execute(interaction as never);
+          expect(interaction._getReplies()).toEqual([
+            {
+              content: `You need Discord Administrator permission to ${action} the system prompt.`,
+              ephemeral: true
+            }
+          ]);
+          expect(mockAdminDb.getSystemPrompt).not.toHaveBeenCalled();
+          expect(mockAdminDb.setSystemPrompt).not.toHaveBeenCalled();
+          expect(interaction.showModal).not.toHaveBeenCalled();
+        }
+      );
+
       test('shows edit modal even when prompt preload fails', async () => {
         mockAdminDb.getSystemPrompt = mock(async () => {
           throw new Error('prompt preload timeout');

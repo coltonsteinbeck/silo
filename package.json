@@ -1,6 +1,7 @@
 {
   "name": "silo",
-  "version": "0.1.0",
+  "version": "2.1.0",
+  "packageManager": "bun@1.4.5",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -11,6 +12,7 @@
     "runtime:prepare": "bash scripts/prepare-radio-runtime.sh",
     "radio:verify-runtime": "bun scripts/verify-ytdlp-artifact.ts",
     "radio:validate": "bun scripts/validate-radio-playback.ts",
+    "runtime:tls-memory": "node scripts/tls-memory-repro.mjs",
     "dev": "bun run --filter '*' dev",
     "dev:bot": "bun --watch packages/bot/src/index.ts",
     "predev:bot": "bun test",
@@ -32,6 +34,9 @@
     "pm2:logrotate:configure": "pm2 set pm2-logrotate:rotateInterval '0 0 * * *' && pm2 set pm2-logrotate:retain 7 && pm2 set pm2-logrotate:compress true",
     "build": "bun run --filter '*' build",
     "test": "bun test",
+    "test:regression": "/usr/bin/env -i PATH=\"$PATH\" HOME=\"$HOME\" bun --no-env-file test",
+    "test:regression:database": "bun --no-env-file scripts/test-regression-postgres.ts",
+    "test:discord-regression": "bun test packages/bot/src/__tests__/runtime/discord-regression.test.ts packages/bot/src/__tests__/services/current-status-search.test.ts packages/bot/src/__tests__/security/safety-regression.integration.test.ts packages/bot/src/__tests__/commands/draw.test.ts packages/bot/src/__tests__/database/postgres-conversation-turns.test.ts packages/bot/src/__tests__/database/quota-reservation-postgres.integration.test.ts",
     "test:watch": "bun test --watch",
     "test:coverage": "bun test --coverage",
     "langfuse:evals:safety": "bun packages/bot/src/evals/run-langfuse-safety-evals.ts",
@@ -69,5 +74,35 @@
     "@discordjs/opus",
     "ffmpeg-static",
     "youtube-dl-exec"
-  ]
+  ],
+  "overrides": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@hono/node-server": "2.1.11",
+    "proxy-addr": "2.0.8",
+    "tar": "7.5.23",
+    "hono": "4.13.22",
+    "fast-uri": "3.1.9",
+    "body-parser": "2.4.0",
+    "form-data": "4.0.6",
+    "ip-address": "10.7.6",
+    "lodash": "4.18.1",
+    "protobufjs": "8.8.1",
+    "qs": "6.17.1",
+    "undici": "6.29.1",
+    "zod": "4.6.7",
+    "@humanfs/node": "0.16.8",
+    "@opentelemetry/exporter-trace-otlp-http": "0.223.0",
+    "@commitlint/config-validator": {
+      "ajv": "8.20.0"
+    },
+    "glob": {
+      "minimatch": "3.1.5"
+    },
+    "minimatch@^3": {
+      "brace-expansion": "1.1.22"
+    },
+    "minimatch@^10": "11.0.9",
+    "js-yaml": "4.3.2",
+    "ws": "8.23.0"
+  }
 }

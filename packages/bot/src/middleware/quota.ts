@@ -1,13 +1,22 @@
+import { createHash } from 'node:crypto';
 import type { GuildMember } from 'discord.js';
 import type { AdminAdapter } from '../database/admin-adapter';
 import type { PermissionManager } from '../permissions/manager';
 import type { UserRole } from '@silo/core';
 import { logger } from '@silo/core';
 import type { QuotaReservationLifecycleRow, QuotaReservationRow } from '../database/admin-adapter';
+import { ImageModelRejectedBeforeGenerationError } from '../providers/image-rejection';
 
 export type UsageType =
   'text_tokens' | 'images' | 'voice_minutes' | 'vision_tokens' | 'video_tokens';
 export type RoleTier = 'admin' | 'moderator' | 'trusted' | 'member' | 'restricted';
+
+export class ImageQuotaSettlementPendingError extends Error {
+  constructor(cause: ImageModelRejectedBeforeGenerationError) {
+    super('Image credit settlement needs review', { cause });
+    this.name = 'ImageQuotaSettlementPendingError';
+  }
+}
 
 interface QuotaCheckResult {
   allowed: boolean;
@@ -166,7 +175,11 @@ export class QuotaMiddleware {
         const denialCode = reservation.reason || `reservation_${reservation.status}`;
         return {
           allowed: false,
-          reason: this.formatReservationDenial(request.usageType, denialCode),
+          reason: this.formatReservationDenial(request.usageType, denialCode, {
+            requestedAmount,
+            remaining: reservation.remaining,
+            userLimit: reservation.userLimit
+          }),
           denialCode,
           remaining: Math.max(0, reservation.remaining),
           max: Math.max(0, Math.min(reservation.userLimit, reservation.guildLimit))
@@ -351,6 +364,44 @@ export class QuotaMiddleware {
     try {
       value = await params.execute(reservation.reservedAmount);
     } catch (error) {
+      if (
+        params.usageType === 'images' &&
+        error instanceof ImageModelRejectedBeforeGenerationError
+      ) {
+        try {
+          const transition = await this.retryQuotaTransition('release_rejected_image', () =>
+            this.adminDb.releaseRejectedImageQuotaUsage(
+              reservation.idempotencyKey,
+              params.guildId,
+              params.userId,
+              error.evidence
+            )
+          );
+          if (transition.status !== 'released') {
+            throw new Error('Unexpected rejected image status', { cause: error });
+          }
+          logger.info('Rejected image reservation settled without usage', {
+            event: 'image_model_rejection_released',
+            guildId: params.guildId,
+            type: params.usageType,
+            providerStatus: error.evidence.status,
+            providerCode: error.evidence.code
+          });
+        } catch (settlementError) {
+          logger.error('Rejected image reservation settlement failed', {
+            event: 'image_model_rejection_settlement_failed',
+            reservationDigest: createHash('sha256')
+              .update(reservation.idempotencyKey)
+              .digest('hex'),
+            providerStatus: error.evidence.status,
+            providerCode: error.evidence.code,
+            providerRequestId: error.evidence.requestId,
+            errorType: settlementError instanceof Error ? settlementError.name : 'unknown'
+          });
+          throw new ImageQuotaSettlementPendingError(error);
+        }
+        throw error;
+      }
       logger.warn(
         'Paid provider call failed with an attempted reservation pending reconciliation',
         {
@@ -871,12 +922,27 @@ export class QuotaMiddleware {
         return 0;
     }
   }
-  private formatReservationDenial(usageType: UsageType, denialCode: string): string {
+  private formatReservationDenial(
+    usageType: UsageType,
+    denialCode: string,
+    detail?: { requestedAmount: number; remaining: number; userLimit: number }
+  ): string {
     if (denialCode === 'guild_limit') {
       return `Server has reached its daily ${this.formatUsageType(usageType)} limit.`;
     }
     if (usageType === 'voice_minutes' && denialCode === 'role_disabled') {
       return 'Voice features require Trusted role or higher. Ask an admin for access.';
+    }
+    if (usageType === 'images' && denialCode === 'role_disabled') {
+      return 'Image generation is unavailable for your role. Ask a server admin for access.';
+    }
+    if (usageType === 'images' && denialCode === 'insufficient_quota' && detail) {
+      const required = detail.requestedAmount;
+      const remaining = Math.max(0, detail.remaining);
+      if (detail.userLimit > 0 && required > detail.userLimit) {
+        return `This image needs ${required} image credits, but your full daily allowance is ${detail.userLimit}. Choose a lower-cost option if available or ask a server admin to review limits.`;
+      }
+      return `This image needs ${required} image credits; only ${remaining} remain under the daily limits. Choose a lower-cost option if available or ask a server admin to review limits.`;
     }
     if (
       denialCode === 'insufficient_quota' ||

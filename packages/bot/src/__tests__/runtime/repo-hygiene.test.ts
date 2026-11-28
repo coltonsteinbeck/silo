@@ -10,6 +10,8 @@ describe('repo hygiene check', () => {
       '.claude/agents/example.md',
       'conversation_messages_rows(5).csv',
       '.workflow-local/cases/example.json',
+      'packages/bot/.workflow-local/cases/example.json',
+      'supabase/migrations/archive/data.sql',
       'exports/messages.jsonl',
       'backup.sqlite3'
     ]);
@@ -21,6 +23,8 @@ describe('repo hygiene check', () => {
       '.claude/agents/example.md',
       'conversation_messages_rows(5).csv',
       '.workflow-local/cases/example.json',
+      'packages/bot/.workflow-local/cases/example.json',
+      'supabase/migrations/archive/data.sql',
       'exports/messages.jsonl',
       'backup.sqlite3'
     ]);

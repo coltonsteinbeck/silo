@@ -150,6 +150,13 @@ export class ModCommand implements Command {
         }
 
         case 'timeout': {
+          if (!member.permissions.has(PermissionFlagsBits.ModerateMembers)) {
+            await interaction.reply({
+              content: 'You need the Discord Timeout Members permission.',
+              ephemeral: true
+            });
+            return;
+          }
           const targetUser = interaction.options.getUser('user', true);
           const duration = interaction.options.getInteger('duration', true);
           const reason = interaction.options.getString('reason', true);
@@ -158,6 +165,19 @@ export class ModCommand implements Command {
           if (!targetMember) {
             await interaction.reply({
               content: 'Could not find that user in this server.',
+              ephemeral: true
+            });
+            return;
+          }
+
+          if (
+            targetMember.id === member.id ||
+            targetMember.id === interaction.guild.ownerId ||
+            (member.id !== interaction.guild.ownerId &&
+              member.roles.highest.comparePositionTo(targetMember.roles.highest) <= 0)
+          ) {
+            await interaction.reply({
+              content: 'Your Discord role cannot time out this member.',
               ephemeral: true
             });
             return;
@@ -220,11 +240,20 @@ export class ModCommand implements Command {
             return;
           }
 
-          // Check if bot has permission
           if (
-            !interaction.channel
-              .permissionsFor(interaction.guild.members.me!)
-              ?.has(PermissionFlagsBits.ManageMessages)
+            !interaction.channel.permissionsFor(member)?.has(PermissionFlagsBits.ManageMessages)
+          ) {
+            await interaction.reply({
+              content: 'You need permission to manage messages in this channel.',
+              ephemeral: true
+            });
+            return;
+          }
+
+          const bot = interaction.guild.members.me;
+          if (
+            !bot ||
+            !interaction.channel.permissionsFor(bot)?.has(PermissionFlagsBits.ManageMessages)
           ) {
             await interaction.reply({
               content: 'I do not have permission to manage messages in this channel.',

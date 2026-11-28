@@ -4,7 +4,7 @@
 # Multi-stage build for minimal image size
 
 # Stage 1: Install dependencies
-FROM oven/bun:1.3.5 AS dependencies
+FROM oven/bun:1.4.5 AS dependencies
 WORKDIR /app
 
 ENV YOUTUBE_DL_HOST=https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp
@@ -20,19 +20,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY package.json bun.lock ./
 COPY packages/core/package.json ./packages/core/
 COPY packages/bot/package.json ./packages/bot/
+COPY scripts/install-locked.sh ./scripts/install-locked.sh
 
 # Install dependencies
 # @discordjs/opus 0.10.0's bundled ARM Opus source omits one forward
 # declaration that GCC 14 otherwise promotes to an install-stopping error.
 # The symbol is compiled in the same library; retain the warning while
 # allowing the pinned native module to finish linking on Linux ARM64.
-RUN CFLAGS="-Wno-error=implicit-function-declaration" bun install --frozen-lockfile
+RUN CFLAGS="-Wno-error=implicit-function-declaration" bash scripts/install-locked.sh
 RUN echo "1fa6733c37ea6fb51c99ad8fe785e7b7e5f3246c9b980230329d4fb72ed8d4d6  packages/bot/node_modules/youtube-dl-exec/bin/yt-dlp" \
     | sha256sum -c - \
     && packages/bot/node_modules/youtube-dl-exec/bin/yt-dlp --version | grep -Fx "2026.08.19"
 
 # Stage 2: Production image
-FROM oven/bun:1.3.5-slim AS production
+FROM oven/bun:1.4.5-slim AS production
 WORKDIR /app
 
 # Install runtime dependencies for voice (opus)

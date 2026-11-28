@@ -15,7 +15,11 @@ const RELEASE_NOTES_LIMITATION =
   'Search found overview pages, but no direct release-notes page. Here are the available sources.';
 
 // Only provider-supplied citations qualify an answer for publication.
-export function formatSearchAnswer(response: WebSearchResponse, query = ''): string | null {
+export function formatSearchAnswer(
+  response: WebSearchResponse,
+  query = '',
+  maxCharacters = 2000
+): string | null {
   let answer = sanitizeAssistantOutput(response.content);
   if (!answer || REFUSAL_PREFIX.test(answer)) return null;
   const urls = new Set<string>();
@@ -51,7 +55,8 @@ export function formatSearchAnswer(response: WebSearchResponse, query = ''): str
     answer = RELEASE_NOTES_LIMITATION;
   }
   const sources = `\n\nSources:\n${[...urls].join('\n')}`;
-  const room = 2000 - sources.length;
+  const room = maxCharacters - sources.length;
+  if (room < 2) return null;
   return sanitizeAssistantOutput(
     `${answer.length > room ? answer.slice(0, room - 1) + '…' : answer}${sources}`
   );

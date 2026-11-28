@@ -39,7 +39,7 @@ if [ "$SKIP_DB" != "1" ]; then
 fi
 
 echo "Installing dependencies..."
-bun install
+bash scripts/prepare-radio-runtime.sh
 
 if [ ! -f .env ]; then
     echo "Creating .env file..."

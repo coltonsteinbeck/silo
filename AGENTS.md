@@ -33,6 +33,9 @@ This repository is a Bun/TypeScript monorepo for a multi-provider Discord AI bot
 ## Verification
 
 Run the smallest relevant test first, then broaden based on risk.
+For each behavior or dependency change, update the relevant headless scenario
+or explain why the existing contract checks cover it in PR validation. Use
+synthetic provider inputs and responses for recurring regression.
 
 Common gates:
 
