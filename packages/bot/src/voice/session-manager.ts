@@ -1,5 +1,5 @@
 import {
-  joinVoiceChannel,
+  type joinVoiceChannel,
   VoiceConnection,
   VoiceConnectionStatus,
   entersState,
@@ -10,6 +10,7 @@ import { performance } from 'node:perf_hooks';
 import { logger } from '@silo/core';
 import { RealtimeSession } from './realtime-session';
 import { guildVoiceCoordinator, type GuildVoiceLeaseToken } from './guild-voice-coordinator';
+import { joinSiloVoiceChannel } from './join-voice-channel';
 
 interface ActiveSpeaker {
   session: RealtimeSession;
@@ -37,7 +38,7 @@ export interface VoiceSessionRuntimeDependencies {
 }
 
 const defaultRuntime: VoiceSessionRuntimeDependencies = {
-  joinVoice: joinVoiceChannel,
+  joinVoice: joinSiloVoiceChannel,
   waitForState: (connection, status, timeoutMs) => entersState(connection, status, timeoutMs)
 };
 
@@ -116,15 +117,12 @@ export class VoiceSessionManager {
       throw error;
     }
 
-    logger.info(
-      `[VoiceSessionManager] Attempting to join channel ${channel.id} (${channel.name}), current state: ${connection.state.status}`
-    );
-
-    // Log state changes for debugging
-    connection.on('stateChange', (oldState: { status: string }, newState: { status: string }) => {
-      logger.debug(
-        `[VoiceSessionManager] Connection state change: ${oldState.status} -> ${newState.status}`
-      );
+    logger.debug('[VoiceSessionManager] Joining Discord voice', { state: connection.state.status });
+    connection.on('stateChange', (oldState, newState) => {
+      logger.debug('[VoiceSessionManager] Discord voice state changed', {
+        previousState: oldState.status,
+        state: newState.status
+      });
     });
 
     connection.on('error', (error: Error) => {
@@ -134,20 +132,14 @@ export class VoiceSessionManager {
     // Wait for connection to be ready
     try {
       await this.runtime.waitForState(connection, VoiceConnectionStatus.Ready, 30_000);
-      logger.info(
-        `[VoiceSessionManager] Successfully connected to channel ${channel.id} (${channel.name})`
-      );
+      logger.info('[VoiceSessionManager] Discord voice ready');
     } catch (error) {
-      logger.error(
-        `[VoiceSessionManager] Connection timeout. Final state: ${connection.state.status}`,
-        error
-      );
-      connection.destroy();
+      logger.error('[VoiceSessionManager] Discord voice did not become ready', {
+        state: connection.state.status
+      });
       guildVoiceCoordinator.release(guildId, reservation.token);
-      throw new Error(
-        `Failed to connect to voice channel within 30 seconds. Bot may need "Connect" and "Speak" permissions in ${channel.name}.`,
-        { cause: error }
-      );
+      if (connection.state.status !== VoiceConnectionStatus.Destroyed) connection.destroy();
+      throw new Error('Failed to connect to Discord voice before the timeout.', { cause: error });
     }
 
     if (this.shuttingDown) {

@@ -3,7 +3,7 @@ import {
   VoiceConnectionStatus,
   createAudioPlayer,
   entersState,
-  joinVoiceChannel,
+  type joinVoiceChannel,
   type AudioPlayer,
   type DiscordGatewayAdapterCreator,
   type VoiceConnection
@@ -24,6 +24,7 @@ import {
   type GuildVoiceCoordinator,
   type GuildVoiceLeaseToken
 } from '../guild-voice-coordinator';
+import { joinSiloVoiceChannel } from '../join-voice-channel';
 import { withLangfuseSpan } from '../../telemetry/langfuse-client';
 import {
   MAX_RADIO_QUEUE_TRACKS,
@@ -57,7 +58,7 @@ const EMPTY_VOICE_CHANNEL_MESSAGE =
 const AUDIO_PIPELINE_FAILURE_MESSAGE =
   '❌ The radio playback pipeline is unavailable. Restart Silo with its pinned runtime and run `bun run radio:validate`.';
 const VOICE_CONNECTION_FAILURE_MESSAGE =
-  '❌ I could not connect to that Discord voice channel. Confirm I have View Channel, Connect, and Speak permissions, then try again.';
+  '❌ I could not connect to that Discord voice channel. Try again in a moment.';
 const PLAYER_START_FAILURE_MESSAGE =
   '❌ I connected to voice, but radio playback did not start. Please try the command again.';
 
@@ -83,7 +84,7 @@ interface RegisteredAppend {
 
 const defaultRuntime: RadioRuntimeDependencies = {
   createPlayer: createAudioPlayer,
-  joinVoice: joinVoiceChannel,
+  joinVoice: joinSiloVoiceChannel,
   waitForState: (target, status, timeoutMs) =>
     entersState(target as never, status as never, timeoutMs)
 };
@@ -476,8 +477,9 @@ export class RadioManager {
           logger.info('[RadioManager] Radio session ready', { queuedTracks: queue.songs.length });
           return queue;
         } catch (error) {
+          const connectionState = connection?.state.status;
           observation?.update({
-            output: { status: 'failed', phase, code: stableFailureCode(error) },
+            output: { status: 'failed', phase, code: stableFailureCode(error), connectionState },
             level: 'ERROR'
           });
           if (queue && this.queues.get(guildId) === queue) this.queues.delete(guildId);
@@ -496,7 +498,8 @@ export class RadioManager {
           }
           logger.error('[RadioManager] Radio startup failed', {
             phase,
-            code: stableFailureCode(error)
+            code: stableFailureCode(error),
+            connectionState
           });
           throw error;
         } finally {

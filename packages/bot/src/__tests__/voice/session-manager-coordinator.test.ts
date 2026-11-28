@@ -63,6 +63,21 @@ describe('VoiceSessionManager guild voice coordination', () => {
     expect(guildVoiceCoordinator.getActiveActivity('guild')).toBeNull();
   });
 
+  test('adapter teardown before speech readiness leaves the guild available', async () => {
+    const created = connection();
+    const manager = new VoiceSessionManager({
+      joinVoice: mock(() => created) as never,
+      waitForState: mock(async () => {
+        created.state.status = VoiceConnectionStatus.Destroyed;
+        throw new Error('adapter closed');
+      })
+    });
+
+    await expect(manager.joinChannel(channel as never)).rejects.toThrow('Failed to connect');
+    expect(created.destroy).not.toHaveBeenCalled();
+    expect(guildVoiceCoordinator.reserveExclusive('guild', 'radio', 'music').acquired).toBe(true);
+  });
+
   test('committed speech session remains reusable and releases on leave', async () => {
     const created = connection();
     const joinVoice = mock(() => created);

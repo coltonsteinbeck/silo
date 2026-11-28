@@ -304,7 +304,7 @@ export class SpeakCommand implements Command {
       }
 
       await interaction.editReply({
-        content: 'Could not start a voice session in this channel. Check access and try again.'
+        content: 'Could not start a voice session in this channel. Try again in a moment.'
       });
     }
   }
